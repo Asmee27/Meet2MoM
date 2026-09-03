@@ -1,0 +1,698 @@
+[
+    {
+        "chunk_id": 1,
+        "start": 12.78,
+        "end": 17.78,
+        "text": "Paul is the Human Resources Manager at Quartz Power Group."
+    },
+    {
+        "chunk_id": 1,
+        "start": 17.78,
+        "end": 22.78,
+        "text": "He has called a meeting with some of his colleagues to discuss a new training programme."
+    },
+    {
+        "chunk_id": 1,
+        "start": 22.78,
+        "end": 25.78,
+        "text": "Right, shall we get started?"
+    },
+    {
+        "chunk_id": 1,
+        "start": 25.78,
+        "end": 30.78,
+        "text": "Well, we're here to talk about a new training programme for the Call Centre."
+    },
+    {
+        "chunk_id": 1,
+        "start": 30.78,
+        "end": 35.78,
+        "text": "David, I asked you to come because you were involved in the market research we did,"
+    },
+    {
+        "chunk_id": 1,
+        "start": 35.78,
+        "end": 39.78,
+        "text": "so I thought you could give us a short summary of the findings."
+    },
+    {
+        "chunk_id": 1,
+        "start": 39.78,
+        "end": 45.78,
+        "text": "And Anna, obviously it's your customer service team who will be affected by this."
+    },
+    {
+        "chunk_id": 1,
+        "start": 45.78,
+        "end": 47.78,
+        "text": "Yes, exactly."
+    },
+    {
+        "chunk_id": 1,
+        "start": 47.78,
+        "end": 52.78,
+        "text": "So we thought you might have some ideas on the best way to approach the training programme."
+    },
+    {
+        "chunk_id": 1,
+        "start": 52.78,
+        "end": 56.78,
+        "text": "And Maria will be developing and running the training."
+    },
+    {
+        "chunk_id": 1,
+        "start": 56.78,
+        "end": 60.78,
+        "text": "OK, David, could you run us through the main points from the research?"
+    },
+    {
+        "chunk_id": 1,
+        "start": 60.78,
+        "end": 62.78,
+        "text": "Sure."
+    },
+    {
+        "chunk_id": 1,
+        "start": 62.78,
+        "end": 68.78,
+        "text": "We worked with a market research agency over a period of a few weeks"
+    },
+    {
+        "chunk_id": 1,
+        "start": 68.78,
+        "end": 73.78,
+        "text": "to gather information about our customers and what they thought of us."
+    },
+    {
+        "chunk_id": 1,
+        "start": 73.78,
+        "end": 77.78,
+        "text": "And the results were, well, mixed."
+    },
+    {
+        "chunk_id": 1,
+        "start": 77.78,
+        "end": 81.78,
+        "text": "Sorry, can I just check? Why was this research done?"
+    },
+    {
+        "chunk_id": 1,
+        "start": 81.78,
+        "end": 83.78,
+        "text": "Had there been complaints?"
+    },
+    {
+        "chunk_id": 1,
+        "start": 83.78,
+        "end": 88.78,
+        "text": "Some complaints, yes, but also we are losing customers in the region"
+    },
+    {
+        "chunk_id": 1,
+        "start": 88.78,
+        "end": 90.78,
+        "text": "and we wanted to know why."
+    },
+    {
+        "chunk_id": 1,
+        "start": 90.78,
+        "end": 92.78,
+        "text": "Sorry, I'm not sure I understand."
+    },
+    {
+        "chunk_id": 1,
+        "start": 92.78,
+        "end": 98.78,
+        "text": "Was the research about getting customer points of view or about customer profiles?"
+    },
+    {
+        "chunk_id": 1,
+        "start": 98.78,
+        "end": 103.78,
+        "text": "It was to get customer feedback on the company and its services."
+    },
+    {
+        "chunk_id": 1,
+        "start": 103.78,
+        "end": 105.78,
+        "text": "Right, I see."
+    },
+    {
+        "chunk_id": 1,
+        "start": 105.78,
+        "end": 111.78,
+        "text": "So the results showed a few areas where customers were not happy."
+    },
+    {
+        "chunk_id": 1,
+        "start": 111.78,
+        "end": 118.78,
+        "text": "One of the most common, how shall I put it, issues was with the Call Centre."
+    },
+    {
+        "chunk_id": 1,
+        "start": 118.78,
+        "end": 120.78,
+        "text": "I see."
+    },
+    {
+        "chunk_id": 1,
+        "start": 120.78,
+        "end": 122.78,
+        "text": "Can you be more specific?"
+    },
+    {
+        "chunk_id": 1,
+        "start": 122.78,
+        "end": 128.78,
+        "text": "Well, basically it seems that customers feel they are not getting good service"
+    },
+    {
+        "chunk_id": 1,
+        "start": 128.78,
+        "end": 132.78,
+        "text": "and they are leaving us for another supplier."
+    },
+    {
+        "chunk_id": 1,
+        "start": 132.78,
+        "end": 138.78,
+        "text": "Right, so are you saying customers are leaving us because of the service from the staff"
+    },
+    {
+        "chunk_id": 1,
+        "start": 138.78,
+        "end": 140.78,
+        "text": "or could there be other reasons too?"
+    },
+    {
+        "chunk_id": 1,
+        "start": 140.78,
+        "end": 145.78,
+        "text": "I mean, could it be that we haven't got very good systems in place for our staff?"
+    },
+    {
+        "chunk_id": 1,
+        "start": 145.78,
+        "end": 148.78,
+        "text": "Yeah, could be."
+    },
+    {
+        "chunk_id": 1,
+        "start": 148.78,
+        "end": 149.78,
+        "text": "Anna?"
+    },
+    {
+        "chunk_id": 1,
+        "start": 149.78,
+        "end": 153.78,
+        "text": "Look, I have no problem with giving the staff a refresher course"
+    },
+    {
+        "chunk_id": 1,
+        "start": 153.78,
+        "end": 157.78,
+        "text": "but starting completely from scratch seems like a waste of time and money."
+    },
+    {
+        "chunk_id": 1,
+        "start": 157.78,
+        "end": 161.78,
+        "text": "They will receive training when they start anyway."
+    },
+    {
+        "chunk_id": 1,
+        "start": 161.78,
+        "end": 164.78,
+        "text": "Yes, that's a good point Anna"
+    },
+    {
+        "chunk_id": 1,
+        "start": 164.78,
+        "end": 168.78,
+        "text": "and we don't know yet if we will have to start from scratch."
+    },
+    {
+        "chunk_id": 1,
+        "start": 168.78,
+        "end": 172.78,
+        "text": "It may be that we haven't done enough to monitor their activity"
+    },
+    {
+        "chunk_id": 1,
+        "start": 172.78,
+        "end": 176.78,
+        "text": "and that a simple refresher course will be enough."
+    },
+    {
+        "chunk_id": 1,
+        "start": 176.78,
+        "end": 181.78,
+        "text": "Or it may be that we have to look at customer contact from start to finish"
+    },
+    {
+        "chunk_id": 1,
+        "start": 181.78,
+        "end": 184.78,
+        "text": "and try to implement some new protocols."
+    },
+    {
+        "chunk_id": 1,
+        "start": 184.78,
+        "end": 186.78,
+        "text": "Maria?"
+    },
+    {
+        "chunk_id": 1,
+        "start": 186.78,
+        "end": 188.78,
+        "text": "Yes, that's right."
+    },
+    {
+        "chunk_id": 1,
+        "start": 188.78,
+        "end": 191.78,
+        "text": "I'm sure there's a way of dealing with this sensitively."
+    },
+    {
+        "chunk_id": 1,
+        "start": 191.78,
+        "end": 196.78,
+        "text": "Anna, I realise it's not easy for you to suggest more training for your staff."
+    },
+    {
+        "chunk_id": 1,
+        "start": 196.78,
+        "end": 202.78,
+        "text": "So I wondered if we could start with a review of the current training approach"
+    },
+    {
+        "chunk_id": 1,
+        "start": 202.78,
+        "end": 207.78,
+        "text": "and look at what we need to do to address the problems brought up in the survey."
+    },
+    {
+        "chunk_id": 1,
+        "start": 207.78,
+        "end": 209.78,
+        "text": "Yes, we could do that."
+    },
+    {
+        "chunk_id": 1,
+        "start": 209.78,
+        "end": 214.78,
+        "text": "But I would need to look at the full report first, of course."
+    },
+    {
+        "chunk_id": 1,
+        "start": 214.78,
+        "end": 219.78,
+        "text": "Anna, I understand your point about possibly wasting time and money"
+    },
+    {
+        "chunk_id": 1,
+        "start": 219.78,
+        "end": 222.78,
+        "text": "so perhaps you and I could look at the report together."
+    },
+    {
+        "chunk_id": 1,
+        "start": 222.78,
+        "end": 224.78,
+        "text": "Yes, okay."
+    },
+    {
+        "chunk_id": 1,
+        "start": 224.78,
+        "end": 228.78,
+        "text": "Then we'll be able to decide what needs addressing and how."
+    },
+    {
+        "chunk_id": 1,
+        "start": 229.78,
+        "end": 232.78,
+        "text": "Good idea."
+    },
+    {
+        "chunk_id": 1,
+        "start": 232.78,
+        "end": 235.78,
+        "text": "I've bought in copies of the report."
+    },
+    {
+        "chunk_id": 1,
+        "start": 235.78,
+        "end": 239.78,
+        "text": "Perhaps we could start with the highlights first."
+    },
+    {
+        "chunk_id": 1,
+        "start": 12.78,
+        "end": 17.78,
+        "text": "Paul is the Human Resources Manager at Quartz Power Group."
+    },
+    {
+        "chunk_id": 1,
+        "start": 17.78,
+        "end": 22.78,
+        "text": "He has called a meeting with some of his colleagues to discuss a new training programme."
+    },
+    {
+        "chunk_id": 1,
+        "start": 22.78,
+        "end": 25.78,
+        "text": "Right, shall we get started?"
+    },
+    {
+        "chunk_id": 1,
+        "start": 25.78,
+        "end": 30.78,
+        "text": "Well, we're here to talk about a new training programme for the Call Centre."
+    },
+    {
+        "chunk_id": 1,
+        "start": 30.78,
+        "end": 35.78,
+        "text": "David, I asked you to come because you were involved in the market research we did,"
+    },
+    {
+        "chunk_id": 1,
+        "start": 35.78,
+        "end": 39.78,
+        "text": "so I thought you could give us a short summary of the findings."
+    },
+    {
+        "chunk_id": 1,
+        "start": 39.78,
+        "end": 45.78,
+        "text": "And Anna, obviously it's your customer service team who will be affected by this."
+    },
+    {
+        "chunk_id": 1,
+        "start": 45.78,
+        "end": 47.78,
+        "text": "Yes, exactly."
+    },
+    {
+        "chunk_id": 1,
+        "start": 47.78,
+        "end": 52.78,
+        "text": "So we thought you might have some ideas on the best way to approach the training programme."
+    },
+    {
+        "chunk_id": 1,
+        "start": 52.78,
+        "end": 56.78,
+        "text": "And Maria will be developing and running the training."
+    },
+    {
+        "chunk_id": 1,
+        "start": 56.78,
+        "end": 60.78,
+        "text": "OK, David, could you run us through the main points from the research?"
+    },
+    {
+        "chunk_id": 1,
+        "start": 60.78,
+        "end": 62.78,
+        "text": "Sure."
+    },
+    {
+        "chunk_id": 1,
+        "start": 62.78,
+        "end": 68.78,
+        "text": "We worked with a market research agency over a period of a few weeks"
+    },
+    {
+        "chunk_id": 1,
+        "start": 68.78,
+        "end": 73.78,
+        "text": "to gather information about our customers and what they thought of us."
+    },
+    {
+        "chunk_id": 1,
+        "start": 73.78,
+        "end": 77.78,
+        "text": "And the results were, well, mixed."
+    },
+    {
+        "chunk_id": 1,
+        "start": 77.78,
+        "end": 81.78,
+        "text": "Sorry, can I just check? Why was this research done?"
+    },
+    {
+        "chunk_id": 1,
+        "start": 81.78,
+        "end": 83.78,
+        "text": "Had there been complaints?"
+    },
+    {
+        "chunk_id": 1,
+        "start": 83.78,
+        "end": 88.78,
+        "text": "Some complaints, yes, but also we are losing customers in the region"
+    },
+    {
+        "chunk_id": 1,
+        "start": 88.78,
+        "end": 90.78,
+        "text": "and we wanted to know why."
+    },
+    {
+        "chunk_id": 1,
+        "start": 90.78,
+        "end": 92.78,
+        "text": "Sorry, I'm not sure I understand."
+    },
+    {
+        "chunk_id": 1,
+        "start": 92.78,
+        "end": 98.78,
+        "text": "Was the research about getting customer points of view or about customer profiles?"
+    },
+    {
+        "chunk_id": 1,
+        "start": 98.78,
+        "end": 103.78,
+        "text": "It was to get customer feedback on the company and its services."
+    },
+    {
+        "chunk_id": 1,
+        "start": 103.78,
+        "end": 105.78,
+        "text": "Right, I see."
+    },
+    {
+        "chunk_id": 1,
+        "start": 105.78,
+        "end": 111.78,
+        "text": "So the results showed a few areas where customers were not happy."
+    },
+    {
+        "chunk_id": 1,
+        "start": 111.78,
+        "end": 118.78,
+        "text": "One of the most common, how shall I put it, issues was with the Call Centre."
+    },
+    {
+        "chunk_id": 1,
+        "start": 118.78,
+        "end": 120.78,
+        "text": "I see."
+    },
+    {
+        "chunk_id": 1,
+        "start": 120.78,
+        "end": 122.78,
+        "text": "Can you be more specific?"
+    },
+    {
+        "chunk_id": 1,
+        "start": 122.78,
+        "end": 128.78,
+        "text": "Well, basically it seems that customers feel they are not getting good service"
+    },
+    {
+        "chunk_id": 1,
+        "start": 128.78,
+        "end": 132.78,
+        "text": "and they are leaving us for another supplier."
+    },
+    {
+        "chunk_id": 1,
+        "start": 132.78,
+        "end": 138.78,
+        "text": "Right, so are you saying customers are leaving us because of the service from the staff"
+    },
+    {
+        "chunk_id": 1,
+        "start": 138.78,
+        "end": 140.78,
+        "text": "or could there be other reasons too?"
+    },
+    {
+        "chunk_id": 1,
+        "start": 140.78,
+        "end": 145.78,
+        "text": "I mean, could it be that we haven't got very good systems in place for our staff?"
+    },
+    {
+        "chunk_id": 1,
+        "start": 145.78,
+        "end": 148.78,
+        "text": "Yeah, could be."
+    },
+    {
+        "chunk_id": 1,
+        "start": 148.78,
+        "end": 149.78,
+        "text": "Anna?"
+    },
+    {
+        "chunk_id": 1,
+        "start": 149.78,
+        "end": 153.78,
+        "text": "Look, I have no problem with giving the staff a refresher course"
+    },
+    {
+        "chunk_id": 1,
+        "start": 153.78,
+        "end": 157.78,
+        "text": "but starting completely from scratch seems like a waste of time and money."
+    },
+    {
+        "chunk_id": 1,
+        "start": 157.78,
+        "end": 161.78,
+        "text": "They will receive training when they start anyway."
+    },
+    {
+        "chunk_id": 1,
+        "start": 161.78,
+        "end": 164.78,
+        "text": "Yes, that's a good point Anna"
+    },
+    {
+        "chunk_id": 1,
+        "start": 164.78,
+        "end": 168.78,
+        "text": "and we don't know yet if we will have to start from scratch."
+    },
+    {
+        "chunk_id": 1,
+        "start": 168.78,
+        "end": 172.78,
+        "text": "It may be that we haven't done enough to monitor their activity"
+    },
+    {
+        "chunk_id": 1,
+        "start": 172.78,
+        "end": 176.78,
+        "text": "and that a simple refresher course will be enough."
+    },
+    {
+        "chunk_id": 1,
+        "start": 176.78,
+        "end": 181.78,
+        "text": "Or it may be that we have to look at customer contact from start to finish"
+    },
+    {
+        "chunk_id": 1,
+        "start": 181.78,
+        "end": 184.78,
+        "text": "and try to implement some new protocols."
+    },
+    {
+        "chunk_id": 1,
+        "start": 184.78,
+        "end": 186.78,
+        "text": "Maria?"
+    },
+    {
+        "chunk_id": 1,
+        "start": 186.78,
+        "end": 188.78,
+        "text": "Yes, that's right."
+    },
+    {
+        "chunk_id": 1,
+        "start": 188.78,
+        "end": 191.78,
+        "text": "I'm sure there's a way of dealing with this sensitively."
+    },
+    {
+        "chunk_id": 1,
+        "start": 191.78,
+        "end": 196.78,
+        "text": "Anna, I realise it's not easy for you to suggest more training for your staff."
+    },
+    {
+        "chunk_id": 1,
+        "start": 196.78,
+        "end": 202.78,
+        "text": "So I wondered if we could start with a review of the current training approach"
+    },
+    {
+        "chunk_id": 1,
+        "start": 202.78,
+        "end": 207.78,
+        "text": "and look at what we need to do to address the problems brought up in the survey."
+    },
+    {
+        "chunk_id": 1,
+        "start": 207.78,
+        "end": 209.78,
+        "text": "Yes, we could do that."
+    },
+    {
+        "chunk_id": 1,
+        "start": 209.78,
+        "end": 214.78,
+        "text": "But I would need to look at the full report first, of course."
+    },
+    {
+        "chunk_id": 1,
+        "start": 214.78,
+        "end": 219.78,
+        "text": "Anna, I understand your point about possibly wasting time and money"
+    },
+    {
+        "chunk_id": 1,
+        "start": 219.78,
+        "end": 222.78,
+        "text": "so perhaps you and I could look at the report together."
+    },
+    {
+        "chunk_id": 1,
+        "start": 222.78,
+        "end": 224.78,
+        "text": "Yes, okay."
+    },
+    {
+        "chunk_id": 1,
+        "start": 224.78,
+        "end": 228.78,
+        "text": "Then we'll be able to decide what needs addressing and how."
+    },
+    {
+        "chunk_id": 1,
+        "start": 229.78,
+        "end": 232.78,
+        "text": "Good idea."
+    },
+    {
+        "chunk_id": 1,
+        "start": 232.78,
+        "end": 235.78,
+        "text": "I've bought in copies of the report."
+    },
+    {
+        "chunk_id": 1,
+        "start": 235.78,
+        "end": 239.78,
+        "text": "Perhaps we could start with the highlights first."
+    }
+]

@@ -1,0 +1,18 @@
+{
+    "recording_fingerprint": {
+        "filename": "test_meeting.mp4",
+        "size_bytes": 10407429,
+        "modified_time_ns": 1787809472839726200,
+        "sha256": "579fdd33c5e5c3aaaef0cfbd5e21f98253a303a62c489035bf096001af4b4255"
+    },
+    "stages": {
+        "transcription": {
+            "completed": true,
+            "output_path": "C:\\Users\\Asmee jadhav\\OneDrive\\Desktop\\Meet2MoM\\output\\transcripts\\final_transcript.json"
+        },
+        "diarization": {
+            "completed": true,
+            "output_path": "C:\\Users\\Asmee jadhav\\OneDrive\\Desktop\\Meet2MoM\\output\\diarization\\speaker_turns.json"
+        }
+    }
+}
