@@ -1,8 +1,0 @@
-{
-    "input_file": "C:\\Users\\Asmee jadhav\\OneDrive\\Desktop\\Meet2MoM\\input\\test_meeting.mp4",
-    "container": "mov,mp4,m4a,3gp,3g2,mj2",
-    "duration_seconds": 248.128,
-    "audio_codec": "aac",
-    "sample_rate": 44100,
-    "channels": 2
-}

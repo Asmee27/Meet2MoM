@@ -1,0 +1,16 @@
+# Generated meeting outputs
+output/
+storage/
+input/
+
+# Frontend generated files
+frontend/node_modules/
+frontend/dist/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Secrets
+.env
