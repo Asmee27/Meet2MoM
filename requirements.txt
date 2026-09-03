@@ -1,0 +1,26 @@
+# ============================================
+# Meet2MoM - Python Dependencies
+# ============================================
+
+# Backend API
+fastapi
+uvicorn[standard]
+python-multipart
+
+# Speech Recognition
+faster-whisper
+
+# Speaker Diarization
+pyannote.audio
+torch
+torchaudio
+
+# NLP / Semantic Topic Segmentation
+sentence-transformers
+scikit-learn
+
+# Numerical Processing
+numpy
+
+# Environment Configuration
+python-dotenv
