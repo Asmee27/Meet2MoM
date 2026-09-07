@@ -1,40 +1,34 @@
-import { Navigate, Route, Routes } from "react-router-dom";
+import "./App.css";
 
-import Sidebar from "./components/Sidebar";
-import Topbar from "./components/Topbar";
+import Header from "./components/Header";
+import { MeetingFlowProvider, useMeetingFlow } from "./context/MeetingFlowContext";
 
-import Dashboard from "./pages/Dashboard";
 import UploadMeeting from "./pages/UploadMeeting";
 import Transcript from "./pages/Transcript";
-import Topics from "./pages/Topics";
 import Decisions from "./pages/Decisions";
-import ActionItems from "./pages/ActionItems";
+import VerifyMeeting from "./pages/VerifyMeeting";
 import Summary from "./pages/Summary";
 
-function App() {
+function MeetingFlow() {
+  const { currentStep } = useMeetingFlow();
+
   return (
-    <div className="app-layout">
-      <Sidebar />
+    <div className="app">
+      <Header />
 
-      <div className="main-area">
-        <Topbar />
-
-        <main className="page-content">
-          <Routes>
-            <Route path="/" element={<Dashboard />} />
-            <Route path="/upload" element={<UploadMeeting />} />
-            <Route path="/transcript" element={<Transcript />} />
-            <Route path="/topics" element={<Topics />} />
-            <Route path="/decisions" element={<Decisions />} />
-            <Route path="/actions" element={<ActionItems />} />
-            <Route path="/summary" element={<Summary />} />
-
-            <Route path="*" element={<Navigate to="/" />} />
-          </Routes>
-        </main>
-      </div>
+      {currentStep === 1 && <UploadMeeting />}
+      {currentStep === 2 && <Transcript />}
+      {currentStep === 3 && <Decisions />}
+      {currentStep === 4 && <VerifyMeeting />}
+      {currentStep === 5 && <Summary />}
     </div>
   );
 }
 
-export default App;
+export default function App() {
+  return (
+    <MeetingFlowProvider>
+      <MeetingFlow />
+    </MeetingFlowProvider>
+  );
+}

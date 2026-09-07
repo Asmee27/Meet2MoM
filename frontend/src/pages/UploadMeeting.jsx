@@ -1,157 +1,227 @@
-import { useState } from "react";
+import { useMeetingFlow } from "../context/MeetingFlowContext";
 
-import {
-  Play,
-  CheckCircle2,
-} from "lucide-react";
-
-import UploadCard from "../components/UploadCard";
-import ProcessingStep from "../components/ProcessingStep";
-import { uploadMeeting } from "../services/api";
-
-function UploadMeeting() {
-  const [selectedFile, setSelectedFile] =
-    useState(null);
-
-  const [processing, setProcessing] =
-    useState(false);
-
-  const [finished, setFinished] =
-    useState(false);
-
-  const handleProcess = async () => {
-    if (!selectedFile) return;
-
-    setProcessing(true);
-    setFinished(false);
-
-    await uploadMeeting(selectedFile);
-
-    setTimeout(() => {
-      setProcessing(false);
-      setFinished(true);
-    }, 1800);
-  };
+export default function UploadMeeting() {
+  const {
+    selectedFile,
+    setSelectedFile,
+    error,
+    setError,
+    isDragging,
+    setIsDragging,
+    currentStep,
+    setCurrentStep,
+    uploadProgress,
+    setUploadProgress,
+    isUploading,
+    setIsUploading,
+    fileInputRef,
+    backendFileId,
+    setBackendFileId,
+    transcriptSegments,
+    setTranscriptSegments,
+    transcriptText,
+    setTranscriptText,
+    detectedLanguage,
+    setDetectedLanguage,
+    transcriptionError,
+    setTranscriptionError,
+    transcriptionProgress,
+    setTranscriptionProgress,
+    isTranscribing,
+    setIsTranscribing,
+    transcriptionComplete,
+    setTranscriptionComplete,
+    extractedData,
+    setExtractedData,
+    isExtracting,
+    setIsExtracting,
+    extractionError,
+    setExtractionError,
+    editingDecisions,
+    setEditingDecisions,
+    editingActions,
+    setEditingActions,
+    visibleDecisions,
+    setVisibleDecisions,
+    visibleActions,
+    setVisibleActions,
+    extractAnimationComplete,
+    setExtractAnimationComplete,
+    verificationStage,
+    setVerificationStage,
+    verificationProgress,
+    setVerificationProgress,
+    automaticCheckComplete,
+    setAutomaticCheckComplete,
+    exportStatus,
+    setExportStatus,
+    momData,
+    setMomData,
+    isGeneratingMom,
+    setIsGeneratingMom,
+    momError,
+    setMomError,
+    isDownloadingPdf,
+    setIsDownloadingPdf,
+    validateFile,
+    handleFileChange,
+    handleDragOver,
+    handleDragLeave,
+    handleDrop,
+    removeFile,
+    goBack,
+    goToTranscribe,
+    goToExtract,
+    goToVerify,
+    goToExport,
+    updateDecision,
+    updateActionItem,
+    downloadTextFile,
+    downloadMeetingPdf,
+    exportWordDocument,
+    sendMeetingEmail
+  } = useMeetingFlow();
 
   return (
-    <div>
-      <div className="page-heading">
-        <div>
-          <span className="eyebrow">
-            NEW MEETING
-          </span>
+    <>
+      {currentStep === 1 && (
 
-          <h1>Upload meeting recording</h1>
+        <main className="main-content">
 
-          <p>
-            Upload your meeting and let the
-            intelligence pipeline handle the
-            rest.
-          </p>
-        </div>
-      </div>
+          <div className="step-label">
+            STEP 1 · MEETING ACQUISITION
+          </div>
 
-      <div className="upload-layout">
-        <section className="panel">
-          <h2>Meeting Recording</h2>
+          <h1>
+            Upload a meeting recording
+          </h1>
 
-          <p className="panel-description">
-            Audio and video recordings are
-            supported.
-          </p>
-
-          <UploadCard
-            selectedFile={selectedFile}
-            setSelectedFile={setSelectedFile}
-          />
-
-          <button
-            className="primary-button process-button"
-            disabled={
-              !selectedFile || processing
-            }
-            onClick={handleProcess}
+          <div
+            className={`upload-card ${
+              isDragging ? "dragging" : ""
+            }`}
+            onDragOver={handleDragOver}
+            onDragLeave={handleDragLeave}
+            onDrop={handleDrop}
+            onClick={() => fileInputRef.current?.click()}
+            role="button"
+            tabIndex="0"
+            onKeyDown={(event) => {
+              if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                fileInputRef.current?.click();
+              }
+            }}
           >
-            <Play size={18} />
-
-            {processing
-              ? "Processing..."
-              : "Process Meeting"}
-          </button>
-
-          {finished && (
-            <div className="success-message">
-              <CheckCircle2 size={19} />
-              Meeting processing initiated
-              successfully.
+            <div className="upload-cloud-icon" aria-hidden="true">
+              <svg viewBox="0 0 64 64" fill="none">
+                <path
+                  d="M20 48h27a11 11 0 0 0 1.8-21.85A16.5 16.5 0 0 0 17.5 24.8 12 12 0 0 0 20 48Z"
+                  stroke="currentColor"
+                  strokeWidth="4"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+                <path
+                  d="M32 40V25m0 0-7 7m7-7 7 7"
+                  stroke="currentColor"
+                  strokeWidth="4"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </svg>
             </div>
-          )}
-        </section>
 
-        <section className="panel">
-          <span className="eyebrow">
-            PIPELINE
-          </span>
+            <div className="upload-main-text">
+              <strong>Drag &amp; drop, or browse a file</strong>
+            </div>
 
-          <h2>AI Processing</h2>
+            <div className="upload-support-text">
+              Supports .mp4 · .wav · .mp3 · Zoom · Teams · Google Meet
+            </div>
 
-          <div className="processing-list">
-            <ProcessingStep
-              title="Audio Processing"
-              description="Normalize and analyse recording"
-              status={
-                processing || finished
-                  ? "completed"
-                  : "pending"
-              }
-            />
-
-            <ProcessingStep
-              title="Speech Recognition"
-              description="Multilingual transcription"
-              status={
-                processing
-                  ? "processing"
-                  : finished
-                    ? "completed"
-                    : "pending"
-              }
-            />
-
-            <ProcessingStep
-              title="Speaker Diarization"
-              description="Detect who spoke when"
-              status={
-                finished
-                  ? "completed"
-                  : "pending"
-              }
-            />
-
-            <ProcessingStep
-              title="Meeting Intelligence"
-              description="Topics, decisions and tasks"
-              status={
-                finished
-                  ? "completed"
-                  : "pending"
-              }
-            />
-
-            <ProcessingStep
-              title="Minutes Generation"
-              description="Generate structured MoM"
-              status={
-                finished
-                  ? "completed"
-                  : "pending"
-              }
+            <input
+              ref={fileInputRef}
+              type="file"
+              id="file-upload"
+              accept=".mp4,.wav,.mp3"
+              onChange={handleFileChange}
+              hidden
             />
           </div>
-        </section>
-      </div>
-    </div>
+
+          {error && (
+            <div className="error-message">
+              {error}
+            </div>
+          )}
+
+          {selectedFile && (
+            <div className="selected-file">
+              <div className="file-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none">
+                  <path
+                    d="M6 3.5h7.2L18.5 8v12.5H6V3.5Z"
+                    stroke="currentColor"
+                    strokeWidth="1.7"
+                    strokeLinejoin="round"
+                  />
+                  <path
+                    d="M13 3.5V8h5.5"
+                    stroke="currentColor"
+                    strokeWidth="1.7"
+                    strokeLinejoin="round"
+                  />
+                </svg>
+              </div>
+
+              <div className="file-info">
+                <strong>{selectedFile.name}</strong>
+                <span>Meeting recording · {(selectedFile.size / (1024 * 1024)).toFixed(2)} MB</span>
+                <div className="upload-progress-track" aria-label={`Upload progress ${uploadProgress}%`}>
+                  <div
+                    className="upload-progress-fill"
+                    style={{ width: `${uploadProgress}%` }}
+                  ></div>
+                </div>
+              </div>
+
+              <div className={`upload-status ${isUploading ? "uploading" : "uploaded"}`}>
+                {isUploading ? "Uploading..." : "Uploaded"}
+              </div>
+
+              {!isUploading && (
+                <button
+                  type="button"
+                  className="remove-button"
+                  onClick={removeFile}
+                  aria-label="Remove selected file"
+                >
+                  Remove
+                </button>
+              )}
+            </div>
+          )}
+
+          {selectedFile && !isUploading && (
+
+            <div className="continue-container">
+
+              <button
+                type="button"
+                className="continue-button"
+                onClick={goToTranscribe}
+              >
+                Continue to Transcribe →
+              </button>
+
+            </div>
+
+          )}
+
+        </main>
+
+      )}
+    </>
   );
 }
-
-export default UploadMeeting;

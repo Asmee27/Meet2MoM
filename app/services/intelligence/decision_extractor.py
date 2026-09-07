@@ -18,6 +18,7 @@ class DecisionExtractor:
         - Suggestions / proposals
         - Confirmed decisions
         - Short acceptance of previous proposal
+        - Agreed proposals / next steps (kept separate from final decisions)
         - Rejections
         - Decision reversals
         - Uncertainty
@@ -396,7 +397,89 @@ class DecisionExtractor:
         }
 
     # ======================================================
-    # CONFIRM PREVIOUS PROPOSAL
+    # RESOLVE ACCEPTED PROPOSAL INTO MOM-FRIENDLY DECISION
+    # ======================================================
+
+    @staticmethod
+    def resolve_accepted_proposal(text: str) -> str:
+        """
+        Convert common tentative proposal wording into a concise agreed
+        decision statement while preserving the original wording separately
+        as evidence.
+
+        This is intentionally rule-based and conservative: it removes only
+        proposal framing such as "perhaps", "I wondered if we could", etc.
+        It does not add owners, deadlines, names, or facts that were not said.
+        """
+        value = re.sub(r"\s+", " ", str(text or "")).strip()
+
+        # Remove leading discourse markers.
+        value = re.sub(
+            r"^(?:so\s+)?(?:perhaps|maybe)\s+",
+            "",
+            value,
+            flags=re.IGNORECASE,
+        )
+
+        # Common first-person proposal frames.
+        value = re.sub(
+            r"^(?:so\s+)?i\s+wondered\s+if\s+we\s+could\s+",
+            "",
+            value,
+            flags=re.IGNORECASE,
+        )
+        value = re.sub(
+            r"^(?:so\s+)?i\s+(?:suggest|propose|recommend)\s+(?:that\s+)?",
+            "",
+            value,
+            flags=re.IGNORECASE,
+        )
+
+        # Common collaborative proposal frames.
+        value = re.sub(
+            r"^(?:so\s+)?(?:perhaps\s+|maybe\s+)?we\s+could\s+",
+            "",
+            value,
+            flags=re.IGNORECASE,
+        )
+        # Accepted collaborative proposal:
+        # "you and I could look..." -> "look..."
+        # "Sarah and I could review..." -> "review..."
+        # Only the actor/modal frame is removed; the action stays grounded
+        # in the transcript.
+        value = re.sub(
+            r"^(?:so\s+)?(?:perhaps\s+|maybe\s+)?"
+            r"(?:you|i|we|he|she|they|[A-Z][a-z]+)"
+            r"(?:\s+and\s+(?:you|i|we|he|she|they|[A-Z][a-z]+))+"
+            r"\s+could\s+",
+            "",
+            value,
+            flags=re.IGNORECASE,
+        )
+
+        value = re.sub(
+            r"^(?:so\s+)?could\s+we\s+",
+            "",
+            value,
+            flags=re.IGNORECASE,
+        )
+        value = re.sub(
+            r"^(?:so\s+)?(?:how|what)\s+about\s+",
+            "",
+            value,
+            flags=re.IGNORECASE,
+        )
+
+        value = value.strip(" .?!")
+        if not value:
+            return str(text or "").strip()
+
+        # The accepted proposition itself is the decision. Capitalize only
+        # the first character; do not otherwise rewrite its semantics.
+        return value[0].upper() + value[1:] + "."
+
+    # ======================================================
+    # ACCEPT PREVIOUS PROPOSAL
     # ======================================================
 
     def confirm_proposal(
@@ -405,42 +488,28 @@ class DecisionExtractor:
         acceptance_sentence: str,
         acceptance_timestamp: float
     ) -> Dict[str, Any]:
-
         """
-        Converts a previous proposal into a confirmed
-        decision when a later sentence accepts it.
+        A proposal followed by explicit acceptance is an agreed decision.
 
-        Example:
-            "Perhaps we could review the report."
-            "Yes, we could do that."
-
-        The decision keeps the meaningful proposal text
-        instead of storing "Yes".
+        The final `text` is a resolved, MoM-friendly statement. The exact
+        proposal and acceptance are retained as evidence so verification can
+        still ground the decision in the transcript.
         """
 
         confirmed = proposal.copy()
 
-        confirmed["decision_type"] = (
-            "confirmed_from_proposal"
-        )
-
+        confirmed["decision_type"] = "agreed_decision"
         confirmed["status"] = "active"
-
         confirmed["confidence"] = 0.85
-
         confirmed["requires_review"] = False
-
         confirmed["review_reasons"] = []
+        confirmed["is_final_decision"] = True
 
-        confirmed["confirmation_text"] = (
-            acceptance_sentence
-        )
+        confirmed["original_proposal"] = proposal["text"]
+        confirmed["confirmation_text"] = acceptance_sentence
+        confirmed["confirmation_timestamp"] = acceptance_timestamp
 
-        confirmed["confirmation_timestamp"] = (
-            acceptance_timestamp
-        )
-
-        confirmed["original_proposal"] = (
+        confirmed["text"] = self.resolve_accepted_proposal(
             proposal["text"]
         )
 
@@ -566,6 +635,10 @@ class DecisionExtractor:
 
             # ----------------------------------------------
             # 5. ACCEPTANCE OF PREVIOUS PROPOSAL
+            #
+            # Proposal + explicit acceptance = agreed decision.
+            # The proposal wording is resolved into a clean MoM statement
+            # while the original proposal/acceptance remain as evidence.
             # ----------------------------------------------
 
             if (
@@ -579,19 +652,11 @@ class DecisionExtractor:
                     timestamp
                 )
 
-                # Previous proposal remains in audit trail,
-                # but becomes confirmed.
-                pending_proposal["status"] = (
-                    "confirmed"
-                )
-
-                pending_proposal[
-                    "confirmed_by"
-                ] = sentence
-
-                pending_proposal[
-                    "confirmation_timestamp"
-                ] = timestamp
+                # Preserve the proposal in the audit trail as accepted.
+                pending_proposal["status"] = "confirmed"
+                pending_proposal["confirmed_by"] = sentence
+                pending_proposal["confirmation_timestamp"] = timestamp
+                pending_proposal["is_final_decision"] = False
 
                 records.append(confirmed)
 
@@ -633,6 +698,8 @@ class DecisionExtractor:
 
                         break
 
+                record["is_final_decision"] = True
+
                 records.append(record)
 
                 pending_proposal = None
@@ -672,6 +739,8 @@ class DecisionExtractor:
                     requires_review,
                     review_reasons
                 )
+
+                record["is_final_decision"] = True
 
                 records.append(record)
 
@@ -740,11 +809,18 @@ class DecisionExtractor:
     def select_final_decisions(
         records: List[Dict[str, Any]]
     ) -> List[Dict[str, Any]]:
+        """
+        High-precision final decision selection.
+
+        Explicit decisions and proposals with explicit acceptance are
+        included. Unaccepted proposals, uncertainty, future decisions,
+        rejections, and unresolved acknowledgements are excluded.
+        """
 
         allowed_types = {
             "explicit_decision",
-            "confirmed_from_proposal",
-            "reversal_decision"
+            "agreed_decision",
+            "reversal_decision",
         }
 
         return [
@@ -752,9 +828,9 @@ class DecisionExtractor:
             for record in records
             if (
                 record.get("status") == "active"
-                and record.get("decision_type")
-                in allowed_types
+                and record.get("decision_type") in allowed_types
                 and record.get("confidence", 0) >= 0.60
+                and record.get("is_final_decision", True)
             )
         ]
 
@@ -777,6 +853,7 @@ class DecisionExtractor:
             for item in records
             if item.get("decision_type") == "proposal"
         ]
+
 
         rejected = [
             item
@@ -806,6 +883,7 @@ class DecisionExtractor:
                 "requires_review": len(review),
                 "processing_strategy": "contextual_topic_by_topic",
                 "contextual_confirmation": True,
+                "accepted_proposals_become_agreed_decisions": True,
                 "reversal_detection": True,
                 "uncertainty_filtering": True,
                 "future_decision_filtering": True
@@ -898,6 +976,13 @@ class DecisionExtractor:
             if item.get("decision_type") == "proposal"
         )
 
+        agreed_decision_count = sum(
+            1
+            for item in all_records
+            if item.get("decision_type") == "agreed_decision"
+            and item.get("status") == "active"
+        )
+
         excluded_count = sum(
             1
             for item in all_records
@@ -920,6 +1005,11 @@ class DecisionExtractor:
         print(
             f"Proposals detected: "
             f"{proposal_count}"
+        )
+
+        print(
+            f"Agreed decisions: "
+            f"{agreed_decision_count}"
         )
 
         print(

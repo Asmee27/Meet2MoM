@@ -1,0 +1,1372 @@
+from __future__ import annotations
+
+from pathlib import Path
+import hashlib
+import json
+import os
+import shutil
+import subprocess
+import sys
+import threading
+import time
+
+
+# ============================================================
+# PROJECT PATHS
+# ============================================================
+
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+GLOBAL_OUTPUT_DIR = PROJECT_ROOT / "output"
+STORAGE_DIR = PROJECT_ROOT / "storage"
+PIPELINE_CACHE_DIR = STORAGE_DIR / "_pipeline_cache"
+PIPELINE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+
+# ============================================================
+# SUBPROCESS ENVIRONMENT
+# ============================================================
+
+env = os.environ.copy()
+
+existing_pythonpath = env.get("PYTHONPATH", "")
+
+env["PYTHONPATH"] = (
+    str(PROJECT_ROOT)
+    if not existing_pythonpath
+    else str(PROJECT_ROOT) + os.pathsep + existing_pythonpath
+)
+env["PYTHONIOENCODING"] = "utf-8"
+env["PYTHONUTF8"] = "1"
+env["PYTHONUNBUFFERED"] = "1"
+
+# ============================================================
+# PIPELINE LOCK
+# ============================================================
+
+# Your existing recorded pipeline still writes to shared output/
+# locations. Until every service accepts a per-meeting output
+# directory, only one recorded pipeline should run at a time.
+_PIPELINE_LOCK = threading.Lock()
+_CACHE_LOCK = threading.Lock()
+
+
+# ============================================================
+# CUSTOM ERROR
+# ============================================================
+
+class RecordedPipelineError(RuntimeError):
+    pass
+
+
+# ============================================================
+# JSON HELPERS
+# ============================================================
+
+def _read_json(path: Path):
+    if not path.exists():
+        return None
+
+    try:
+        return json.loads(
+            path.read_text(
+                encoding="utf-8"
+            )
+        )
+
+    except Exception:
+        return None
+
+
+def _write_json(
+    path: Path,
+    data
+):
+    path.parent.mkdir(
+        parents=True,
+        exist_ok=True
+    )
+
+    path.write_text(
+        json.dumps(
+            data,
+            ensure_ascii=False,
+            indent=2
+        ),
+        encoding="utf-8"
+    )
+
+
+# ============================================================
+# FILE COPY HELPER
+# ============================================================
+
+def _copy_if_exists(
+    source: Path,
+    destination: Path
+):
+    if not source.exists():
+        return False
+
+    destination.parent.mkdir(
+        parents=True,
+        exist_ok=True
+    )
+
+    if source.is_dir():
+
+        if destination.exists():
+            shutil.rmtree(
+                destination
+            )
+
+        shutil.copytree(
+            source,
+            destination
+        )
+
+    else:
+
+        shutil.copy2(
+            source,
+            destination
+        )
+
+    return True
+
+
+
+# ============================================================
+# CONTENT-HASH CACHE
+# ============================================================
+
+def _sha256_file(
+    path: Path,
+    chunk_size: int = 8 * 1024 * 1024
+):
+    """
+    Compute a content hash for an uploaded meeting.
+
+    This makes cache reuse independent of meeting_id/path, so uploading
+    the exact same MP4 again can reuse the completed ASR + diarization
+    artifacts instead of spending minutes processing them again.
+    """
+
+    digest = hashlib.sha256()
+
+    with open(path, "rb") as file:
+        while True:
+            chunk = file.read(chunk_size)
+
+            if not chunk:
+                break
+
+            digest.update(chunk)
+
+    return digest.hexdigest()
+
+
+def _cache_directory(
+    content_hash: str
+):
+    return (
+        PIPELINE_CACHE_DIR
+        / content_hash
+    )
+
+
+def _cache_is_complete(
+    content_hash: str
+):
+    """
+    A cache entry is considered reusable only when the critical artifacts
+    needed by the frontend and downstream intelligence pipeline exist.
+    """
+
+    cache_dir = _cache_directory(
+        content_hash
+    )
+
+    required = (
+        cache_dir
+        / "results"
+        / "transcripts"
+        / "meeting_transcript_ready.json",
+
+        cache_dir
+        / "results"
+        / "diarization"
+        / "speaker_turns.json",
+
+        cache_dir
+        / "results"
+        / "metadata"
+        / "processing_report.json",
+    )
+
+    return all(
+        path.exists()
+        and path.is_file()
+        and path.stat().st_size > 0
+        for path in required
+    )
+
+
+def _restore_cached_results(
+    meeting_id: str,
+    content_hash: str
+):
+    """
+    Copy cached completed pipeline artifacts into the current meeting's
+    storage directory. The cache remains immutable from the meeting's
+    perspective.
+    """
+
+    cache_dir = _cache_directory(
+        content_hash
+    )
+
+    cached_results = (
+        cache_dir
+        / "results"
+    )
+
+    meeting_results = (
+        STORAGE_DIR
+        / meeting_id
+        / "results"
+    )
+
+    if meeting_results.exists():
+        shutil.rmtree(
+            meeting_results
+        )
+
+    shutil.copytree(
+        cached_results,
+        meeting_results
+    )
+
+    cached_frontend = (
+        cache_dir
+        / "frontend_transcript.json"
+    )
+
+    meeting_frontend = (
+        STORAGE_DIR
+        / meeting_id
+        / "frontend_transcript.json"
+    )
+
+    if cached_frontend.exists():
+        shutil.copy2(
+            cached_frontend,
+            meeting_frontend
+        )
+
+    return True
+
+
+def _save_results_to_cache(
+    meeting_id: str,
+    content_hash: str
+):
+    """
+    Persist the completed per-meeting snapshot into a content-addressed
+    cache. Write to a temporary directory first, then atomically replace
+    the cache entry so an interrupted write is never treated as complete.
+    """
+
+    meeting_directory = (
+        STORAGE_DIR
+        / meeting_id
+    )
+
+    source_results = (
+        meeting_directory
+        / "results"
+    )
+
+    if not source_results.exists():
+        return False
+
+    cache_dir = _cache_directory(
+        content_hash
+    )
+
+    temporary_dir = (
+        PIPELINE_CACHE_DIR
+        / f".{content_hash}.tmp"
+    )
+
+    if temporary_dir.exists():
+        shutil.rmtree(
+            temporary_dir
+        )
+
+    temporary_dir.mkdir(
+        parents=True,
+        exist_ok=True
+    )
+
+    shutil.copytree(
+        source_results,
+        temporary_dir / "results"
+    )
+
+    frontend_transcript = (
+        meeting_directory
+        / "frontend_transcript.json"
+    )
+
+    if frontend_transcript.exists():
+        shutil.copy2(
+            frontend_transcript,
+            temporary_dir
+            / "frontend_transcript.json"
+        )
+
+    _write_json(
+        temporary_dir
+        / "cache_metadata.json",
+        {
+            "content_hash":
+                content_hash,
+
+            "source_meeting_id":
+                meeting_id,
+
+            "created_at":
+                time.time()
+        }
+    )
+
+    if cache_dir.exists():
+        shutil.rmtree(
+            cache_dir
+        )
+
+    temporary_dir.replace(
+        cache_dir
+    )
+
+    return True
+
+
+# ============================================================
+# TRANSCRIPT NORMALIZER
+# ============================================================
+
+def _extract_segments(payload):
+
+    if payload is None:
+        return []
+
+    if isinstance(
+        payload,
+        list
+    ):
+
+        raw_segments = payload
+
+    elif isinstance(
+        payload,
+        dict
+    ):
+
+        raw_segments = None
+
+        possible_keys = (
+            "segments",
+            "transcript",
+            "speaker_transcript",
+            "items",
+            "utterances"
+        )
+
+        for key in possible_keys:
+
+            value = payload.get(
+                key
+            )
+
+            if isinstance(
+                value,
+                list
+            ):
+                raw_segments = value
+                break
+
+        if raw_segments is None:
+            raw_segments = []
+
+    else:
+        raw_segments = []
+
+    normalized = []
+
+    for item in raw_segments:
+
+        if not isinstance(
+            item,
+            dict
+        ):
+            continue
+
+        text = str(
+            item.get(
+                "text"
+            )
+            or ""
+        ).strip()
+
+        if not text:
+            continue
+
+        start = item.get(
+            "start",
+            item.get(
+                "start_time",
+                0
+            )
+        )
+
+        end = item.get(
+            "end",
+            item.get(
+                "end_time",
+                start
+            )
+        )
+
+        speaker = (
+            item.get(
+                "speaker"
+            )
+            or item.get(
+                "speaker_label"
+            )
+            or item.get(
+                "speaker_id"
+            )
+            or "SPEAKER_UNKNOWN"
+        )
+
+        normalized.append(
+            {
+                "start": start,
+                "end": end,
+                "text": text,
+
+                "speaker": speaker,
+
+                "speaker_attribution_confidence":
+                    item.get(
+                        "speaker_attribution_confidence"
+                    ),
+
+                "speaker_confidence_flag":
+                    item.get(
+                        "speaker_confidence_flag"
+                    ),
+
+                "possible_overlap":
+                    item.get(
+                        "possible_overlap",
+                        False
+                    ),
+
+                "overlapping_speakers":
+                    item.get(
+                        "overlapping_speakers",
+                        []
+                    ),
+
+                "requires_review":
+                    item.get(
+                        "requires_review",
+                        False
+                    ),
+
+                "review_reasons":
+                    item.get(
+                        "review_reasons",
+                        []
+                    ),
+
+                "language":
+                    item.get(
+                        "language"
+                    ),
+
+                "avg_logprob":
+                    item.get(
+                        "avg_logprob"
+                    ),
+
+                "no_speech_probability":
+                    item.get(
+                        "no_speech_probability"
+                    ),
+
+                "confidence_flag":
+                    item.get(
+                        "confidence_flag"
+                    )
+            }
+        )
+
+    return normalized
+
+
+# ============================================================
+# LANGUAGE DETECTION FROM TRANSCRIPT OUTPUT
+# ============================================================
+
+def _detect_language(
+    payload,
+    segments
+):
+
+    if isinstance(
+        payload,
+        dict
+    ):
+
+        language = (
+            payload.get(
+                "language"
+            )
+            or payload.get(
+                "detected_language"
+            )
+        )
+
+        if language:
+            return language
+
+    counts = {}
+
+    for segment in segments:
+
+        language = segment.get(
+            "language"
+        )
+
+        if language:
+
+            counts[language] = (
+                counts.get(
+                    language,
+                    0
+                )
+                + 1
+            )
+
+    if counts:
+
+        return max(
+            counts,
+            key=counts.get
+        )
+
+    return "unknown"
+
+
+# ============================================================
+# COPY GLOBAL PIPELINE OUTPUTS
+# INTO PER-MEETING STORAGE
+# ============================================================
+
+def _snapshot_outputs(
+    meeting_id: str
+):
+
+    meeting_results = (
+        STORAGE_DIR
+        / meeting_id
+        / "results"
+    )
+
+    meeting_results.mkdir(
+        parents=True,
+        exist_ok=True
+    )
+
+    mappings = [
+
+        (
+            GLOBAL_OUTPUT_DIR
+            / "transcripts"
+            / "meeting_transcript_ready.json",
+
+            meeting_results
+            / "transcripts"
+            / "meeting_transcript_ready.json"
+        ),
+
+        (
+            GLOBAL_OUTPUT_DIR
+            / "transcripts"
+            / "speaker_transcript.json",
+
+            meeting_results
+            / "transcripts"
+            / "speaker_transcript.json"
+        ),
+
+        (
+            GLOBAL_OUTPUT_DIR
+            / "transcripts"
+            / "final_transcript.json",
+
+            meeting_results
+            / "transcripts"
+            / "final_transcript.json"
+        ),
+
+        (
+            GLOBAL_OUTPUT_DIR
+            / "diarization"
+            / "speaker_turns.json",
+
+            meeting_results
+            / "diarization"
+            / "speaker_turns.json"
+        ),
+
+        (
+            GLOBAL_OUTPUT_DIR
+            / "metadata"
+            / "processing_report.json",
+
+            meeting_results
+            / "metadata"
+            / "processing_report.json"
+        ),
+
+        (
+            GLOBAL_OUTPUT_DIR
+            / "metadata"
+            / "audio_quality.json",
+
+            meeting_results
+            / "metadata"
+            / "audio_quality.json"
+        ),
+
+        (
+            GLOBAL_OUTPUT_DIR
+            / "metadata"
+            / "recording_info.json",
+
+            meeting_results
+            / "metadata"
+            / "recording_info.json"
+        ),
+
+        (
+            GLOBAL_OUTPUT_DIR
+            / "metadata"
+            / "chunk_metadata.json",
+
+            meeting_results
+            / "metadata"
+            / "chunk_metadata.json"
+        )
+    ]
+
+    copied = []
+
+    for source, destination in mappings:
+
+        if _copy_if_exists(
+            source,
+            destination
+        ):
+
+            copied.append(
+                str(
+                    destination.relative_to(
+                        STORAGE_DIR
+                        / meeting_id
+                    )
+                )
+            )
+
+    return copied
+
+
+# ============================================================
+# RESULT PATHS
+# ============================================================
+
+def get_result_paths(
+    meeting_id: str
+):
+
+    base = (
+        STORAGE_DIR
+        / meeting_id
+        / "results"
+    )
+
+    return {
+
+        "ready":
+            base
+            / "transcripts"
+            / "meeting_transcript_ready.json",
+
+        "speaker":
+            base
+            / "transcripts"
+            / "speaker_transcript.json",
+
+        "final":
+            base
+            / "transcripts"
+            / "final_transcript.json",
+
+        "diarization":
+            base
+            / "diarization"
+            / "speaker_turns.json",
+
+        "report":
+            base
+            / "metadata"
+            / "processing_report.json"
+    }
+
+
+# ============================================================
+# LOAD TRANSCRIPT FOR FRONTEND
+# ============================================================
+
+def load_frontend_transcript(
+    meeting_id: str
+):
+
+    paths = get_result_paths(
+        meeting_id
+    )
+
+    payload = None
+    source = None
+
+    # Prefer the most complete final handoff transcript.
+    candidates = (
+        paths["ready"],
+        paths["speaker"],
+        paths["final"]
+    )
+
+    for candidate in candidates:
+
+        if candidate.exists():
+
+            payload = _read_json(
+                candidate
+            )
+
+            source = candidate
+
+            if payload is not None:
+                break
+
+    if payload is None:
+
+        raise RecordedPipelineError(
+            "The recorded pipeline completed "
+            "but no transcript artifact was found."
+        )
+
+    segments = _extract_segments(
+        payload
+    )
+
+    if not segments:
+
+        raise RecordedPipelineError(
+            "The transcript artifact did not "
+            "contain usable speech segments."
+        )
+
+    full_text = " ".join(
+        str(
+            segment[
+                "text"
+            ]
+        ).strip()
+
+        for segment in segments
+
+        if str(
+            segment.get(
+                "text"
+            )
+            or ""
+        ).strip()
+    )
+
+    language = _detect_language(
+        payload,
+        segments
+    )
+
+    return {
+
+        "file_id":
+            meeting_id,
+
+        "language":
+            language,
+
+        "segment_count":
+            len(
+                segments
+            ),
+
+        "segments":
+            segments,
+
+        "full_text":
+            full_text,
+
+        "source_file":
+            source.name
+            if source
+            else None,
+
+        "status":
+            "transcribed",
+
+        "pipeline_features":
+            {
+                "validation":
+                    True,
+
+                "media_inspection":
+                    True,
+
+                "normalization":
+                    True,
+
+                "audio_quality":
+                    True,
+
+                "long_audio_chunking":
+                    True,
+
+                "multilingual_asr":
+                    True,
+
+                "speaker_diarization":
+                    True,
+
+                "speaker_attribution":
+                    True,
+
+                "reliability_flags":
+                    True
+            }
+    }
+
+
+# ============================================================
+# RUN EXISTING RECORDED PIPELINE
+# ============================================================
+
+def run_recorded_pipeline(
+    meeting_id: str,
+    input_file: Path
+):
+
+    meeting_directory = (
+        STORAGE_DIR
+        / meeting_id
+    )
+
+    meeting_directory.mkdir(
+        parents=True,
+        exist_ok=True
+    )
+
+    status_file = (
+        meeting_directory
+        / "pipeline_status.json"
+    )
+
+    started_at = time.time()
+
+    # ========================================================
+    # CONTENT HASH
+    # ========================================================
+
+    print(
+        "\nCalculating recording fingerprint..."
+    )
+
+    hash_started = time.time()
+
+    content_hash = _sha256_file(
+        input_file
+    )
+
+    hash_seconds = round(
+        time.time()
+        - hash_started,
+        2
+    )
+
+    print(
+        f"✓ Recording hash: "
+        f"{content_hash[:16]}..."
+    )
+
+    print(
+        f"✓ Hashing time: "
+        f"{hash_seconds}s"
+    )
+
+    _write_json(
+        status_file,
+        {
+            "file_id":
+                meeting_id,
+
+            "status":
+                "processing",
+
+            "started_at":
+                started_at,
+
+            "content_hash":
+                content_hash,
+
+            "cache_hit":
+                False
+        }
+    )
+
+    # ========================================================
+    # FAST PATH: EXACT RECORDING ALREADY PROCESSED
+    # ========================================================
+
+    with _CACHE_LOCK:
+
+        cache_hit = _cache_is_complete(
+            content_hash
+        )
+
+        if cache_hit:
+
+            print(
+                "\n✓ CACHE HIT"
+            )
+
+            print(
+                "  Same recording was already "
+                "processed successfully."
+            )
+
+            print(
+                "  Reusing ASR + diarization + "
+                "reliability artifacts."
+            )
+
+            _restore_cached_results(
+                meeting_id,
+                content_hash
+            )
+
+    if cache_hit:
+
+        transcript = (
+            load_frontend_transcript(
+                meeting_id
+            )
+        )
+
+        frontend_transcript_file = (
+            meeting_directory
+            / "frontend_transcript.json"
+        )
+
+        _write_json(
+            frontend_transcript_file,
+            transcript
+        )
+
+        finished_at = time.time()
+
+        _write_json(
+            status_file,
+            {
+                "file_id":
+                    meeting_id,
+
+                "status":
+                    "completed",
+
+                "started_at":
+                    started_at,
+
+                "finished_at":
+                    finished_at,
+
+                "processing_seconds":
+                    round(
+                        finished_at
+                        - started_at,
+                        2
+                    ),
+
+                "content_hash":
+                    content_hash,
+
+                "cache_hit":
+                    True,
+
+                "hashing_seconds":
+                    hash_seconds,
+
+                "frontend_transcript":
+                    str(
+                        frontend_transcript_file
+                    )
+            }
+        )
+
+        print(
+            f"✓ Cached transcript restored "
+            f"in {round(finished_at - started_at, 2)}s"
+        )
+
+        return transcript
+
+    # ========================================================
+    # CACHE MISS: RUN ORIGINAL STRONG PIPELINE
+    # ========================================================
+
+    print(
+        "\nCache miss — processing recording "
+        "through the full pipeline."
+    )
+
+    command = [
+        sys.executable,
+        "-u",
+        "-m",
+        "scripts.run_recorded_pipeline",
+        str(
+            input_file.resolve()
+        )
+    ]
+
+    print(
+        "\nLaunching recorded pipeline:"
+    )
+
+    print(
+        " ".join(
+            command
+        )
+    )
+
+    print(
+        f"Project root: {PROJECT_ROOT}"
+    )
+
+    print(
+        f"PYTHONPATH: {env.get('PYTHONPATH')}"
+    )
+
+    # --------------------------------------------------------
+    # Lock prevents concurrent meetings from overwriting
+    # the current shared global output/ directory.
+    # --------------------------------------------------------
+
+    with _PIPELINE_LOCK:
+
+        process = subprocess.Popen(
+            command,
+            cwd=str(PROJECT_ROOT),
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            bufsize=1,
+        )
+
+        output_lines = []
+
+        if process.stdout is not None:
+
+            for line in process.stdout:
+
+                output_lines.append(
+                    line
+                )
+
+                print(
+                    line,
+                    end="",
+                    flush=True
+                )
+
+        return_code = (
+            process.wait()
+        )
+
+        combined_output = (
+            "".join(
+                output_lines
+            ).strip()
+        )
+
+        # ----------------------------------------------------
+        # Pipeline failure
+        # ----------------------------------------------------
+
+        if return_code != 0:
+
+            error_message = (
+                combined_output
+                or
+                "Recorded pipeline failed."
+            )
+
+            _write_json(
+                status_file,
+                {
+                    "file_id":
+                        meeting_id,
+
+                    "status":
+                        "failed",
+
+                    "started_at":
+                        started_at,
+
+                    "finished_at":
+                        time.time(),
+
+                    "return_code":
+                        return_code,
+
+                    "content_hash":
+                        content_hash,
+
+                    "cache_hit":
+                        False,
+
+                    "error":
+                        error_message
+                }
+            )
+
+            raise RecordedPipelineError(
+                error_message
+            )
+
+        # ----------------------------------------------------
+        # Snapshot shared output into this meeting folder
+        # ----------------------------------------------------
+
+        copied = _snapshot_outputs(
+            meeting_id
+        )
+
+    # ========================================================
+    # LOAD RESULT FOR FRONTEND
+    # ========================================================
+
+    try:
+
+        transcript = (
+            load_frontend_transcript(
+                meeting_id
+            )
+        )
+
+    except Exception as error:
+
+        _write_json(
+            status_file,
+            {
+                "file_id":
+                    meeting_id,
+
+                "status":
+                    "failed",
+
+                "started_at":
+                    started_at,
+
+                "finished_at":
+                    time.time(),
+
+                "content_hash":
+                    content_hash,
+
+                "cache_hit":
+                    False,
+
+                "error":
+                    str(
+                        error
+                    ),
+
+                "copied_artifacts":
+                    copied
+            }
+        )
+
+        raise
+
+    # ========================================================
+    # SAVE FRONTEND-FRIENDLY VERSION
+    # ========================================================
+
+    frontend_transcript_file = (
+        meeting_directory
+        / "frontend_transcript.json"
+    )
+
+    _write_json(
+        frontend_transcript_file,
+        transcript
+    )
+
+    # ========================================================
+    # SAVE COMPLETED RESULT INTO CONTENT-HASH CACHE
+    # ========================================================
+
+    cache_saved = False
+
+    try:
+
+        with _CACHE_LOCK:
+
+            cache_saved = (
+                _save_results_to_cache(
+                    meeting_id,
+                    content_hash
+                )
+            )
+
+        if cache_saved:
+
+            print(
+                "\n✓ Completed pipeline artifacts "
+                "saved to content-hash cache."
+            )
+
+    except Exception as cache_error:
+
+        # Cache failure must never destroy an otherwise successful
+        # transcription result.
+        print(
+            "\n⚠ Cache save failed: "
+            f"{cache_error}"
+        )
+
+    # ========================================================
+    # SUCCESS STATUS
+    # ========================================================
+
+    finished_at = time.time()
+
+    _write_json(
+        status_file,
+        {
+            "file_id":
+                meeting_id,
+
+            "status":
+                "completed",
+
+            "started_at":
+                started_at,
+
+            "finished_at":
+                finished_at,
+
+            "processing_seconds":
+                round(
+                    finished_at
+                    - started_at,
+                    2
+                ),
+
+            "content_hash":
+                content_hash,
+
+            "cache_hit":
+                False,
+
+            "cache_saved":
+                cache_saved,
+
+            "hashing_seconds":
+                hash_seconds,
+
+            "copied_artifacts":
+                copied,
+
+            "frontend_transcript":
+                str(
+                    frontend_transcript_file
+                )
+        }
+    )
+
+    return transcript
+
+
+# ============================================================
+# PIPELINE STATUS
+# ============================================================
+
+def get_pipeline_status(
+    meeting_id: str
+):
+
+    status_file = (
+        STORAGE_DIR
+        / meeting_id
+        / "pipeline_status.json"
+    )
+
+    if not status_file.exists():
+
+        return {
+            "file_id":
+                meeting_id,
+
+            "status":
+                "not_started"
+        }
+
+    result = _read_json(
+        status_file
+    )
+
+    if result is None:
+
+        return {
+            "file_id":
+                meeting_id,
+
+            "status":
+                "unknown"
+        }
+
+    return result

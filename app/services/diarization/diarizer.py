@@ -25,12 +25,20 @@ class SpeakerDiarizer:
             exist_ok=True
         )
 
+        # ======================================================
+        # HUGGING FACE TOKEN
+        # ======================================================
+
         token = os.getenv("HF_TOKEN")
 
         if not token:
             raise RuntimeError(
                 "HF_TOKEN environment variable is missing."
             )
+
+        # ======================================================
+        # LOAD PYANNOTE MODEL
+        # ======================================================
 
         print(
             f"Loading diarization model: "
@@ -42,7 +50,53 @@ class SpeakerDiarizer:
             token=token
         )
 
-        print("✓ Diarization model loaded")
+        # ======================================================
+        # DEVICE SELECTION
+        # ======================================================
+
+        if torch.cuda.is_available():
+
+            self.device = torch.device("cuda")
+
+            self.pipeline.to(
+                self.device
+            )
+
+            print(
+                "✓ Diarization device: GPU"
+            )
+
+            print(
+                f"✓ GPU: "
+                f"{torch.cuda.get_device_name(0)}"
+            )
+
+        else:
+
+            self.device = torch.device("cpu")
+
+            # Use available CPU cores
+            cpu_threads = max(
+                1,
+                os.cpu_count() or 1
+            )
+
+            torch.set_num_threads(
+                cpu_threads
+            )
+
+            print(
+                f"✓ Diarization device: CPU"
+            )
+
+            print(
+                f"✓ Torch CPU threads: "
+                f"{cpu_threads}"
+            )
+
+        print(
+            "✓ Diarization model loaded"
+        )
 
     # ======================================================
     # LOAD WAV WITHOUT TORCHCODEC
@@ -56,48 +110,135 @@ class SpeakerDiarizer:
             "rb"
         ) as wav_file:
 
-            channels = wav_file.getnchannels()
-            sample_rate = wav_file.getframerate()
-            sample_width = wav_file.getsampwidth()
+            channels = (
+                wav_file.getnchannels()
+            )
+
+            sample_rate = (
+                wav_file.getframerate()
+            )
+
+            sample_width = (
+                wav_file.getsampwidth()
+            )
+
             frames = wav_file.readframes(
                 wav_file.getnframes()
             )
 
+        # ------------------------------------------------------
+        # REQUIRE 16-BIT PCM
+        # ------------------------------------------------------
+
         if sample_width != 2:
+
             raise RuntimeError(
                 "Expected 16-bit PCM WAV audio."
             )
 
+        # ------------------------------------------------------
+        # NUMPY AUDIO
+        # ------------------------------------------------------
+
         audio = np.frombuffer(
             frames,
             dtype=np.int16
-        ).astype(np.float32)
+        ).astype(
+            np.float32
+        )
 
         audio /= 32768.0
+
+        # ------------------------------------------------------
+        # CONVERT STEREO → MONO IF REQUIRED
+        # ------------------------------------------------------
 
         if channels > 1:
 
             audio = audio.reshape(
                 -1,
                 channels
-            ).mean(axis=1)
+            ).mean(
+                axis=1
+            )
+
+        # ------------------------------------------------------
+        # NUMPY → TORCH
+        # ------------------------------------------------------
 
         waveform = torch.from_numpy(
             audio
-        ).unsqueeze(0)
+        ).unsqueeze(
+            0
+        )
 
-        return waveform, sample_rate
+        return (
+            waveform,
+            sample_rate
+        )
+
+    # ======================================================
+    # BUILD SPEAKER PARAMETERS
+    # ======================================================
+
+    @staticmethod
+    def _get_speaker_kwargs():
+
+        kwargs = {}
+
+        # ------------------------------------------------------
+        # KNOWN SPEAKER COUNT
+        # ------------------------------------------------------
+
+        if KNOWN_NUM_SPEAKERS is not None:
+
+            kwargs[
+                "num_speakers"
+            ] = (
+                KNOWN_NUM_SPEAKERS
+            )
+
+        # ------------------------------------------------------
+        # UNKNOWN SPEAKER COUNT
+        # ------------------------------------------------------
+
+        else:
+
+            if MIN_SPEAKERS is not None:
+
+                kwargs[
+                    "min_speakers"
+                ] = (
+                    MIN_SPEAKERS
+                )
+
+            if MAX_SPEAKERS is not None:
+
+                kwargs[
+                    "max_speakers"
+                ] = (
+                    MAX_SPEAKERS
+                )
+
+        return kwargs
 
     # ======================================================
     # RUN DIARIZATION
     # ======================================================
 
-    def diarize(self, audio_file):
+    def diarize(
+        self,
+        audio_file
+    ):
 
         print(
             "\nLoading normalized audio "
             "directly into memory..."
         )
+
+        # ======================================================
+        # LOAD AUDIO
+        # ======================================================
 
         waveform, sample_rate = (
             self.load_wav_as_tensor(
@@ -110,60 +251,132 @@ class SpeakerDiarizer:
             f"{sample_rate} Hz"
         )
 
+        print(
+            f"✓ Audio duration: "
+            f"{round(waveform.shape[1] / sample_rate, 2)} seconds"
+        )
+
+        # ======================================================
+        # AUDIO INPUT
+        # ======================================================
+
         audio_input = {
-            "waveform": waveform,
-            "sample_rate": sample_rate
+            "waveform":
+                waveform,
+
+            "sample_rate":
+                sample_rate
         }
 
-        kwargs = {}
+        # ======================================================
+        # SPEAKER SETTINGS
+        # ======================================================
 
-        if KNOWN_NUM_SPEAKERS is not None:
+        kwargs = (
+            self._get_speaker_kwargs()
+        )
 
-            kwargs["num_speakers"] = (
-                KNOWN_NUM_SPEAKERS
+        if (
+            "num_speakers"
+            in kwargs
+        ):
+
+            print(
+                f"✓ Expected speakers: "
+                f"{kwargs['num_speakers']}"
             )
 
         else:
 
-            kwargs["min_speakers"] = (
-                MIN_SPEAKERS
+            print(
+                "✓ Speaker range: "
+                f"{kwargs.get('min_speakers')} "
+                f"to "
+                f"{kwargs.get('max_speakers')}"
             )
 
-            kwargs["max_speakers"] = (
-                MAX_SPEAKERS
-            )
+        # ======================================================
+        # RUN PYANNOTE
+        # ======================================================
 
         print(
             "Running speaker diarization..."
         )
 
-        result = self.pipeline(
-            audio_input,
-            **kwargs
-        )
+        # inference_mode avoids unnecessary
+        # gradient tracking during inference
+        with torch.inference_mode():
 
-        speaker_turns = []
+            result = self.pipeline(
+                audio_input,
+                **kwargs
+            )
+
+        # ======================================================
+        # GET DIARIZATION OUTPUT
+        # ======================================================
 
         diarization = (
             result.speaker_diarization
         )
 
+        speaker_turns = []
+
         for turn, speaker in diarization:
 
-            speaker_turns.append({
-                "start": round(
-                    float(turn.start),
-                    3
+            start = round(
+                float(
+                    turn.start
                 ),
-                "end": round(
-                    float(turn.end),
-                    3
+                3
+            )
+
+            end = round(
+                float(
+                    turn.end
                 ),
-                "speaker": speaker
-            })
+                3
+            )
+
+            # --------------------------------------------------
+            # IGNORE INVALID / ZERO-LENGTH SEGMENTS
+            # --------------------------------------------------
+
+            if end <= start:
+                continue
+
+            speaker_turns.append(
+                {
+                    "start":
+                        start,
+
+                    "end":
+                        end,
+
+                    "speaker":
+                        speaker
+                }
+            )
+
+        # ======================================================
+        # SORT BY TIME
+        # ======================================================
+
+        speaker_turns.sort(
+            key=lambda item:
+                (
+                    item["start"],
+                    item["end"]
+                )
+        )
+
+        # ======================================================
+        # SAVE OUTPUT
+        # ======================================================
 
         output_file = (
-            DIARIZATION_DIR /
+            DIARIZATION_DIR
+            /
             "speaker_turns.json"
         )
 
@@ -180,12 +393,24 @@ class SpeakerDiarizer:
                 ensure_ascii=False
             )
 
+        # ======================================================
+        # DETECT UNIQUE SPEAKERS
+        # ======================================================
+
         speakers = sorted(
             {
-                item["speaker"]
-                for item in speaker_turns
+                item[
+                    "speaker"
+                ]
+
+                for item
+                in speaker_turns
             }
         )
+
+        # ======================================================
+        # LOG RESULTS
+        # ======================================================
 
         print(
             f"✓ Speakers detected: "
@@ -193,9 +418,19 @@ class SpeakerDiarizer:
         )
 
         if speakers:
+
             print(
-                "  " + ", ".join(speakers)
+                "  "
+                +
+                ", ".join(
+                    speakers
+                )
             )
+
+        print(
+            f"✓ Speaker turns: "
+            f"{len(speaker_turns)}"
+        )
 
         print(
             f"✓ Speaker turns saved to: "

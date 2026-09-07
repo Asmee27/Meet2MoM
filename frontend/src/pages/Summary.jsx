@@ -1,176 +1,398 @@
-import {
-  Download,
-  FileText,
-  BadgeCheck,
-  ListChecks,
-  Users,
-} from "lucide-react";
+import { useMeetingFlow } from "../context/MeetingFlowContext";
 
-function Summary() {
+export default function Summary() {
+  const {
+    selectedFile,
+    setSelectedFile,
+    error,
+    setError,
+    isDragging,
+    setIsDragging,
+    currentStep,
+    setCurrentStep,
+    uploadProgress,
+    setUploadProgress,
+    isUploading,
+    setIsUploading,
+    fileInputRef,
+    backendFileId,
+    setBackendFileId,
+    transcriptSegments,
+    setTranscriptSegments,
+    transcriptText,
+    setTranscriptText,
+    detectedLanguage,
+    setDetectedLanguage,
+    transcriptionError,
+    setTranscriptionError,
+    transcriptionProgress,
+    setTranscriptionProgress,
+    isTranscribing,
+    setIsTranscribing,
+    transcriptionComplete,
+    setTranscriptionComplete,
+    extractedData,
+    setExtractedData,
+    isExtracting,
+    setIsExtracting,
+    extractionError,
+    setExtractionError,
+    editingDecisions,
+    setEditingDecisions,
+    editingActions,
+    setEditingActions,
+    visibleDecisions,
+    setVisibleDecisions,
+    visibleActions,
+    setVisibleActions,
+    extractAnimationComplete,
+    setExtractAnimationComplete,
+    verificationStage,
+    setVerificationStage,
+    verificationProgress,
+    setVerificationProgress,
+    automaticCheckComplete,
+    setAutomaticCheckComplete,
+    exportStatus,
+    setExportStatus,
+    momData,
+    setMomData,
+    isGeneratingMom,
+    setIsGeneratingMom,
+    momError,
+    setMomError,
+    isDownloadingPdf,
+    setIsDownloadingPdf,
+    validateFile,
+    handleFileChange,
+    handleDragOver,
+    handleDragLeave,
+    handleDrop,
+    removeFile,
+    goBack,
+    goToTranscribe,
+    goToExtract,
+    goToVerify,
+    goToExport,
+    updateDecision,
+    updateActionItem,
+    downloadTextFile,
+    downloadMeetingPdf,
+    exportWordDocument,
+    sendMeetingEmail
+  } = useMeetingFlow();
+
   return (
-    <div>
-      <div className="page-heading">
-        <div>
-          <span className="eyebrow">
-            MINUTES OF MEETING
-          </span>
+    <>
+      {currentStep === 5 && (
 
-          <h1>Meeting summary</h1>
+        <main className="main-content">
 
-          <p>
-            Structured AI-generated meeting
-            intelligence ready for review and
-            export.
+
+          <button
+            type="button"
+            className="back-button"
+            onClick={goBack}
+            disabled={
+              isUploading ||
+              isTranscribing ||
+              isExtracting ||
+              isGeneratingMom ||
+              isDownloadingPdf
+            }
+          >
+            <span aria-hidden="true">←</span>
+            Back
+          </button>
+
+          <div className="step-label">
+            STEP 5 · DELIVERY
+          </div>
+
+          <h1>
+            Final Minutes of Meeting, ready to share
+          </h1>
+
+          <p className="page-description">
+            Meet2MoM builds the final document from the real transcript
+            and extracted meeting outcomes.
           </p>
-        </div>
 
-        <button className="primary-button">
-          <Download size={18} />
-          Download MoM
-        </button>
-      </div>
-
-      <div className="summary-layout">
-        <section className="panel mom-document">
-          <div className="mom-header">
-            <div className="mom-logo">
-              <FileText size={25} />
-            </div>
-
-            <div>
-              <span>
-                MINUTES OF MEETING
-              </span>
-
-              <h2>
-                Customer Service Training Review
-              </h2>
-
-              <p>
-                03 September 2026 · 4m 14s
-              </p>
-            </div>
-          </div>
-
-          <div className="mom-section">
-            <h3>Meeting Overview</h3>
-
-            <p>
-              The discussion focused on customer
-              service training, complaints raised
-              in the survey and potential
-              improvements to the current training
-              approach.
-            </p>
-          </div>
-
-          <div className="mom-section">
-            <h3>Key Discussion Points</h3>
-
-            <ul>
-              <li>
-                Customer feedback highlighted
-                issues requiring additional staff
-                training.
-              </li>
-
-              <li>
-                A refresher course was discussed
-                as one possible approach.
-              </li>
-
-              <li>
-                Participants discussed reviewing
-                the existing training process
-                before implementing changes.
-              </li>
-            </ul>
-          </div>
-
-          <div className="mom-section">
-            <h3>Final Decisions</h3>
-
-            <div className="mom-highlight">
-              <BadgeCheck size={19} />
-
-              <span>
-                Start by reviewing the current
-                training approach and the problems
-                identified in the survey.
-              </span>
-            </div>
-
-            <div className="mom-highlight">
-              <BadgeCheck size={19} />
-
-              <span>
-                Review the report together before
-                deciding which issues require
-                action.
-              </span>
-            </div>
-          </div>
-
-          <div className="mom-section">
-            <h3>Action Items</h3>
-
-            <div className="mom-highlight">
-              <ListChecks size={19} />
-
-              <span>
-                Review the current training
-                approach.
-              </span>
-            </div>
-
-            <div className="mom-highlight">
-              <ListChecks size={19} />
-
-              <span>
-                Identify key issues and highlights
-                from the survey report.
-              </span>
-            </div>
-          </div>
-        </section>
-
-        <aside className="summary-sidebar">
-          <div className="panel">
-            <span className="eyebrow">
-              MEETING DATA
-            </span>
-
-            <div className="summary-stat">
-              <Users size={18} />
-
+          {isGeneratingMom && (
+            <div className="processing-card">
+              <div className="processing-spinner"></div>
               <div>
-                <span>Speakers</span>
-                <strong>5 detected</strong>
+                <strong>Generating Minutes of Meeting...</strong>
+                <p>Building the structured MoM and preparing the PDF.</p>
               </div>
             </div>
+          )}
 
-            <div className="summary-stat">
-              <BadgeCheck size={18} />
+          {momError && (
+            <div className="error-message" role="alert">
+              {momError}
+            </div>
+          )}
 
+          {!isGeneratingMom && momData && (
+            <>
+              {/* REAL MEETING MINUTES */}
+
+              <div className="minutes-card">
+
+                <div className="minutes-header">
+
+                  <div>
+                    <span className="minutes-label">
+                      MEETING MINUTES
+                    </span>
+
+                    <h2>
+                      {momData.meeting_title || "Meeting Minutes"}
+                    </h2>
+                  </div>
+
+                  <span className="minutes-status">
+                    ✓ Generated
+                  </span>
+
+                </div>
+
+                <div className="minutes-divider"></div>
+
+                <div className="minutes-block">
+                  <h3>Meeting Overview</h3>
+
+                  <div className="minutes-table">
+                    <div className="table-header">
+                      <span>Duration</span>
+                      <span>Language</span>
+                      <span>Date</span>
+                    </div>
+
+                    <div className="table-row">
+                      <span>
+                        {typeof momData.duration_seconds === "number"
+                          ? `${Math.floor(momData.duration_seconds / 60)}m ${Math.round(momData.duration_seconds % 60)}s`
+                          : "Not available"}
+                      </span>
+                      <span>
+                        {momData.language
+                          ? momData.language.toUpperCase()
+                          : "Not specified"}
+                      </span>
+                      <span>
+                        {momData.meeting_date || "Not specified"}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* SUMMARY */}
+
+                <div className="minutes-block">
+                  <h3>Meeting Summary</h3>
+                  <p>
+                    {momData.summary ||
+                      "No meeting summary was generated."}
+                  </p>
+                </div>
+
+                {/* DISCUSSION POINTS */}
+
+                <div className="minutes-block">
+                  <h3>Key Discussion Points</h3>
+
+                  {Array.isArray(momData.discussion_points) &&
+                  momData.discussion_points.length > 0 ? (
+                    momData.discussion_points.map((point, index) => (
+                      <div className="minutes-decision" key={index}>
+                        <span>{index + 1}</span>
+                        <p>
+                          {typeof point === "string"
+                            ? point
+                            : point?.text || "Discussion point unavailable"}
+                        </p>
+                      </div>
+                    ))
+                  ) : (
+                    <p className="empty-state-text">
+                      No key discussion points were identified.
+                    </p>
+                  )}
+                </div>
+
+                {/* DECISIONS */}
+
+                <div className="minutes-block">
+                  <h3>Decisions</h3>
+
+                  {Array.isArray(momData.decisions) &&
+                  momData.decisions.length > 0 ? (
+                    momData.decisions.map((decision, index) => (
+                      <div className="minutes-decision" key={index}>
+                        <span>{index + 1}</span>
+                        <p>
+                          {typeof decision === "string"
+                            ? decision
+                            : decision?.text || "Decision text unavailable"}
+                        </p>
+                      </div>
+                    ))
+                  ) : (
+                    <p className="empty-state-text">
+                      No explicit decisions recorded.
+                    </p>
+                  )}
+                </div>
+
+                {/* ACTION ITEMS */}
+
+                <div className="minutes-block">
+                  <h3>Action Items</h3>
+
+                  {Array.isArray(momData.action_items) &&
+                  momData.action_items.length > 0 ? (
+                    <div className="minutes-table">
+                      <div className="table-header">
+                        <span>Task</span>
+                        <span>Owner</span>
+                        <span>Due Date</span>
+                      </div>
+
+                      {momData.action_items.map((item, index) => (
+                        <div className="table-row" key={index}>
+                          <span>{item.task || "Not specified"}</span>
+                          <span>{item.owner || "Not specified"}</span>
+                          <span>{item.dueDate || "Not specified"}</span>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="empty-state-text">
+                      No confirmed action items recorded.
+                    </p>
+                  )}
+                </div>
+
+                {/* FOLLOW UPS */}
+
+                <div className="minutes-block">
+                  <h3>Follow-ups / Open Items</h3>
+
+                  {Array.isArray(momData.follow_ups) &&
+                  momData.follow_ups.length > 0 ? (
+                    momData.follow_ups.map((item, index) => (
+                      <div className="minutes-decision" key={index}>
+                        <span>{index + 1}</span>
+                        <p>{item}</p>
+                      </div>
+                    ))
+                  ) : (
+                    <p className="empty-state-text">
+                      No explicit follow-ups or open items recorded.
+                    </p>
+                  )}
+                </div>
+
+                <div className="minutes-footer">
+                  Generated from transcript-grounded Meet2MoM data
+                </div>
+
+              </div>
+
+              {/* EXPORT OPTIONS */}
+
+              <div className="export-options">
+
+                <div className="export-options-heading">
+                  <h2>Download your meeting minutes</h2>
+                  <p>
+                    Export the server-generated Minutes of Meeting as a
+                    professional PDF.
+                  </p>
+                </div>
+
+                <div className="export-buttons">
+
+                  <button
+                    type="button"
+                    className={`export-button ${
+                      exportStatus.pdf ? "completed" : "primary"
+                    }`}
+                    onClick={downloadMeetingPdf}
+                    disabled={isDownloadingPdf}
+                  >
+                    <span className="export-button-icon">
+                      {isDownloadingPdf ? "…" : "↓"}
+                    </span>
+
+                    <span>
+                      <strong>
+                        {isDownloadingPdf
+                          ? "Preparing PDF..."
+                          : exportStatus.pdf
+                          ? "PDF ✓ Downloaded"
+                          : "Download PDF"}
+                      </strong>
+
+                      <small>
+                        {exportStatus.pdf
+                          ? "Meeting minutes PDF downloaded"
+                          : "Download the generated Meet2MoM PDF"}
+                      </small>
+                    </span>
+                  </button>
+
+                </div>
+
+              </div>
+            </>
+          )}
+
+          {!isGeneratingMom && !momData && !momError && (
+            <div className="processing-card">
               <div>
-                <span>Decisions</span>
-                <strong>2 confirmed</strong>
+                <strong>No MoM data available yet.</strong>
+                <p>Return to verification and generate the final minutes.</p>
               </div>
             </div>
+          )}
 
-            <div className="summary-stat">
-              <ListChecks size={18} />
+          {/* START NEW MEETING */}
 
-              <div>
-                <span>Action Items</span>
-                <strong>2 extracted</strong>
-              </div>
-            </div>
+          <div className="new-meeting-container">
+
+            <button
+              className="new-meeting-button"
+              onClick={() => {
+                setSelectedFile(null);
+                setBackendFileId(null);
+                setTranscriptSegments([]);
+                setTranscriptText("");
+                setDetectedLanguage("");
+                setTranscriptionError("");
+                setError("");
+                setCurrentStep(1);
+                setTranscriptionProgress(0);
+                setTranscriptionComplete(false);
+                setIsTranscribing(false);
+                setExtractedData({ decisions: [], actionItems: [] });
+                setMomData(null);
+                setMomError("");
+                setIsGeneratingMom(false);
+                setIsDownloadingPdf(false);
+                setExportStatus({ pdf: false, word: false, email: false });
+              }}
+            >
+              ← Start a new meeting
+            </button>
+
           </div>
-        </aside>
-      </div>
-    </div>
+
+        </main>
+
+      )}
+    </>
   );
 }
-
-export default Summary;
