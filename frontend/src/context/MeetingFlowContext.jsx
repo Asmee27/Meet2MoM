@@ -1,5 +1,17 @@
-import { createContext, useContext, useEffect, useRef, useState } from "react";
-import { API_BASE_URL } from "../services/api";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
+import {
+  API_BASE_URL,
+  uploadMeeting,
+  getStatus,
+  getTranscript,
+} from "../services/api";
 
 const MeetingFlowContext = createContext(null);
 
@@ -14,6 +26,8 @@ export function MeetingFlowProvider({ children }) {
 
   // REAL BACKEND FILE / TRANSCRIPT STATE
   const [backendFileId, setBackendFileId] = useState(null);
+  // meetingId is the canonical identifier returned by POST /upload
+  const [meetingId, setMeetingId] = useState(null);
   const [transcriptSegments, setTranscriptSegments] = useState([]);
   const [transcriptText, setTranscriptText] = useState("");
   const [detectedLanguage, setDetectedLanguage] = useState("");
@@ -22,6 +36,13 @@ export function MeetingFlowProvider({ children }) {
   const [transcriptionProgress, setTranscriptionProgress] = useState(0);
   const [isTranscribing, setIsTranscribing] = useState(false);
   const [transcriptionComplete, setTranscriptionComplete] = useState(false);
+
+  // JOB TRACKING STATE (async pipeline)
+  const [jobStatus, setJobStatus] = useState(null);   // full JobStatus object
+  const [jobStage, setJobStage] = useState("uploaded"); // current stage name
+  const [jobError, setJobError] = useState("");
+  const _pollTimer = useRef(null);
+  const _pollInterval = useRef(2000); // ms; grows to 5000 with backoff
 
   // REAL BACKEND EXTRACTION STATE
   const [extractedData, setExtractedData] = useState({
@@ -53,6 +74,92 @@ export function MeetingFlowProvider({ children }) {
   const [isGeneratingMom, setIsGeneratingMom] = useState(false);
   const [momError, setMomError] = useState("");
   const [isDownloadingPdf, setIsDownloadingPdf] = useState(false);
+
+  /* =========================
+     STATUS POLLING
+  ========================= */
+
+  const _stopPolling = () => {
+    if (_pollTimer.current) {
+      clearTimeout(_pollTimer.current);
+      _pollTimer.current = null;
+    }
+    _pollInterval.current = 2000;
+  };
+
+  const _startPolling = (mid) => {
+    _stopPolling();
+    _pollInterval.current = 2000;
+
+    const poll = async () => {
+      try {
+        const status = await getStatus(mid);
+        if (status) {
+          setJobStatus(status);
+          setJobStage(status.stage || "uploaded");
+          if (status.state === "failed") {
+            setJobError(status.error || "Pipeline failed.");
+            _stopPolling();
+            return;
+          }
+          if (status.state === "done" || status.stage === "done") {
+            _stopPolling();
+            return;
+          }
+        }
+      } catch {
+        // network hiccup — keep polling
+      }
+      // backoff: grow to 5 s
+      _pollInterval.current = Math.min(_pollInterval.current * 1.4, 5000);
+      _pollTimer.current = setTimeout(poll, _pollInterval.current);
+    };
+
+    _pollTimer.current = setTimeout(poll, _pollInterval.current);
+  };
+
+  const loadExistingMeeting = useCallback(async (id) => {
+    if (!id) return;
+
+    _stopPolling();
+    setError("");
+    setMeetingId(id);
+    setBackendFileId(id);
+    setSelectedFile(null);
+    setJobError("");
+    setJobStatus({ state: "done", stage: "done", progress: 1, error: null });
+    setJobStage("done");
+    setIsUploading(false);
+    setTranscriptionError("");
+    setIsTranscribing(false);
+
+    try {
+      const transcript = await getTranscript(id);
+      const segments = Array.isArray(transcript) ? transcript : [];
+      setTranscriptSegments(segments);
+      setTranscriptText(segments.map((segment) => segment.text || "").join(" ").trim());
+      setDetectedLanguage("");
+      setTranscriptionProgress(100);
+      setTranscriptionComplete(true);
+      setCurrentStep(2);
+    } catch (loadError) {
+      console.error("Failed to load meeting", id, loadError);
+      setTranscriptionComplete(false);
+      setJobError(String(loadError));
+      setTranscriptionError(
+        loadError?.message || "Unable to load the existing meeting."
+      );
+    }
+  }, []);
+
+  useEffect(() => {
+    const existingMeetingId = new URLSearchParams(window.location.search).get(
+      "meeting"
+    );
+    if (existingMeetingId) {
+      loadExistingMeeting(existingMeetingId);
+    }
+  }, [loadExistingMeeting]);
 
   /* =========================
      FILE VALIDATION
@@ -94,80 +201,32 @@ export function MeetingFlowProvider({ children }) {
     setSelectedFile(file);
     setUploadProgress(0);
     setIsUploading(true);
+    setJobStatus(null);
+    setJobStage("uploaded");
+    setJobError("");
 
-    // REAL BACKEND UPLOAD
-    // The selected recording is sent to the FastAPI backend.
-    const formData = new FormData();
-    formData.append("file", file);
-
-    const xhr = new XMLHttpRequest();
-
-    xhr.open("POST", `${API_BASE_URL}/api/upload`);
-
-    xhr.upload.addEventListener("progress", (event) => {
-      if (event.lengthComputable) {
-        const progress = Math.round(
-          (event.loaded / event.total) * 100
-        );
-
-        setUploadProgress(progress);
-      }
-    });
-
-    xhr.addEventListener("load", () => {
-      if (xhr.status >= 200 && xhr.status < 300) {
+    // REAL BACKEND UPLOAD using the api.js helper
+    uploadMeeting(file)
+      .then((response) => {
         setUploadProgress(100);
         setIsUploading(false);
         setError("");
-
-        try {
-          const response = JSON.parse(xhr.responseText);
-
-          if (response.file_id) {
-            setBackendFileId(response.file_id);
-          } else {
-            setError("Upload succeeded, but the backend did not return a file ID.");
-          }
-        } catch {
-          setError("Upload succeeded, but the backend response could not be read.");
+        const mid = response.meeting_id || response.file_id;
+        if (mid) {
+          setMeetingId(mid);
+          setBackendFileId(mid);
+          _startPolling(mid);
+        } else {
+          setError("Upload succeeded, but the backend did not return a meeting ID.");
         }
-
-        return;
-      }
-
-      let message = "Upload failed. Please try again.";
-
-      try {
-        const response = JSON.parse(xhr.responseText);
-
-        if (response.detail) {
-          message = response.detail;
-        }
-      } catch {
-        // Keep the default upload error message.
-      }
-
-      setError(message);
-      setIsUploading(false);
-      setUploadProgress(0);
-    });
-
-    xhr.addEventListener("error", () => {
-      setError(
-        "Unable to connect to the Meet2MoM backend. Make sure FastAPI is running."
-      );
-      setIsUploading(false);
-      setUploadProgress(0);
-    });
-
-    xhr.addEventListener("abort", () => {
-      setError("Upload was cancelled.");
-      setIsUploading(false);
-      setUploadProgress(0);
-    });
-
-    xhr.send(formData);
+      })
+      .catch((err) => {
+        setError(err?.message || "Upload failed. Please try again.");
+        setIsUploading(false);
+        setUploadProgress(0);
+      });
   };
+
 
   const handleFileChange = (event) => {
     const file = event.target.files[0];
@@ -201,8 +260,13 @@ export function MeetingFlowProvider({ children }) {
   ========================= */
 
   const removeFile = () => {
+    _stopPolling();
     setSelectedFile(null);
+    setMeetingId(null);
     setBackendFileId(null);
+    setJobStatus(null);
+    setJobStage("uploaded");
+    setJobError("");
     setTranscriptSegments([]);
     setTranscriptText("");
     setDetectedLanguage("");
@@ -833,6 +897,14 @@ Generated by Meet2MoM
     fileInputRef,
     backendFileId,
     setBackendFileId,
+    meetingId,
+    setMeetingId,
+    jobStatus,
+    setJobStatus,
+    jobStage,
+    setJobStage,
+    jobError,
+    setJobError,
     transcriptSegments,
     setTranscriptSegments,
     transcriptText,
@@ -901,7 +973,8 @@ Generated by Meet2MoM
     downloadTextFile,
     downloadMeetingPdf,
     exportWordDocument,
-    sendMeetingEmail
+    sendMeetingEmail,
+    loadExistingMeeting,
   };
 
   return (

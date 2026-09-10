@@ -1,14 +1,30 @@
+import argparse
+import json
+import os
 import sys
 import time
 from pathlib import Path
+from uuid import uuid4
+
+# Parse arguments early to set active meeting before downstream imports
+parser = argparse.ArgumentParser(description="Meet2MoM - Recorded Meeting Intelligence Pipeline")
+parser.add_argument("input_file", nargs="?", default=None, help="Path to input recording")
+parser.add_argument("--meeting-id", dest="meeting_id", default=None, help="Meeting ID for isolated storage")
+args, _ = parser.parse_known_args()
+
+meeting_id = args.meeting_id or uuid4().hex
+os.environ["MEETING_ID"] = meeting_id
+os.environ["MEET2MOM_MEETING_ID"] = meeting_id
 
 from app.core.config import (
     INPUT_DIR,
     TRANSCRIPT_DIR,
     DIARIZATION_DIR,
     CACHE_TRANSCRIPTION,
-    CACHE_DIARIZATION
+    CACHE_DIARIZATION,
+    set_active_meeting,
 )
+from app.core.storage import MeetingStorage
 
 from app.core.cache_manager import PipelineCacheManager
 
@@ -24,15 +40,23 @@ def main():
 
     pipeline_start = time.perf_counter()
 
+    storage = MeetingStorage(meeting_id)
+    storage.ensure_dirs()
+    set_active_meeting(meeting_id)
+
     print("\n" + "=" * 72)
     print("        Meet2MoM - Recorded Meeting Intelligence Pipeline")
     print("=" * 72)
+    print(f"Meeting ID: {meeting_id}")
+    print(f"Storage root: {storage.root}")
 
     # ======================================================
     # INPUT RECORDING
     # ======================================================
 
-    if len(sys.argv) > 1:
+    if args.input_file:
+        input_file = Path(args.input_file).resolve()
+    elif len(sys.argv) > 1 and not sys.argv[1].startswith("--"):
         input_file = Path(sys.argv[1]).resolve()
     else:
         input_file = (
@@ -118,13 +142,13 @@ def main():
         # OUTPUT PATHS USED BY CACHE
         # ==================================================
 
-        transcript_file = (
-            TRANSCRIPT_DIR /
+        transcript_file = storage.path_for(
+            "transcript",
             "final_transcript.json"
         )
 
-        diarization_file = (
-            DIARIZATION_DIR /
+        diarization_file = storage.path_for(
+            "diarization",
             "speaker_turns.json"
         )
 
@@ -275,6 +299,23 @@ def main():
         report_file = (
             report_generator.generate()
         )
+
+        # Complete the shared post-transcript path for direct CLI callers.
+        from app.services.pipeline.recorded_pipeline_adapter import (
+            load_frontend_transcript,
+            run_post_transcript_stages,
+        )
+        frontend_transcript = load_frontend_transcript(meeting_id)
+        frontend_json = json.dumps(frontend_transcript, ensure_ascii=False, indent=2)
+        storage.path_for("transcript", "frontend_transcript.json").write_text(
+            frontend_json,
+            encoding="utf-8",
+        )
+        (storage.root / "frontend_transcript.json").write_text(
+            frontend_json,
+            encoding="utf-8",
+        )
+        run_post_transcript_stages(meeting_id)
 
         # ==================================================
         # TOTAL TIME

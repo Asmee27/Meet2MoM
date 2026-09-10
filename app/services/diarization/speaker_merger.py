@@ -472,6 +472,27 @@ class SpeakerTranscriptMerger:
                     item.get(
                         "review_reasons",
                         []
+                    ),
+
+                "avg_logprob":
+                    item.get(
+                        "avg_logprob"
+                    ),
+
+                "no_speech_prob":
+                    item.get(
+                        "no_speech_prob",
+                        item.get(
+                            "no_speech_probability"
+                        )
+                    ),
+
+                "no_speech_probability":
+                    item.get(
+                        "no_speech_probability",
+                        item.get(
+                            "no_speech_prob"
+                        )
                     )
             })
 

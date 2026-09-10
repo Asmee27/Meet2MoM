@@ -1,86 +1,84 @@
+import { useEffect, useState } from "react";
 import { useMeetingFlow } from "../context/MeetingFlowContext";
+import { listMeetings } from "../services/api";
+
+// Ordered pipeline stages matching app/core/jobs.py
+const PIPELINE_STAGES = [
+  "uploaded",
+  "audio",
+  "quality",
+  "asr",
+  "diarization",
+  "merge",
+  "index",
+  "topics",
+  "extraction",
+  "verification",
+  "mom",
+  "done",
+];
+
+const STAGE_LABELS = {
+  uploaded:     "Recording received",
+  audio:        "Extracting audio",
+  quality:      "Checking audio quality",
+  asr:          "Speech-to-text (ASR)",
+  diarization:  "Speaker diarization",
+  merge:        "Merging transcript",
+  index:        "Building utterance index",
+  topics:       "Segmenting topics",
+  extraction:   "Extracting decisions & actions",
+  verification: "Verifying against transcript",
+  mom:          "Generating minutes",
+  done:         "Processing complete",
+};
 
 export default function UploadMeeting() {
+  const [previousMeetings, setPreviousMeetings] = useState([]);
+
   const {
     selectedFile,
-    setSelectedFile,
     error,
-    setError,
     isDragging,
-    setIsDragging,
-    currentStep,
-    setCurrentStep,
     uploadProgress,
-    setUploadProgress,
     isUploading,
-    setIsUploading,
     fileInputRef,
     backendFileId,
-    setBackendFileId,
-    transcriptSegments,
-    setTranscriptSegments,
-    transcriptText,
-    setTranscriptText,
-    detectedLanguage,
-    setDetectedLanguage,
-    transcriptionError,
-    setTranscriptionError,
-    transcriptionProgress,
-    setTranscriptionProgress,
-    isTranscribing,
-    setIsTranscribing,
+    jobStage,
+    jobError,
+    jobStatus,
     transcriptionComplete,
-    setTranscriptionComplete,
-    extractedData,
-    setExtractedData,
-    isExtracting,
-    setIsExtracting,
-    extractionError,
-    setExtractionError,
-    editingDecisions,
-    setEditingDecisions,
-    editingActions,
-    setEditingActions,
-    visibleDecisions,
-    setVisibleDecisions,
-    visibleActions,
-    setVisibleActions,
-    extractAnimationComplete,
-    setExtractAnimationComplete,
-    verificationStage,
-    setVerificationStage,
-    verificationProgress,
-    setVerificationProgress,
-    automaticCheckComplete,
-    setAutomaticCheckComplete,
-    exportStatus,
-    setExportStatus,
-    momData,
-    setMomData,
-    isGeneratingMom,
-    setIsGeneratingMom,
-    momError,
-    setMomError,
-    isDownloadingPdf,
-    setIsDownloadingPdf,
     validateFile,
     handleFileChange,
     handleDragOver,
     handleDragLeave,
     handleDrop,
     removeFile,
-    goBack,
     goToTranscribe,
-    goToExtract,
-    goToVerify,
-    goToExport,
-    updateDecision,
-    updateActionItem,
-    downloadTextFile,
-    downloadMeetingPdf,
-    exportWordDocument,
-    sendMeetingEmail
+    loadExistingMeeting,
+    currentStep,
   } = useMeetingFlow();
+
+  useEffect(() => {
+    let active = true;
+    listMeetings()
+      .then((meetings) => {
+        if (active) setPreviousMeetings(Array.isArray(meetings) ? meetings : []);
+      })
+      .catch(() => {
+        if (active) setPreviousMeetings([]);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const currentStageIndex = PIPELINE_STAGES.indexOf(jobStage);
+  const isPipelineRunning =
+    backendFileId &&
+    !isUploading &&
+    jobStage !== "done" &&
+    !jobError;
 
   return (
     <>
@@ -150,6 +148,30 @@ export default function UploadMeeting() {
             />
           </div>
 
+          {previousMeetings.length > 0 && (
+            <section className="previous-meetings" aria-labelledby="previous-meetings-title">
+              <h2 id="previous-meetings-title">Or open a previous meeting</h2>
+              <div className="previous-meeting-list">
+                {previousMeetings.map((meeting) => (
+                  <button
+                    type="button"
+                    className="previous-meeting-row"
+                    key={meeting.meeting_id}
+                    onClick={() => loadExistingMeeting(meeting.meeting_id)}
+                  >
+                    <span>
+                      <strong>{meeting.meeting_id}</strong>
+                      {meeting.filename && <small>{meeting.filename}</small>}
+                    </span>
+                    <span className="previous-meeting-counts">
+                      {meeting.utterance_count} utterances · {meeting.claim_count} claims
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </section>
+          )}
+
           {error && (
             <div className="error-message">
               {error}
@@ -200,6 +222,69 @@ export default function UploadMeeting() {
                   Remove
                 </button>
               )}
+            </div>
+          )}
+
+          {/* ── Pipeline stage progress ── */}
+          {isPipelineRunning && (
+            <div className="pipeline-progress" style={{ marginTop: "1.5rem" }}>
+              <div style={{ fontWeight: 600, marginBottom: "0.75rem", fontSize: "0.9rem", opacity: 0.8 }}>
+                Processing recording…
+              </div>
+              <ol style={{ listStyle: "none", padding: 0, margin: 0 }}>
+                {PIPELINE_STAGES.filter(s => s !== "done").map((stage, idx) => {
+                  const isDone = idx < currentStageIndex;
+                  const isActive = idx === currentStageIndex;
+                  return (
+                    <li
+                      key={stage}
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: "0.6rem",
+                        padding: "0.25rem 0",
+                        opacity: isDone || isActive ? 1 : 0.35,
+                        fontSize: "0.85rem",
+                      }}
+                    >
+                      <span style={{
+                        width: "1.1rem",
+                        height: "1.1rem",
+                        borderRadius: "50%",
+                        border: `2px solid ${isDone ? "#22c55e" : isActive ? "#6366f1" : "#94a3b8"}`,
+                        background: isDone ? "#22c55e" : "transparent",
+                        flexShrink: 0,
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        color: "white",
+                        fontSize: "0.65rem",
+                      }}>
+                        {isDone ? "✓" : isActive ? "●" : ""}
+                      </span>
+                      <span style={{ color: isActive ? "#6366f1" : undefined, fontWeight: isActive ? 600 : undefined }}>
+                        {STAGE_LABELS[stage] || stage}
+                      </span>
+                    </li>
+                  );
+                })}
+              </ol>
+            </div>
+          )}
+
+          {/* ── Job error with retry ── */}
+          {jobError && (
+            <div className="upload-error" role="alert" style={{ marginTop: "1rem" }}>
+              <strong>Processing failed at stage "{jobStage}":</strong>
+              <div style={{ marginTop: "0.35rem", fontSize: "0.85rem" }}>{jobError}</div>
+              <button
+                type="button"
+                className="remove-button"
+                style={{ marginTop: "0.5rem" }}
+                onClick={removeFile}
+              >
+                Retry with a new file
+              </button>
             </div>
           )}
 

@@ -1,26 +1,46 @@
 # ============================================
 # Meet2MoM - Python Dependencies
+# Python 3.11 required. FFmpeg must be on PATH.
 # ============================================
 
 # Backend API
-fastapi
-uvicorn[standard]
-python-multipart
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+python-multipart==0.0.6
 
 # Speech Recognition
-faster-whisper
+faster-whisper==1.2.1
 
 # Speaker Diarization
-pyannote.audio
-torch
-torchaudio
+pyannote.audio==4.0.7
+torch>=2.10.0
+torchaudio>=2.10.0
 
-# NLP / Semantic Topic Segmentation
-sentence-transformers
-scikit-learn
+# NLP / Topic Segmentation / NLI verification
+sentence-transformers==6.0.1
+transformers==5.16.1
+sentencepiece==0.2.0
+scikit-learn==1.6.1
 
 # Numerical Processing
-numpy
+numpy>=2.3.0,<3.0.0
+
+# Document & PDF Generation
+reportlab==4.4.10
+
+# Data Validation & Schemas
+pydantic==2.12.5
+
+# Audio Utilities
+pydub==0.25.1
 
 # Environment Configuration
-python-dotenv
+python-dotenv==1.0.0
+
+# Intelligence & Resolution
+python-dateutil==2.9.0.post0
+rapidfuzz==3.14.6
+rank-bm25==0.2.2
+
+# Testing
+pytest==9.0.2

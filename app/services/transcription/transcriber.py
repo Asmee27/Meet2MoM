@@ -225,6 +225,11 @@ class MeetingTranscriber:
                 if avg_logprob is not None
                 else None,
 
+            "no_speech_prob":
+                round(no_speech_prob, 4)
+                if no_speech_prob is not None
+                else None,
+
             "no_speech_probability":
                 round(no_speech_prob, 4)
                 if no_speech_prob is not None

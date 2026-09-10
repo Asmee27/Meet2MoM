@@ -1,9 +1,17 @@
-# Generated meeting outputs
+# Environment & Secrets
+.env
+*.env
+!.env.example
+
+# Generated meeting outputs & storage
 output/
 storage/
-input/
+input/*.mp4
+input/*.wav
+*.mp3
 
 # Frontend generated files
+node_modules/
 frontend/node_modules/
 frontend/dist/
 
@@ -11,10 +19,18 @@ frontend/dist/
 __pycache__/
 *.pyc
 .venv/
+.venv_test/
 
-# Secrets
-.env
-
-.env
-.env.*
-!.env.example
+# Media & Database
+*.mp4
+*.wav
+*.db
+check.py
+backfill.py
+demo_run.log
+ami_run.log
+demo_data.zip
+.venv_check/
+.venv_test/
+__pycache__/
+*.pyc

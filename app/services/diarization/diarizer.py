@@ -7,6 +7,7 @@ import torch
 
 from pyannote.audio import Pipeline
 
+from app.core import config
 from app.core.config import (
     DIARIZATION_MODEL,
     DIARIZATION_DIR,
@@ -29,11 +30,12 @@ class SpeakerDiarizer:
         # HUGGING FACE TOKEN
         # ======================================================
 
-        token = os.getenv("HF_TOKEN")
+        token = config.get_hf_token()
 
         if not token:
             raise RuntimeError(
-                "HF_TOKEN environment variable is missing."
+                "Hugging Face token is missing. Set HF_TOKEN or "
+                "HUGGINGFACE_TOKEN in .env; see .env.example."
             )
 
         # ======================================================

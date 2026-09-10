@@ -4,9 +4,10 @@ from pathlib import Path
 from uuid import uuid4
 import json
 import re
+import shutil
 
-from fastapi import APIRouter, File, HTTPException, UploadFile
-from fastapi.responses import FileResponse
+from fastapi import APIRouter, BackgroundTasks, File, HTTPException, UploadFile
+from fastapi.responses import FileResponse, JSONResponse
 
 from reportlab.lib import colors
 from reportlab.lib.enums import TA_CENTER, TA_LEFT
@@ -67,6 +68,11 @@ router = APIRouter(
 # PROJECT PATHS
 # ============================================================
 
+from app.core.config import STORAGE_ROOT
+from app.core.storage import MeetingStorage, is_valid_meeting_id
+from app.core import db as _db
+from app.core.jobs import run_pipeline, STAGES
+
 PROJECT_ROOT = (
     Path(__file__)
     .resolve()
@@ -75,9 +81,7 @@ PROJECT_ROOT = (
     .parent
 )
 
-STORAGE_DIR = (
-    PROJECT_ROOT / "storage"
-)
+STORAGE_DIR = STORAGE_ROOT
 
 STORAGE_DIR.mkdir(
     parents=True,
@@ -111,11 +115,6 @@ CHUNK_SIZE = (
     * 1024
 )
 
-FILE_ID_PATTERN = re.compile(
-    r"^[a-f0-9]{32}$"
-)
-
-
 # ============================================================
 # GENERIC UTILITIES
 # ============================================================
@@ -123,48 +122,52 @@ FILE_ID_PATTERN = re.compile(
 def validate_file_id(
     file_id: str,
 ):
-    if not FILE_ID_PATTERN.fullmatch(
-        file_id
-    ):
+    if not is_valid_meeting_id(file_id):
         raise HTTPException(
             status_code=400,
             detail="Invalid meeting ID.",
         )
 
 
-def meeting_dir(
+def get_storage(
     file_id: str,
-) -> Path:
+) -> MeetingStorage:
 
     validate_file_id(
         file_id
     )
 
-    path = (
-        STORAGE_DIR
-        / file_id
+    storage = MeetingStorage(
+        file_id
     )
 
-    path.mkdir(
-        parents=True,
-        exist_ok=True,
-    )
+    storage.ensure_dirs()
 
-    return path
+    return storage
+
+
+def meeting_dir(
+    file_id: str,
+) -> Path:
+
+    return get_storage(
+        file_id
+    ).root
 
 
 def find_uploaded_file(
     file_id: str,
 ) -> Path:
 
-    directory = meeting_dir(
+    storage = get_storage(
         file_id
     )
 
+    # Check storage/meeting_id/recording first, then root fallback
     candidates = [
         path
         for path
-        in directory.glob(
+        in storage.recording.glob(
             "recording.*"
         )
         if (
@@ -173,6 +176,20 @@ def find_uploaded_file(
             in ALLOWED_EXTENSIONS
         )
     ]
+
+    if not candidates:
+        candidates = [
+            path
+            for path
+            in storage.root.glob(
+                "recording.*"
+            )
+            if (
+                path.is_file()
+                and path.suffix.lower()
+                in ALLOWED_EXTENSIONS
+            )
+        ]
 
     if not candidates:
         raise HTTPException(
@@ -273,122 +290,204 @@ def clean_text(
 # ============================================================
 
 @router.post("/upload")
+@router.post("/meetings/upload")
 async def upload_meeting(
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
 ):
+    """
+    Upload a meeting recording and immediately queue the full pipeline.
+    Returns 202 within ~2 s — processing continues in the background.
+    Poll GET /api/meetings/{meeting_id}/status to track progress.
+    """
 
     if not file.filename:
         raise HTTPException(
             status_code=400,
-            detail=(
-                "No file was provided."
-            ),
+            detail="No file was provided.",
         )
 
-    original_name = (
-        Path(file.filename).name
-    )
+    original_name = Path(file.filename).name
+    extension = Path(original_name).suffix.lower()
 
-    extension = (
-        Path(original_name)
-        .suffix
-        .lower()
-    )
-
-    if (
-        extension
-        not in ALLOWED_EXTENSIONS
-    ):
-
+    if extension not in ALLOWED_EXTENSIONS:
         await file.close()
-
         raise HTTPException(
             status_code=400,
-            detail=(
-                "Supported formats: "
-                "MP4, WAV, MP3, M4A, "
-                "WEBM, MOV, AVI."
-            ),
+            detail="Supported formats: MP4, WAV, MP3, M4A, WEBM, MOV, AVI.",
         )
 
     file_id = uuid4().hex
-
-    directory = meeting_dir(
-        file_id
-    )
-
-    destination = (
-        directory
-        / f"recording{extension}"
-    )
+    storage = get_storage(file_id)
+    destination = storage.path_for("recording", f"recording{extension}")
 
     total_size = 0
-
     try:
-
-        with destination.open(
-            "wb"
-        ) as buffer:
-
+        with destination.open("wb") as buffer:
             while True:
-
-                chunk = await file.read(
-                    CHUNK_SIZE
-                )
-
+                chunk = await file.read(CHUNK_SIZE)
                 if not chunk:
                     break
-
-                total_size += len(
-                    chunk
-                )
-
-                if (
-                    total_size
-                    > MAX_FILE_SIZE
-                ):
-
+                total_size += len(chunk)
+                if total_size > MAX_FILE_SIZE:
                     if destination.exists():
                         destination.unlink()
-
                     raise HTTPException(
                         status_code=413,
-                        detail=(
-                            "Recording is too large. "
-                            "Maximum size is 2 GB."
-                        ),
+                        detail="Recording is too large. Maximum size is 2 GB.",
                     )
-
-                buffer.write(
-                    chunk
-                )
-
+                buffer.write(chunk)
     finally:
         await file.close()
 
     metadata = {
         "file_id": file_id,
-        "original_filename":
-            original_name,
-        "stored_filename":
-            destination.name,
-        "size_bytes":
-            total_size,
-        "status":
-            "uploaded",
+        "original_filename": original_name,
+        "stored_filename": destination.name,
+        "size_bytes": total_size,
+        "status": "uploaded",
     }
 
-    write_json(
-        directory
-        / "meeting.json",
-        metadata,
+    write_json(storage.path_for("recording", "meeting.json"), metadata)
+    write_json(storage.path_for("root", "meeting.json"), metadata)
+
+    # Persist meetings row so FK constraints on utterances are satisfied
+    try:
+        _db.init_db()
+        _db.insert_meeting(
+            file_id,
+            filename=original_name,
+            status="queued",
+        )
+    except Exception:
+        pass  # DB write failures must not block upload response
+
+    # Queue background pipeline — returns immediately
+    background_tasks.add_task(run_pipeline, file_id, destination)
+
+    return JSONResponse(
+        status_code=202,
+        content={
+            **metadata,
+            "meeting_id": file_id,
+            "status": "queued",
+            "file_id": file_id,
+            "message": "Recording queued for processing.",
+        },
     )
 
-    return {
-        "message":
-            "File uploaded successfully",
-        **metadata,
-    }
+
+# ============================================================
+# ASYNC JOB STATUS  (new, stable URL)
+# ============================================================
+
+@router.get("/meetings")
+def list_meetings():
+    """List previously processed meetings that have indexed utterances."""
+    _db.init_db()
+    with _db.get_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT
+                m.meeting_id,
+                m.filename,
+                m.created_at,
+                m.status,
+                (
+                    SELECT COUNT(*)
+                    FROM utterances u
+                    WHERE u.meeting_id = m.meeting_id
+                ) AS utterance_count,
+                (
+                    SELECT COUNT(*)
+                    FROM claims c
+                    WHERE c.meeting_id = m.meeting_id
+                ) AS claim_count
+            FROM meetings m
+            WHERE m.filename IS NOT NULL
+              AND m.filename <> 'synthetic.wav'
+              AND m.meeting_id NOT LIKE 'background-%'
+              AND m.meeting_id NOT LIKE 'mismatch-%'
+              AND m.meeting_id NOT LIKE 'cache-check-%'
+              AND m.meeting_id NOT LIKE 'cited-none-%'
+              AND m.meeting_id NOT LIKE 'expand-%'
+              AND m.meeting_id NOT LIKE 'clamp-%'
+            ORDER BY m.created_at DESC
+            LIMIT 50
+            """
+        ).fetchall()
+    return [
+        dict(row)
+        for row in rows
+        if row["utterance_count"] > 0
+    ]
+
+
+@router.get("/meetings/{meeting_id}/status")
+def get_meeting_status(meeting_id: str):
+    """
+    Return the current JobStatus for a meeting.
+    Fields: meeting_id, stage, progress (0-1), state, error, updated_at.
+    """
+    validate_file_id(meeting_id)
+    job = _db.get_job_status(meeting_id)
+    if job is None:
+        # Fall back to the file-based status written by the adapter
+        storage = MeetingStorage(meeting_id)
+        status_path = storage.path_for("root", "pipeline_status.json")
+        if status_path.exists():
+            try:
+                return json.loads(status_path.read_text(encoding="utf-8"))
+            except Exception:
+                pass
+        meeting = _db.get_meeting(meeting_id)
+        if meeting is not None and _db.get_utterances(meeting_id):
+            return {
+                "meeting_id": meeting_id,
+                "stage": "done",
+                "progress": 1.0,
+                "state": "done",
+                "error": None,
+                "updated_at": meeting.get("created_at"),
+            }
+        raise HTTPException(status_code=404, detail="No status found for this meeting.")
+    return job.model_dump()
+
+
+# ============================================================
+# UTTERANCES FROM DB  (new endpoint)
+# ============================================================
+
+@router.get("/meetings/{meeting_id}/transcript")
+def get_meeting_transcript(meeting_id: str):
+    """
+    Return utterances from the DB for a meeting.
+    404 if the index stage has not completed yet.
+    """
+    validate_file_id(meeting_id)
+    job = _db.get_job_status(meeting_id)
+    if job is not None:
+        reached_index = STAGES.index(job.stage) >= STAGES.index("index")
+        if not reached_index:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Transcript not yet available (current stage: {job.stage}).",
+            )
+    utterances = _db.get_utterances(meeting_id)
+    if not utterances:
+        # Fallback: check for transcript_index.json on disk
+        storage = MeetingStorage(meeting_id)
+        index_path = storage.path_for("transcript", "transcript_index.json")
+        if index_path.exists():
+            try:
+                return json.loads(index_path.read_text(encoding="utf-8"))
+            except Exception:
+                pass
+        raise HTTPException(
+            status_code=404,
+            detail="Transcript index not found. Processing may still be in progress.",
+        )
+    return [u.model_dump() for u in utterances]
 
 
 # ============================================================
@@ -442,6 +541,7 @@ def pipeline_status(
     )
 
 
+
 # ============================================================
 # FRONTEND COMPATIBILITY — AUDIO EXTRACTION
 # ============================================================
@@ -488,14 +588,20 @@ def transcribe_with_real_pipeline(
         file_id
     )
 
-    directory = meeting_dir(
+    storage = get_storage(
         file_id
     )
 
-    cached_frontend_transcript = (
-        directory
-        / "frontend_transcript.json"
+    cached_frontend_transcript = storage.path_for(
+        "transcript",
+        "frontend_transcript.json"
     )
+
+    if not cached_frontend_transcript.exists():
+        cached_frontend_transcript = (
+            storage.root
+            / "frontend_transcript.json"
+        )
 
     if (
         cached_frontend_transcript
@@ -534,14 +640,20 @@ def extract_meeting_intelligence(
     file_id: str,
 ):
 
-    directory = meeting_dir(
+    storage = get_storage(
         file_id
     )
 
-    transcript_path = (
-        directory
-        / "frontend_transcript.json"
+    transcript_path = storage.path_for(
+        "transcript",
+        "frontend_transcript.json"
     )
+
+    if not transcript_path.exists():
+        transcript_path = (
+            storage.root
+            / "frontend_transcript.json"
+        )
 
     if not transcript_path.exists():
 
@@ -581,17 +693,10 @@ def extract_meeting_intelligence(
 
     # --------------------------------------------------------
     # Every meeting gets its OWN intelligence directory.
-    #
-    # Important:
-    # We do NOT use global output/intelligence here because
-    # multiple uploaded meetings must not overwrite each other.
+    # Routed through MeetingStorage.
     # --------------------------------------------------------
 
-    intelligence_dir = (
-        directory
-        / "intelligence"
-    )
-
+    intelligence_dir = storage.intelligence
     intelligence_dir.mkdir(
         parents=True,
         exist_ok=True,
@@ -803,23 +908,27 @@ def extract_meeting_intelligence(
     }
 
     write_json(
-        directory
+        storage.path_for(
+            "intelligence",
+            "extraction.json"
+        ),
+        extraction,
+    )
+    write_json(
+        storage.root
         / "extraction.json",
         extraction,
     )
 
     # Any previous verification/MoM is now stale because
     # intelligence has been regenerated.
-    verification_output = (
-        directory
-        / "verification"
-        / "verified_intelligence.json"
-    )
-
     stale_files = [
-        verification_output,
-        directory / "mom.json",
-        directory / "Meet2MoM-Meeting-Minutes.pdf",
+        storage.path_for("verification", "verified_intelligence.json"),
+        storage.path_for("verification", "verification_summary.json"),
+        storage.path_for("mom", "mom.json"),
+        storage.path_for("mom", "Meet2MoM-Meeting-Minutes.pdf"),
+        storage.root / "mom.json",
+        storage.root / "Meet2MoM-Meeting-Minutes.pdf",
     ]
 
     for stale_file in stale_files:
@@ -859,28 +968,29 @@ def verify_meeting_intelligence(
     Every meeting gets its own verification directory.
     """
 
-    directory = meeting_dir(
+    storage = get_storage(
         file_id
     )
 
-    transcript_path = (
-        directory
-        / "frontend_transcript.json"
+    transcript_path = storage.path_for(
+        "transcript",
+        "frontend_transcript.json"
     )
 
-    intelligence_dir = (
-        directory
-        / "intelligence"
+    if not transcript_path.exists():
+        transcript_path = (
+            storage.root
+            / "frontend_transcript.json"
+        )
+
+    decisions_path = storage.path_for(
+        "intelligence",
+        "decisions.json"
     )
 
-    decisions_path = (
-        intelligence_dir
-        / "decisions.json"
-    )
-
-    action_items_path = (
-        intelligence_dir
-        / "action_items.json"
+    action_items_path = storage.path_for(
+        "intelligence",
+        "action_items.json"
     )
 
     if not transcript_path.exists():
@@ -910,11 +1020,7 @@ def verify_meeting_intelligence(
             ),
         )
 
-    verification_dir = (
-        directory
-        / "verification"
-    )
-
+    verification_dir = storage.verification
     verification_dir.mkdir(
         parents=True,
         exist_ok=True,
@@ -1036,8 +1142,10 @@ def verify_meeting_intelligence(
 
     # A new verification invalidates any previously generated MoM/PDF.
     for stale_file in (
-        directory / "mom.json",
-        directory / "Meet2MoM-Meeting-Minutes.pdf",
+        storage.path_for("mom", "mom.json"),
+        storage.path_for("mom", "Meet2MoM-Meeting-Minutes.pdf"),
+        storage.root / "mom.json",
+        storage.root / "Meet2MoM-Meeting-Minutes.pdf",
     ):
         try:
             if stale_file.exists():
@@ -1179,7 +1287,14 @@ def verify_meeting_intelligence(
     }
 
     write_json(
-        directory
+        storage.path_for(
+            "verification",
+            "verification_summary.json"
+        ),
+        response,
+    )
+    write_json(
+        storage.root
         / "verification_summary.json",
         response,
     )
@@ -1462,30 +1577,53 @@ def create_mom(
     or `rejected` are intentionally excluded from the final MoM.
     """
 
-    directory = meeting_dir(
+    storage = get_storage(
         file_id
     )
 
+    transcript_path = storage.path_for(
+        "transcript",
+        "frontend_transcript.json"
+    )
+    if not transcript_path.exists():
+        transcript_path = (
+            storage.root
+            / "frontend_transcript.json"
+        )
+
     transcript = read_json(
-        directory
-        / "frontend_transcript.json",
+        transcript_path,
         "Transcript not found.",
     )
 
+    extraction_path = storage.path_for(
+        "intelligence",
+        "extraction.json"
+    )
+    if not extraction_path.exists():
+        extraction_path = (
+            storage.root
+            / "extraction.json"
+        )
+
     extraction = read_json(
-        directory
-        / "extraction.json",
+        extraction_path,
         (
             "Extraction not found. "
             "Run extraction first."
         ),
     )
 
-    verification_path = (
-        directory
-        / "verification"
-        / "verified_intelligence.json"
+    verification_path = storage.path_for(
+        "verification",
+        "verified_intelligence.json"
     )
+    if not verification_path.exists():
+        verification_path = (
+            storage.root
+            / "verification"
+            / "verified_intelligence.json"
+        )
 
     if not verification_path.exists():
         raise HTTPException(
@@ -1875,8 +2013,11 @@ def create_mom(
     }
 
     write_json(
-        directory
-        / "mom.json",
+        storage.path_for("mom", "mom.json"),
+        mom,
+    )
+    write_json(
+        storage.root / "mom.json",
         mom,
     )
 
@@ -1969,8 +2110,8 @@ def build_pdf(
 ):
     """Build a polished, dynamic Meet2MoM PDF from verified MoM data."""
 
-    directory = meeting_dir(file_id)
-    pdf_path = directory / "Meet2MoM-Meeting-Minutes.pdf"
+    storage = get_storage(file_id)
+    pdf_path = storage.path_for("mom", "Meet2MoM-Meeting-Minutes.pdf")
 
     # Brand palette
     NAVY = colors.HexColor("#172554")
@@ -2328,6 +2469,12 @@ def build_pdf(
             detail=f"PDF generation failed: {exc}",
         ) from exc
 
+    if pdf_path.exists():
+        try:
+            shutil.copy2(pdf_path, storage.root / "Meet2MoM-Meeting-Minutes.pdf")
+        except OSError:
+            pass
+
     return pdf_path
 
 
@@ -2381,21 +2528,26 @@ def download_mom(
     file_id: str,
 ):
 
-    directory = meeting_dir(
+    storage = get_storage(
         file_id
     )
 
-    pdf_path = (
-        directory
-        / "Meet2MoM-Meeting-Minutes.pdf"
+    pdf_path = storage.path_for(
+        "mom",
+        "Meet2MoM-Meeting-Minutes.pdf"
     )
 
     if not pdf_path.exists():
+        pdf_path = storage.root / "Meet2MoM-Meeting-Minutes.pdf"
 
-        mom_path = (
-            directory
-            / "mom.json"
+    if not pdf_path.exists():
+
+        mom_path = storage.path_for(
+            "mom",
+            "mom.json"
         )
+        if not mom_path.exists():
+            mom_path = storage.root / "mom.json"
 
         if mom_path.exists():
 

@@ -145,6 +145,53 @@ h1 {
   background: #f5f6fc;
 }
 
+.previous-meetings {
+  margin-top: 22px;
+}
+
+.previous-meetings h2 {
+  margin: 0 0 10px;
+  color: #202858;
+  font-size: 15px;
+}
+
+.previous-meeting-list {
+  display: grid;
+  gap: 8px;
+}
+
+.previous-meeting-row {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 14px;
+  border: 1px solid #dce0ee;
+  border-radius: 10px;
+  background: #ffffff;
+  color: #202858;
+  text-align: left;
+  cursor: pointer;
+}
+
+.previous-meeting-row:hover {
+  border-color: #202858;
+  background: #f5f6fc;
+}
+
+.previous-meeting-row small {
+  display: block;
+  margin-top: 3px;
+  color: #8b91aa;
+}
+
+.previous-meeting-counts {
+  color: #8b91aa;
+  font-size: 13px;
+  white-space: nowrap;
+}
+
 .upload-icon {
   width: 58px;
   height: 58px;
@@ -3008,4 +3055,3 @@ h1 {
   cursor: not-allowed;
   transform: none;
 }
-
