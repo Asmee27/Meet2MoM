@@ -1,7 +1,11 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.meeting_routes import router as meeting_router
+from app.core.console import make_stdio_unicode_safe
+
+make_stdio_unicode_safe()
+
+from app.api.meeting_routes import router as meeting_router  # noqa: E402
 
 app = FastAPI(
     title="Meet2MoM API",

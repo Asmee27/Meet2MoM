@@ -136,6 +136,92 @@ def init_db(db_path: Optional[Path | str] = None) -> None:
             );
             """
         )
+        _migrate(conn)
+
+
+# ---------------------------------------------------------------------------
+# Versioned schema migrations (PRAGMA user_version)
+# ---------------------------------------------------------------------------
+# Migrations only ADD tables/indexes; they never rewrite or drop existing
+# data. Each step is idempotent (IF NOT EXISTS) and bumps user_version.
+
+SCHEMA_VERSION = 1
+
+_MIGRATION_V1 = """
+CREATE TABLE IF NOT EXISTS extraction_runs (
+    meeting_id        TEXT PRIMARY KEY,
+    mode_requested    TEXT,
+    mode_used         TEXT,
+    status            TEXT NOT NULL,
+    reason            TEXT,
+    fallback_reason   TEXT,
+    accepted          INTEGER,
+    dropped           INTEGER,
+    extractor_version TEXT,
+    started_at        TEXT,
+    finished_at       TEXT,
+    FOREIGN KEY (meeting_id) REFERENCES meetings(meeting_id)
+);
+
+CREATE TABLE IF NOT EXISTS verification_results (
+    claim_id              TEXT NOT NULL,
+    meeting_id            TEXT NOT NULL,
+    method                TEXT NOT NULL,
+    label                 TEXT NOT NULL,
+    cited_utt_ids         TEXT,
+    cited_entailment      REAL,
+    best_utt_ids          TEXT,
+    best_support          REAL,
+    contradiction         REAL,
+    contradiction_utt_ids TEXT,
+    reasons               TEXT,
+    details               TEXT,
+    model_version         TEXT,
+    config_version        TEXT,
+    latency_ms            REAL,
+    created_at            TEXT NOT NULL,
+    PRIMARY KEY (claim_id, method),
+    FOREIGN KEY (claim_id) REFERENCES claims(claim_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_verification_results_meeting
+    ON verification_results(meeting_id);
+
+CREATE TABLE IF NOT EXISTS verification_runs (
+    meeting_id       TEXT PRIMARY KEY,
+    status           TEXT NOT NULL,
+    reason           TEXT,
+    claims_total     INTEGER,
+    seconds_total    REAL,
+    semantic_seconds REAL,
+    model_version    TEXT,
+    config_version   TEXT,
+    created_at       TEXT NOT NULL,
+    FOREIGN KEY (meeting_id) REFERENCES meetings(meeting_id)
+);
+
+CREATE TABLE IF NOT EXISTS evidence_corrections (
+    claim_id         TEXT PRIMARY KEY,
+    meeting_id       TEXT NOT NULL,
+    action           TEXT NOT NULL CHECK (action IN ('accepted', 'rejected')),
+    original_utt_ids TEXT NOT NULL,
+    proposed_utt_ids TEXT NOT NULL,
+    created_at       TEXT NOT NULL,
+    FOREIGN KEY (claim_id) REFERENCES claims(claim_id) ON DELETE CASCADE
+);
+"""
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    current = conn.execute("PRAGMA user_version").fetchone()[0]
+    if current < 1:
+        conn.executescript(_MIGRATION_V1)
+        conn.execute("PRAGMA user_version = 1")
+
+
+def get_schema_version(db_path: Optional[Path | str] = None) -> int:
+    with get_conn(db_path) as conn:
+        return int(conn.execute("PRAGMA user_version").fetchone()[0])
 
 
 def insert_meeting(
@@ -576,3 +662,227 @@ def get_job_status(
         error=row["error"],
         updated_at=datetime.fromisoformat(row["updated_at"]),
     )
+
+
+# ---------------------------------------------------------------------------
+# Extraction runs (one row per meeting: the latest extraction attempt)
+# ---------------------------------------------------------------------------
+
+def _now_iso() -> str:
+    return datetime.utcnow().isoformat()
+
+
+def upsert_extraction_run(
+    meeting_id: str,
+    *,
+    status: str,
+    mode_requested: Optional[str] = None,
+    mode_used: Optional[str] = None,
+    reason: Optional[str] = None,
+    fallback_reason: Optional[str] = None,
+    accepted: Optional[int] = None,
+    dropped: Optional[int] = None,
+    extractor_version: Optional[str] = None,
+    started_at: Optional[str] = None,
+    db_path: Optional[Path | str] = None,
+) -> None:
+    init_db(db_path)
+    ensure_meeting(meeting_id, db_path=db_path)
+    with get_conn(db_path) as conn:
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO extraction_runs (
+                meeting_id, mode_requested, mode_used, status, reason, fallback_reason,
+                accepted, dropped, extractor_version, started_at, finished_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                meeting_id, mode_requested, mode_used, status, reason, fallback_reason,
+                accepted, dropped, extractor_version, started_at or _now_iso(), _now_iso(),
+            ),
+        )
+
+
+def get_extraction_run(
+    meeting_id: str, db_path: Optional[Path | str] = None
+) -> Optional[Dict[str, Any]]:
+    with get_conn(db_path) as conn:
+        row = conn.execute(
+            "SELECT * FROM extraction_runs WHERE meeting_id = ?", (meeting_id,)
+        ).fetchone()
+    return dict(row) if row else None
+
+
+# ---------------------------------------------------------------------------
+# Verification results (one row per claim and method; re-runs replace rows)
+# ---------------------------------------------------------------------------
+
+_JSON_LIST_COLUMNS = ("cited_utt_ids", "best_utt_ids", "contradiction_utt_ids", "reasons")
+
+
+def replace_verification_results(
+    meeting_id: str,
+    rows: List[Dict[str, Any]],
+    db_path: Optional[Path | str] = None,
+) -> None:
+    """Atomically replace all verification rows for a meeting (idempotent re-runs)."""
+    created_at = _now_iso()
+    with get_conn(db_path) as conn:
+        conn.execute("DELETE FROM verification_results WHERE meeting_id = ?", (meeting_id,))
+        conn.executemany(
+            """
+            INSERT INTO verification_results (
+                claim_id, meeting_id, method, label, cited_utt_ids, cited_entailment,
+                best_utt_ids, best_support, contradiction, contradiction_utt_ids,
+                reasons, details, model_version, config_version, latency_ms, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    r["claim_id"], meeting_id, r["method"], r["label"],
+                    json.dumps(r.get("cited_utt_ids") or []),
+                    r.get("cited_entailment"),
+                    json.dumps(r.get("best_utt_ids") or []),
+                    r.get("best_support"),
+                    r.get("contradiction"),
+                    json.dumps(r.get("contradiction_utt_ids") or []),
+                    json.dumps(r.get("reasons") or [], ensure_ascii=False),
+                    json.dumps(r.get("details") or {}, ensure_ascii=False),
+                    r.get("model_version"),
+                    r.get("config_version"),
+                    r.get("latency_ms"),
+                    created_at,
+                )
+                for r in rows
+            ],
+        )
+
+
+def get_verification_results(
+    meeting_id: str, db_path: Optional[Path | str] = None
+) -> Dict[str, Dict[str, Dict[str, Any]]]:
+    """Return {claim_id: {method: row}} for a meeting."""
+    with get_conn(db_path) as conn:
+        rows = conn.execute(
+            "SELECT * FROM verification_results WHERE meeting_id = ? ORDER BY claim_id, method",
+            (meeting_id,),
+        ).fetchall()
+    out: Dict[str, Dict[str, Dict[str, Any]]] = {}
+    for row in rows:
+        item = dict(row)
+        for column in _JSON_LIST_COLUMNS:
+            item[column] = json.loads(item[column]) if item[column] else []
+        item["details"] = json.loads(item["details"]) if item["details"] else {}
+        out.setdefault(item["claim_id"], {})[item["method"]] = item
+    return out
+
+
+def upsert_verification_run(
+    meeting_id: str,
+    *,
+    status: str,
+    reason: Optional[str] = None,
+    claims_total: Optional[int] = None,
+    seconds_total: Optional[float] = None,
+    semantic_seconds: Optional[float] = None,
+    model_version: Optional[str] = None,
+    config_version: Optional[str] = None,
+    db_path: Optional[Path | str] = None,
+) -> None:
+    init_db(db_path)
+    ensure_meeting(meeting_id, db_path=db_path)
+    with get_conn(db_path) as conn:
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO verification_runs (
+                meeting_id, status, reason, claims_total, seconds_total, semantic_seconds,
+                model_version, config_version, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                meeting_id, status, reason, claims_total, seconds_total, semantic_seconds,
+                model_version, config_version, _now_iso(),
+            ),
+        )
+
+
+def get_verification_run(
+    meeting_id: str, db_path: Optional[Path | str] = None
+) -> Optional[Dict[str, Any]]:
+    with get_conn(db_path) as conn:
+        row = conn.execute(
+            "SELECT * FROM verification_runs WHERE meeting_id = ?", (meeting_id,)
+        ).fetchone()
+    return dict(row) if row else None
+
+
+# ---------------------------------------------------------------------------
+# Evidence corrections (reviewer accept/reject of a suggested evidence span)
+# ---------------------------------------------------------------------------
+
+def get_evidence_corrections(
+    meeting_id: str, db_path: Optional[Path | str] = None
+) -> Dict[str, Dict[str, Any]]:
+    with get_conn(db_path) as conn:
+        rows = conn.execute(
+            "SELECT * FROM evidence_corrections WHERE meeting_id = ?", (meeting_id,)
+        ).fetchall()
+    out: Dict[str, Dict[str, Any]] = {}
+    for row in rows:
+        item = dict(row)
+        item["original_utt_ids"] = json.loads(item["original_utt_ids"])
+        item["proposed_utt_ids"] = json.loads(item["proposed_utt_ids"])
+        out[item["claim_id"]] = item
+    return out
+
+
+def record_evidence_correction(
+    claim_id: str,
+    meeting_id: str,
+    action: str,
+    original_utt_ids: List[str],
+    proposed_utt_ids: List[str],
+    db_path: Optional[Path | str] = None,
+) -> None:
+    """
+    Persist a reviewer decision on a suggested evidence span.
+
+    "accepted" replaces the claim's evidence links with the proposed utterances
+    in the same transaction. The utterance foreign key still applies, so an
+    unknown utterance id rolls the whole change back.
+    """
+    if action not in ("accepted", "rejected"):
+        raise ValueError(f"Invalid correction action: {action}")
+    if not proposed_utt_ids:
+        raise ValueError("Proposed evidence cannot be empty.")
+    with get_conn(db_path) as conn:
+        row = conn.execute(
+            "SELECT payload FROM claims WHERE claim_id = ? AND meeting_id = ?",
+            (claim_id, meeting_id),
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"Unknown claim {claim_id} for meeting {meeting_id}")
+        if action == "accepted":
+            conn.execute("DELETE FROM evidence_links WHERE claim_id = ?", (claim_id,))
+            conn.executemany(
+                "INSERT INTO evidence_links (claim_id, meeting_id, utt_id) VALUES (?, ?, ?)",
+                [(claim_id, meeting_id, utt_id) for utt_id in proposed_utt_ids],
+            )
+            payload = json.loads(row["payload"]) if row["payload"] else {}
+            payload["evidence"] = list(proposed_utt_ids)
+            conn.execute(
+                "UPDATE claims SET payload = ? WHERE claim_id = ?",
+                (json.dumps(payload, ensure_ascii=False), claim_id),
+            )
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO evidence_corrections (
+                claim_id, meeting_id, action, original_utt_ids, proposed_utt_ids, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                claim_id, meeting_id, action,
+                json.dumps(list(original_utt_ids)), json.dumps(list(proposed_utt_ids)),
+                _now_iso(),
+            ),
+        )

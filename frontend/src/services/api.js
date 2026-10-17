@@ -118,6 +118,33 @@ export async function verifyMeeting(meetingId) {
   return data;
 }
 
+// ---------------------------------------------------------------------------
+// Claims + persisted verification (Phase 1)
+// ---------------------------------------------------------------------------
+
+export async function getClaims(meetingId) {
+  const res = await fetch(`${API_BASE_URL}/api/meetings/${meetingId}/claims`);
+  const data = await res.json();
+  if (!res.ok) throw new Error(data?.detail || "Unable to load claims.");
+  return data;
+}
+
+// action: "accept" | "reject". Returns the updated claims payload, with the
+// reviewed claim under `claim`.
+export async function reviewEvidenceSuggestion(meetingId, claimId, action) {
+  const res = await fetch(
+    `${API_BASE_URL}/api/meetings/${meetingId}/claims/${encodeURIComponent(claimId)}/evidence-suggestion`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify({ action }),
+    }
+  );
+  const data = await res.json();
+  if (!res.ok) throw new Error(data?.detail || "Unable to save the evidence decision.");
+  return data;
+}
+
 export async function generateMom(meetingId) {
   const res = await fetch(`${API_BASE_URL}/api/generate-mom/${meetingId}`, {
     method: "POST",

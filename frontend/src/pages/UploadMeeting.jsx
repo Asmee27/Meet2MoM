@@ -292,12 +292,16 @@ export default function UploadMeeting() {
 
             <div className="continue-container">
 
+              {/* Wait for the background job: continuing earlier would start a
+                  second, concurrent pipeline run for the same recording. */}
               <button
                 type="button"
                 className="continue-button"
                 onClick={goToTranscribe}
+                disabled={isPipelineRunning}
+                title={isPipelineRunning ? "Processing is still running" : undefined}
               >
-                Continue to Transcribe →
+                {isPipelineRunning ? "Processing…" : "Continue to Transcribe →"}
               </button>
 
             </div>

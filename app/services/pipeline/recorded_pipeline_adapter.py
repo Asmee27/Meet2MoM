@@ -1045,6 +1045,9 @@ def run_recorded_pipeline(
         ),
         "--meeting-id",
         meeting_id,
+        # Post-transcript stages run once, in this process, after the
+        # subprocess (run_post_transcript below or the job runner).
+        "--skip-post-transcript",
     ]
 
     print(

@@ -1,22 +1,46 @@
 import { useMeetingFlow } from "../context/MeetingFlowContext";
+import {
+  ClaimReviewCard,
+  MethodComparison,
+  ReasonList,
+} from "../components/ClaimVerification";
+import { STATUS_LABELS } from "../components/verificationFormat";
 
-function formatTimestamp(seconds) {
-  if (seconds === null || seconds === undefined || Number.isNaN(Number(seconds))) {
-    return "Timestamp unavailable";
-  }
+const CONFIRMED = ["verified", "verified_with_warning"];
 
-  const total = Math.max(0, Math.floor(Number(seconds)));
-  const minutes = Math.floor(total / 60);
-  const remaining = total % 60;
-  return `${minutes}:${String(remaining).padStart(2, "0")}`;
+function groupClaims(claims) {
+  return {
+    confirmed: claims.filter((c) => c.exportable),
+    review: claims.filter(
+      (c) => !c.exportable && c.verification.final.label !== "rejected"
+    ),
+    rejected: claims.filter((c) => c.verification.final.label === "rejected"),
+  };
 }
 
-function statusLabel(status) {
-  if (status === "verified_with_warning") return "Verified with warning";
-  if (status === "verified") return "Verified";
-  if (status === "review") return "Needs review";
-  if (status === "rejected") return "Rejected";
-  return "Checked";
+function RunNotice({ verificationData }) {
+  const run = verificationData?.verification_run || {};
+  const extraction = verificationData?.extraction || {};
+  const notices = [];
+  if (run.status === "semantic_unavailable") {
+    notices.push(
+      `Semantic verification was unavailable (${run.reason || "model could not load"}). ` +
+        "Claims could not be confirmed and are held for review."
+    );
+  }
+  if (extraction.fallback_reason) {
+    notices.push(
+      `Extraction used the ${extraction.mode_used} extractor because: ${extraction.fallback_reason}.`
+    );
+  }
+  if (notices.length === 0) return null;
+  return (
+    <div className="verification-run-notice" data-testid="run-notice">
+      {notices.map((notice) => (
+        <p key={notice}>⚠ {notice}</p>
+      ))}
+    </div>
+  );
 }
 
 export default function VerifyMeeting() {
@@ -31,13 +55,9 @@ export default function VerifyMeeting() {
     verificationData,
     isVerifying,
     verificationError,
-    editingDecisions,
-    setEditingDecisions,
-    editingActions,
-    setEditingActions,
-    extractedData,
-    updateDecision,
-    updateActionItem,
+    reviewSuggestion,
+    suggestionBusy,
+    suggestionError,
     isUploading,
     isTranscribing,
     isExtracting,
@@ -47,22 +67,10 @@ export default function VerifyMeeting() {
 
   if (currentStep !== 4) return null;
 
-  const decisionStats = verificationData?.decisions || {};
-  const actionStats = verificationData?.action_items || {};
-  const verifiedDecisions = Array.isArray(verificationData?.verified_decisions)
-    ? verificationData.verified_decisions.filter((item) =>
-        ["verified", "verified_with_warning"].includes(item?.verification_status)
-      )
-    : [];
-  const verifiedActions = Array.isArray(verificationData?.verified_action_items)
-    ? verificationData.verified_action_items.filter((item) =>
-        ["verified", "verified_with_warning"].includes(item?.verification_status)
-      )
-    : [];
-
-  const warnings =
-    Number(decisionStats.with_warnings || 0) +
-    Number(actionStats.with_warnings || 0);
+  const claims = Array.isArray(verificationData?.claims) ? verificationData.claims : [];
+  const counts = verificationData?.counts || {};
+  const groups = groupClaims(claims);
+  const timings = verificationData?.verification_run || {};
 
   return (
     <main className="main-content">
@@ -86,11 +94,14 @@ export default function VerifyMeeting() {
         <>
           <div className="step-label">STEP 4 · FAITHFULNESS VERIFICATION</div>
 
-          <h1>Checking output against the transcript</h1>
+          <h1>Checking every claim against the transcript</h1>
 
           <p className="page-description">
-            Meet2MoM verifies extracted decisions and action items against the
-            original speaker-attributed transcript before final review.
+            Each decision and action item is checked twice: a deterministic
+            text match, and an independent semantic check that retrieves
+            transcript evidence and tests entailment and contradiction. The two
+            results and audio reliability are combined into one status with
+            reasons.
           </p>
 
           <div className="automatic-verification-page">
@@ -98,9 +109,7 @@ export default function VerifyMeeting() {
               <div className="faithfulness-progress-header">
                 <div>
                   <strong>Evidence Verification</strong>
-                  <span>
-                    Matching extracted information to transcript evidence
-                  </span>
+                  <span>Deterministic + semantic (retrieval + NLI) verification</span>
                 </div>
                 <strong className="faithfulness-progress-value">
                   {isVerifying ? "Checking…" : automaticCheckComplete ? "Complete" : `${verificationProgress}%`}
@@ -118,8 +127,8 @@ export default function VerifyMeeting() {
                 {verificationError
                   ? verificationError
                   : automaticCheckComplete
-                    ? "Transcript-grounded verification complete"
-                    : "Checking transcript evidence…"}
+                    ? "Verification complete"
+                    : "Checking transcript evidence… (the semantic model can take a while on CPU)"}
               </div>
             </div>
 
@@ -135,82 +144,61 @@ export default function VerifyMeeting() {
 
             {automaticCheckComplete && verificationData && (
               <>
+                <RunNotice verificationData={verificationData} />
+
                 <div className="verification-checks verification-checks-large">
-                  <div className="verification-check-item verification-reveal">
-                    <span className="verification-check-icon">✓</span>
-                    <div>
-                      <strong>
-                        {decisionStats.evidence_supported || 0} / {decisionStats.total || 0} decisions supported
-                      </strong>
-                      <span>
-                        {decisionStats.verified_clean || 0} verified cleanly ·{" "}
-                        {decisionStats.with_warnings || 0} with warning ·{" "}
-                        {decisionStats.review || 0} review ·{" "}
-                        {decisionStats.rejected || 0} rejected
+                  {["verified", "verified_with_warning", "review", "rejected"].map((label) => (
+                    <div className="verification-check-item verification-reveal" key={label}>
+                      <span className="verification-check-icon">
+                        {CONFIRMED.includes(label) ? "✓" : label === "review" ? "?" : "✕"}
                       </span>
+                      <div>
+                        <strong>
+                          {counts[label] || 0} {STATUS_LABELS[label].toLowerCase()}
+                        </strong>
+                        <span>
+                          {label === "review"
+                            ? "Held back from the minutes until a person checks them."
+                            : label === "rejected"
+                              ? "Contradicted or without resolvable evidence; excluded."
+                              : label === "verified_with_warning"
+                                ? "Confirmed, with warnings kept visible."
+                                : "Confirmed by cited evidence with no warnings."}
+                        </span>
+                      </div>
                     </div>
-                  </div>
-
-                  <div className="verification-check-item verification-reveal">
-                    <span className="verification-check-icon">✓</span>
-                    <div>
-                      <strong>
-                        {actionStats.evidence_supported || 0} / {actionStats.total || 0} action items supported
-                      </strong>
-                      <span>
-                        Owners, deadlines and source statements are checked when action items exist.
-                      </span>
-                    </div>
-                  </div>
-
-                  <div className="verification-check-item verification-reveal">
-                    <span className="verification-check-icon">✓</span>
-                    <div>
-                      <strong>Speaker and timestamp evidence recovered</strong>
-                      <span>
-                        Final claims are linked back to speaker-attributed transcript segments.
-                      </span>
-                    </div>
-                  </div>
-
-                  <div className="verification-check-item verification-reveal">
-                    <span className="verification-check-icon">
-                      {warnings > 0 ? "⚠" : "✓"}
-                    </span>
-                    <div>
-                      <strong>
-                        {warnings > 0
-                          ? `${warnings} supported claim${warnings === 1 ? "" : "s"} contain reliability warnings`
-                          : "No reliability warnings detected"}
-                      </strong>
-                      <span>
-                        Cross-talk, source-review flags and speaker-attribution confidence are considered.
-                      </span>
-                    </div>
-                  </div>
+                  ))}
                 </div>
 
-                <div className="verification-method-note">
-                  <span className="method-icon">↔</span>
-                  <div>
-                    <strong>Transcript-grounded evidence verification</strong>
+                {claims.length === 0 ? (
+                  <div className="verify-decision" data-testid="no-claims">
                     <p>
-                      This stage uses deterministic evidence matching and source
-                      reliability checks. It is not a simulated score and does
-                      not claim that uncertain evidence is fully reliable.
+                      {verificationData?.extraction?.status === "no_claims"
+                        ? "Extraction ran and found no decisions or action items in this meeting."
+                        : "No claims are available to verify."}
                     </p>
                   </div>
-                </div>
-
-                <div className="automatic-complete-card verification-reveal">
-                  <div className="automatic-complete-icon">✓</div>
-                  <div>
-                    <strong>Automatic check complete</strong>
-                    <span>
-                      Evidence-supported results are ready for human review.
-                    </span>
+                ) : (
+                  <div className="verification-claim-table">
+                    {claims.map((claim) => (
+                      <div className="verification-claim-row" key={claim.claim_id}>
+                        <p className="claim-text">
+                          <strong>{claim.claim_type === "decision" ? "Decision" : "Action"}:</strong>{" "}
+                          {claim.text}
+                        </p>
+                        <MethodComparison claim={claim} />
+                        <ReasonList reasons={claim.verification.final.reasons.slice(0, 2)} />
+                      </div>
+                    ))}
                   </div>
-                </div>
+                )}
+
+                {timings.seconds_total !== undefined && timings.seconds_total !== null && (
+                  <p className="verification-timing">
+                    Verified {timings.claims_total || 0} claim(s) in {timings.seconds_total}s
+                    {timings.semantic_seconds ? ` (semantic: ${timings.semantic_seconds}s)` : ""}.
+                  </p>
+                )}
               </>
             )}
 
@@ -221,258 +209,108 @@ export default function VerifyMeeting() {
                 onClick={() => setVerificationStage("manual")}
                 disabled={!automaticCheckComplete || isVerifying || Boolean(verificationError)}
               >
-                Manual Review Ready →
+                Review Evidence →
               </button>
             </div>
           </div>
         </>
       ) : (
         <>
-          <div className="step-label">STEP 4 · MANUAL REVIEW</div>
+          <div className="step-label">STEP 4 · REVIEW</div>
 
-          <h1>Review verified meeting information</h1>
+          <h1>Review claims and their evidence</h1>
 
           <p className="page-description">
-            Review evidence-supported decisions and action items before creating
-            the final Minutes of Meeting.
+            Only confirmed claims go into the minutes. Items that need review
+            stay out until their evidence is fixed; when the verifier found a
+            better evidence span you can accept or reject it here.
           </p>
 
-          <div className="manual-review-ready-banner">
-            <div className="automatic-complete-icon">✓</div>
-            <div>
-              <strong>Transcript verification complete</strong>
-              <span>
-                {decisionStats.evidence_supported || 0} decision(s) and{" "}
-                {actionStats.evidence_supported || 0} action item(s) are supported by transcript evidence.
-              </span>
-            </div>
-          </div>
+          <RunNotice verificationData={verificationData} />
 
-          <div className="verify-section">
+          {suggestionError && (
+            <div className="verification-run-notice" role="alert">
+              <p>{suggestionError}</p>
+            </div>
+          )}
+
+          <div className="verify-section" data-testid="needs-review-section">
             <div className="verify-section-header">
               <div>
-                <h2>Decisions</h2>
-                <p>Review each decision together with its actual transcript evidence.</p>
-              </div>
-
-              <div className="verify-header-actions">
-                <span className="verified-badge">Evidence Checked</span>
-                {!editingDecisions ? (
-                  <button
-                    type="button"
-                    className="edit-button"
-                    onClick={() => setEditingDecisions(true)}
-                  >
-                    ✎ Edit
-                  </button>
-                ) : (
-                  <button
-                    type="button"
-                    className="save-button"
-                    onClick={() => setEditingDecisions(false)}
-                  >
-                    ✓ Save
-                  </button>
-                )}
+                <h2>Needs review ({groups.review.length})</h2>
+                <p>Held back from the minutes. Reasons and evidence are listed for each item.</p>
               </div>
             </div>
-
-            {verifiedDecisions.length === 0 ? (
+            {groups.review.length === 0 ? (
               <div className="verify-decision">
-                <p>No evidence-supported decisions were found.</p>
+                <p>No items are waiting for review.</p>
               </div>
             ) : (
-              verifiedDecisions.map((decision, index) => {
-                const evidence = Array.isArray(decision.evidence)
-                  ? decision.evidence
-                  : [];
-                const proposalEvidence =
-                  evidence.find((item) => item.role === "proposal_or_decision") ||
-                  evidence[0];
-                const confirmationEvidence =
-                  evidence.find((item) => item.role === "confirmation");
-
-                return (
-                  <div className="verify-decision" key={`${decision.topic_id || "decision"}-${index}`}>
-                    <label>
-                      Decision {index + 1} · {statusLabel(decision.verification_status)}
-                    </label>
-
-                    <textarea
-                      value={extractedData.decisions[index] || decision.text || ""}
-                      readOnly={!editingDecisions}
-                      onChange={(event) =>
-                        updateDecision(index, event.target.value)
-                      }
-                      rows="3"
-                      className={!editingDecisions ? "read-only-field" : ""}
-                    />
-
-                    <div className="transcript-evidence">
-                      <span className="evidence-label">Transcript evidence</span>
-                      <span className="evidence-speaker">
-                        {proposalEvidence?.speaker || decision.proposal_speaker || "Speaker unavailable"}
-                        {" · "}
-                        {formatTimestamp(
-                          proposalEvidence?.start ?? decision.proposal_timestamp
-                        )}
-                      </span>
-                      <span>
-                        “{proposalEvidence?.text || decision.original_proposal || decision.text}”
-                      </span>
-
-                      {confirmationEvidence && (
-                        <>
-                          <span className="evidence-label">Confirmation</span>
-                          <span className="evidence-speaker">
-                            {confirmationEvidence.speaker || decision.confirmation_speaker || "Speaker unavailable"}
-                            {" · "}
-                            {formatTimestamp(
-                              confirmationEvidence.start ??
-                                decision.verified_confirmation_timestamp
-                            )}
-                          </span>
-                          <span>“{confirmationEvidence.text}”</span>
-                        </>
-                      )}
-
-                      <span>
-                        Evidence confidence:{" "}
-                        {Math.round(Number(decision.evidence_confidence || 0) * 100)}%
-                      </span>
-
-                      {decision.verification_status === "verified_with_warning" && (
-                        <span>
-                          ⚠{" "}
-                          {(decision.verification_review_reasons || [])
-                            .join(", ")
-                            .replaceAll("_", " ")}
-                        </span>
-                      )}
-                    </div>
-                  </div>
-                );
-              })
+              groups.review.map((claim) => (
+                <ClaimReviewCard
+                  key={claim.claim_id}
+                  claim={claim}
+                  busy={suggestionBusy}
+                  onSuggestionDecision={reviewSuggestion}
+                />
+              ))
             )}
           </div>
 
-          <div className="verify-section">
+          <div className="verify-section" data-testid="confirmed-section">
             <div className="verify-section-header">
               <div>
-                <h2>Action Items</h2>
-                <p>Review supported tasks, owners, due dates and source evidence.</p>
-              </div>
-
-              <div className="verify-header-actions">
-                <span className="verified-badge">Evidence Checked</span>
-                {verifiedActions.length > 0 &&
-                  (!editingActions ? (
-                    <button
-                      type="button"
-                      className="edit-button"
-                      onClick={() => setEditingActions(true)}
-                    >
-                      ✎ Edit
-                    </button>
-                  ) : (
-                    <button
-                      type="button"
-                      className="save-button"
-                      onClick={() => setEditingActions(false)}
-                    >
-                      ✓ Save
-                    </button>
-                  ))}
+                <h2>Confirmed ({groups.confirmed.length})</h2>
+                <p>These will appear in the minutes; warnings stay visible.</p>
               </div>
             </div>
-
-            {verifiedActions.length === 0 ? (
-              <div className="verify-action">
-                <p>No reliable action items were detected in this meeting.</p>
+            {groups.confirmed.length === 0 ? (
+              <div className="verify-decision">
+                <p>No claims could be confirmed from transcript evidence.</p>
               </div>
             ) : (
-              verifiedActions.map((item, index) => {
-                const evidence = Array.isArray(item.evidence) ? item.evidence : [];
-                const sourceEvidence = evidence[0];
-
-                return (
-                  <div className="verify-action" key={`${item.topic_id || "action"}-${index}`}>
-                    <div className="verify-field">
-                      <label>Task</label>
-                      <input
-                        type="text"
-                        value={extractedData.actionItems[index]?.task || item.task || ""}
-                        readOnly={!editingActions}
-                        className={!editingActions ? "read-only-field" : ""}
-                        onChange={(event) =>
-                          updateActionItem(index, "task", event.target.value)
-                        }
-                      />
-                    </div>
-
-                    <div className="verify-field">
-                      <label>Owner</label>
-                      <input
-                        type="text"
-                        value={extractedData.actionItems[index]?.owner || item.owner || "Not specified"}
-                        readOnly={!editingActions}
-                        className={!editingActions ? "read-only-field" : ""}
-                        onChange={(event) =>
-                          updateActionItem(index, "owner", event.target.value)
-                        }
-                      />
-                    </div>
-
-                    <div className="verify-field">
-                      <label>Due Date</label>
-                      <input
-                        type="text"
-                        value={
-                          extractedData.actionItems[index]?.dueDate ||
-                          item.dueDate ||
-                          item.due_date ||
-                          item.deadline_text ||
-                          "Not specified"
-                        }
-                        readOnly={!editingActions}
-                        className={!editingActions ? "read-only-field" : ""}
-                        onChange={(event) =>
-                          updateActionItem(index, "dueDate", event.target.value)
-                        }
-                      />
-                    </div>
-
-                    <div className="transcript-evidence action-evidence">
-                      <span className="evidence-label">Transcript evidence</span>
-                      <span className="evidence-speaker">
-                        {sourceEvidence?.speaker || item.owner || "Speaker unavailable"}
-                        {sourceEvidence?.start !== undefined
-                          ? ` · ${formatTimestamp(sourceEvidence.start)}`
-                          : ""}
-                      </span>
-                      <span>
-                        “{sourceEvidence?.text || item.source_text || item.task || ""}”
-                      </span>
-                    </div>
-                  </div>
-                );
-              })
+              groups.confirmed.map((claim) => (
+                <ClaimReviewCard
+                  key={claim.claim_id}
+                  claim={claim}
+                  busy={suggestionBusy}
+                  onSuggestionDecision={reviewSuggestion}
+                />
+              ))
             )}
           </div>
+
+          {groups.rejected.length > 0 && (
+            <div className="verify-section" data-testid="rejected-section">
+              <div className="verify-section-header">
+                <div>
+                  <h2>Rejected ({groups.rejected.length})</h2>
+                  <p>Excluded from the minutes.</p>
+                </div>
+              </div>
+              {groups.rejected.map((claim) => (
+                <ClaimReviewCard
+                  key={claim.claim_id}
+                  claim={claim}
+                  busy={suggestionBusy}
+                  onSuggestionDecision={reviewSuggestion}
+                />
+              ))}
+            </div>
+          )}
 
           <div className="verify-footer">
             <div className="verification-complete">
-              <span className="check-circle">✓</span>
-              <span>Manual review complete · Ready to export</span>
+              <span className="check-circle">{groups.review.length ? "?" : "✓"}</span>
+              <span>
+                {groups.review.length
+                  ? `${groups.review.length} item(s) will be listed as "held for review", not as confirmed`
+                  : "All remaining claims are confirmed"}
+              </span>
             </div>
 
-            <button
-              type="button"
-              className="continue-button"
-              onClick={goToExport}
-              disabled={editingDecisions || editingActions}
-            >
-              Confirm &amp; Continue to Export →
+            <button type="button" className="continue-button" onClick={goToExport}>
+              Continue to Export →
             </button>
           </div>
         </>

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from scipy import stats
+
 """
 claim_writer.py
 ===============
@@ -142,11 +144,25 @@ def persist_extraction(
     }
 
     try:
+        # Canonical extraction artifact
         mirror_file.write_text(
             json.dumps(mirror_data, indent=2, ensure_ascii=False),
             encoding="utf-8",
         )
+
+        # intelligence/extraction.json is written only by POST /api/extract
+        # (one writer per file); verification reads claims from the DB.
+        logger.info(
+            "Extraction artifact written for meeting %s: %s",
+            meeting_id,
+            mirror_file,
+        )
+
     except Exception as e:
-        logger.warning("Failed to write mirror JSON to %s: %s", mirror_file, e)
+        logger.warning(
+            "Failed to write extraction mirror JSON for meeting %s: %s",
+            meeting_id,
+            e,
+        )
 
     return stats

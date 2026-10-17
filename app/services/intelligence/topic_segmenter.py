@@ -53,7 +53,11 @@ class TopicSegmenter:
         if SENTENCE_TRANSFORMERS_AVAILABLE:
             print("Loading multilingual semantic model...")
 
-            self.model = SentenceTransformer(
+            # Shared per-process instance (same model the retrieval index and
+            # dialogue model use) instead of reloading it on every call.
+            from app.core.model_registry import get_sentence_transformer
+
+            self.model = get_sentence_transformer(
                 "sentence-transformers/"
                 "paraphrase-multilingual-MiniLM-L12-v2"
             )

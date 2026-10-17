@@ -20,6 +20,7 @@ __pycache__/
 *.pyc
 .venv/
 .venv_test/
+.pytest_cache/
 
 # Media & Database
 *.mp4

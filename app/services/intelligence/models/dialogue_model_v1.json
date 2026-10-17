@@ -1,0 +1,168 @@
+{
+ "version": "dialogue-v1",
+ "train_split": "AMI ES (train)",
+ "dev_split": "AMI IS (dev)",
+ "rows": {
+  "train_utterances": 44015,
+  "dev_utterances": 24922,
+  "train_pairs": 17621,
+  "dev_pairs": 10059,
+  "train_decision_pos": 605,
+  "train_action_pos": 170
+ },
+ "heads": {
+  "speech_act": {
+   "C": 0.003,
+   "dev_macro_f1": 0.4406
+  },
+  "decision": {
+   "C": 0.003,
+   "dev_ap": 0.0642,
+   "dev_base_rate": 0.0138
+  },
+  "action": {
+   "C": 0.1,
+   "dev_ap": 0.3443,
+   "dev_base_rate": 0.0038
+  },
+  "polarity": {
+   "C": 0.003,
+   "dev_macro_f1": 0.3574
+  }
+ },
+ "constraint": "false_confirmations <= rules-v2 dev baseline (169)",
+ "constraint_satisfied": true,
+ "thresholds": {
+  "decision": 0.95,
+  "action": 0.8,
+  "pos": 0.5,
+  "neg": 0.5,
+  "part": 0.5,
+  "response_window": 3,
+  "min_tokens": 3
+ },
+ "dev_at_thresholds": {
+  "cases": 38,
+  "decision_strict": {
+   "gold": 159,
+   "pred": 354,
+   "recall": 0.2516,
+   "precision": 0.1102,
+   "f1": 0.1532,
+   "recall_any_type": 0.2704
+  },
+  "decision_near": {
+   "gold": 159,
+   "pred": 354,
+   "recall": 0.3145,
+   "precision": 0.1469,
+   "f1": 0.2002,
+   "recall_any_type": 0.3585
+  },
+  "action_strict": {
+   "gold": 65,
+   "pred": 108,
+   "recall": 0.6308,
+   "precision": 0.3796,
+   "f1": 0.474,
+   "recall_any_type": 0.6615
+  },
+  "action_near": {
+   "gold": 65,
+   "pred": 108,
+   "recall": 0.8,
+   "precision": 0.5185,
+   "f1": 0.6292,
+   "recall_any_type": 0.8308
+  },
+  "confirmations": {
+   "final_claims": 194,
+   "false_confirmations": 142,
+   "confirmed_an_unconfirmed_gold_item": 0,
+   "confirmed_a_negative": 0,
+   "confirmed_gold_found_as_final": 48,
+   "confirmed_gold": 224
+  },
+  "attributes": {
+   "matched": 102,
+   "state_accuracy": null,
+   "state_checked": 0,
+   "owner_accuracy": null,
+   "owner_checked": 0,
+   "deadline_accuracy": null,
+   "citation_precision": 0.5041,
+   "citation_recall": 0.5882
+  },
+  "claims_per_meeting": 12.1579
+ },
+ "seconds": 92.0,
+ "hybrid_threshold_selection": {
+  "objective": "mean near-F1 of HYBRID (rules-v2 + dialogue) on AMI dev",
+  "constraint": "false_confirmations <= 169 (rules-v2 dev)",
+  "constraint_satisfied": true,
+  "thresholds": {
+   "decision": 0.8,
+   "action": 0.8,
+   "pos": 0.5,
+   "neg": 0.5,
+   "part": 0.5,
+   "response_window": 3,
+   "min_tokens": 3,
+   "offer": null
+  },
+  "hybrid_dev": {
+   "cases": 38,
+   "decision_strict": {
+    "gold": 159,
+    "pred": 1757,
+    "recall": 0.6604,
+    "precision": 0.07,
+    "f1": 0.1266,
+    "recall_any_type": 0.673
+   },
+   "decision_near": {
+    "gold": 159,
+    "pred": 1757,
+    "recall": 0.805,
+    "precision": 0.1133,
+    "f1": 0.1986,
+    "recall_any_type": 0.8302
+   },
+   "action_strict": {
+    "gold": 65,
+    "pred": 162,
+    "recall": 0.6154,
+    "precision": 0.2407,
+    "f1": 0.3461,
+    "recall_any_type": 0.6923
+   },
+   "action_near": {
+    "gold": 65,
+    "pred": 162,
+    "recall": 0.8154,
+    "precision": 0.3333,
+    "f1": 0.4732,
+    "recall_any_type": 0.9077
+   },
+   "confirmations": {
+    "final_claims": 183,
+    "false_confirmations": 162,
+    "confirmed_an_unconfirmed_gold_item": 0,
+    "confirmed_a_negative": 0,
+    "confirmed_gold_found_as_final": 23,
+    "confirmed_gold": 224
+   },
+   "attributes": {
+    "matched": 181,
+    "state_accuracy": null,
+    "state_checked": 0,
+    "owner_accuracy": null,
+    "owner_checked": 0,
+    "deadline_accuracy": null,
+    "citation_precision": 0.523,
+    "citation_recall": 0.5461
+   },
+   "claims_per_meeting": 50.5
+  }
+ }
+}

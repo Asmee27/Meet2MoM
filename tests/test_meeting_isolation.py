@@ -17,6 +17,17 @@ from app.api.meeting_routes import (
 )
 
 
+def _snapshot_tree(root: Path) -> dict:
+    """Map every file under root to (size, mtime) so any write is detectable."""
+    if not root.exists():
+        return {}
+    return {
+        str(path.relative_to(root)): (path.stat().st_size, path.stat().st_mtime_ns)
+        for path in root.rglob("*")
+        if path.is_file()
+    }
+
+
 def test_two_meetings_fully_independent():
     """
     Process two different meetings and confirm storage/<id_a>/ and storage/<id_b>/
@@ -24,6 +35,9 @@ def test_two_meetings_fully_independent():
     """
     id_a = uuid4().hex
     id_b = uuid4().hex
+
+    global_output = PROJECT_ROOT / "output"
+    output_before = _snapshot_tree(global_output)
 
     storage_a = MeetingStorage(id_a)
     storage_b = MeetingStorage(id_b)
@@ -151,12 +165,10 @@ def test_two_meetings_fully_independent():
     assert storage_b.exists("mom", "mom.json")
     assert storage_b.exists("mom", "Meet2MoM-Meeting-Minutes.pdf")
 
-    # Confirm NO shared output directory writes
-    global_output = PROJECT_ROOT / "output"
-    if global_output.exists():
-        assert not (global_output / "transcripts" / "meeting_transcript_ready.json").exists()
-        assert not (global_output / "intelligence").exists()
-        assert not (global_output / "mom").exists()
+    # Confirm NO shared output directory writes. Legacy scripts may have left
+    # files in output/ before this test ran, so compare against a snapshot
+    # instead of asserting that the directory is empty.
+    assert _snapshot_tree(global_output) == output_before
 
     # Clean up test directories
     shutil.rmtree(storage_a.root, ignore_errors=True)

@@ -10,11 +10,21 @@ from uuid import uuid4
 parser = argparse.ArgumentParser(description="Meet2MoM - Recorded Meeting Intelligence Pipeline")
 parser.add_argument("input_file", nargs="?", default=None, help="Path to input recording")
 parser.add_argument("--meeting-id", dest="meeting_id", default=None, help="Meeting ID for isolated storage")
+parser.add_argument(
+    "--skip-post-transcript",
+    dest="skip_post_transcript",
+    action="store_true",
+    help="Stop after the transcript (the calling process runs extraction and verification)",
+)
 args, _ = parser.parse_known_args()
 
 meeting_id = args.meeting_id or uuid4().hex
 os.environ["MEETING_ID"] = meeting_id
 os.environ["MEET2MOM_MEETING_ID"] = meeting_id
+
+from app.core.console import make_stdio_unicode_safe
+
+make_stdio_unicode_safe()
 
 from app.core.config import (
     INPUT_DIR,
@@ -315,7 +325,11 @@ def main():
             frontend_json,
             encoding="utf-8",
         )
-        run_post_transcript_stages(meeting_id)
+        if not args.skip_post_transcript:
+            from app.services.pipeline.intelligence_service import ensure_verification
+
+            run_post_transcript_stages(meeting_id)
+            ensure_verification(meeting_id, force=True)
 
         # ==================================================
         # TOTAL TIME

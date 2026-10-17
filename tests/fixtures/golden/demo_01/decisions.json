@@ -1,0 +1,359 @@
+{
+    "metadata": {
+        "total_records": 13,
+        "final_decisions": 2,
+        "proposals": 4,
+        "rejected_records": 0,
+        "excluded_non_decisions": 3,
+        "requires_review": 8,
+        "processing_strategy": "contextual_topic_by_topic",
+        "contextual_confirmation": true,
+        "accepted_proposals_become_agreed_decisions": true,
+        "reversal_detection": true,
+        "uncertainty_filtering": true,
+        "future_decision_filtering": true
+    },
+    "final_decisions": [
+        {
+            "topic_id": 8,
+            "topic_label": "Look Report / Highlights",
+            "text": "Start with a review of the current training approach and look at what we need to do to address the problems brought up in the survey.",
+            "decision_type": "agreed_decision",
+            "speaker": "UNKNOWN",
+            "timestamp": 199.36,
+            "topic_start": 195.89,
+            "topic_end": 241.05,
+            "confidence": 0.85,
+            "status": "active",
+            "requires_review": false,
+            "review_reasons": [],
+            "superseded_by": null,
+            "is_final_decision": true,
+            "original_proposal": "So I wondered if we could start with a review of the current training approach and look at what we need to do to address the problems brought up in the survey.",
+            "confirmation_text": "Yes.",
+            "confirmation_timestamp": 202.84
+        },
+        {
+            "topic_id": 8,
+            "topic_label": "Look Report / Highlights",
+            "text": "Look at the report together.",
+            "decision_type": "agreed_decision",
+            "speaker": "UNKNOWN",
+            "timestamp": 216.73,
+            "topic_start": 195.89,
+            "topic_end": 241.05,
+            "confidence": 0.85,
+            "status": "active",
+            "requires_review": false,
+            "review_reasons": [],
+            "superseded_by": null,
+            "is_final_decision": true,
+            "original_proposal": "So perhaps you and I could look at the report together?",
+            "confirmation_text": "Yes, OK.",
+            "confirmation_timestamp": 220.21
+        }
+    ],
+    "proposals": [
+        {
+            "topic_id": 8,
+            "topic_label": "Look Report / Highlights",
+            "text": "So I wondered if we could start with a review of the current training approach and look at what we need to do to address the problems brought up in the survey.",
+            "decision_type": "proposal",
+            "speaker": "UNKNOWN",
+            "timestamp": 199.36,
+            "topic_start": 195.89,
+            "topic_end": 241.05,
+            "confidence": 0.55,
+            "status": "confirmed",
+            "requires_review": true,
+            "review_reasons": [
+                "proposal_not_yet_confirmed"
+            ],
+            "superseded_by": null,
+            "confirmed_by": "Yes.",
+            "confirmation_timestamp": 202.84,
+            "is_final_decision": false
+        },
+        {
+            "topic_id": 8,
+            "topic_label": "Look Report / Highlights",
+            "text": "We could do that.",
+            "decision_type": "proposal",
+            "speaker": "UNKNOWN",
+            "timestamp": 206.31,
+            "topic_start": 195.89,
+            "topic_end": 241.05,
+            "confidence": 0.55,
+            "status": "pending",
+            "requires_review": true,
+            "review_reasons": [
+                "proposal_not_yet_confirmed"
+            ],
+            "superseded_by": null
+        },
+        {
+            "topic_id": 8,
+            "topic_label": "Look Report / Highlights",
+            "text": "So perhaps you and I could look at the report together?",
+            "decision_type": "proposal",
+            "speaker": "UNKNOWN",
+            "timestamp": 216.73,
+            "topic_start": 195.89,
+            "topic_end": 241.05,
+            "confidence": 0.55,
+            "status": "confirmed",
+            "requires_review": true,
+            "review_reasons": [
+                "proposal_not_yet_confirmed"
+            ],
+            "superseded_by": null,
+            "confirmed_by": "Yes, OK.",
+            "confirmation_timestamp": 220.21,
+            "is_final_decision": false
+        },
+        {
+            "topic_id": 8,
+            "topic_label": "Look Report / Highlights",
+            "text": "Perhaps we could start with the highlights first.",
+            "decision_type": "proposal",
+            "speaker": "UNKNOWN",
+            "timestamp": 237.58,
+            "topic_start": 195.89,
+            "topic_end": 241.05,
+            "confidence": 0.55,
+            "status": "pending",
+            "requires_review": true,
+            "review_reasons": [
+                "proposal_not_yet_confirmed"
+            ],
+            "superseded_by": null
+        }
+    ],
+    "all_records": [
+        {
+            "topic_id": 2,
+            "topic_label": "Thought / Centre",
+            "text": "Yes, exactly.",
+            "decision_type": "unresolved_acceptance",
+            "speaker": "SPEAKER_04",
+            "timestamp": 42.58,
+            "topic_start": 30.61,
+            "topic_end": 48.57,
+            "confidence": 0.4,
+            "status": "review",
+            "requires_review": true,
+            "review_reasons": [
+                "acceptance_without_detected_proposal"
+            ],
+            "superseded_by": null
+        },
+        {
+            "topic_id": 4,
+            "topic_label": "Complaints / Sorry",
+            "text": "Sorry, I'm not sure I understand.",
+            "decision_type": "uncertainty",
+            "speaker": "UNKNOWN",
+            "timestamp": 94.67,
+            "topic_start": 67.12,
+            "topic_end": 130.08,
+            "confidence": 0.9,
+            "status": "excluded",
+            "requires_review": false,
+            "review_reasons": [],
+            "superseded_by": null
+        },
+        {
+            "topic_id": 6,
+            "topic_label": "Refresher Course / Aren",
+            "text": "Yeah, could be, aren't it?",
+            "decision_type": "unresolved_acceptance",
+            "speaker": "UNKNOWN",
+            "timestamp": 148.91,
+            "topic_start": 145.12,
+            "topic_end": 179.2,
+            "confidence": 0.4,
+            "status": "review",
+            "requires_review": true,
+            "review_reasons": [
+                "acceptance_without_detected_proposal"
+            ],
+            "superseded_by": null
+        },
+        {
+            "topic_id": 6,
+            "topic_label": "Refresher Course / Aren",
+            "text": "Yes, that's a good point, Anna.",
+            "decision_type": "unresolved_acceptance",
+            "speaker": "UNKNOWN",
+            "timestamp": 164.05,
+            "topic_start": 145.12,
+            "topic_end": 179.2,
+            "confidence": 0.4,
+            "status": "review",
+            "requires_review": true,
+            "review_reasons": [
+                "acceptance_without_detected_proposal"
+            ],
+            "superseded_by": null
+        },
+        {
+            "topic_id": 6,
+            "topic_label": "Refresher Course / Aren",
+            "text": "And we don't know yet if we will have to start from scratch.",
+            "decision_type": "uncertainty",
+            "speaker": "UNKNOWN",
+            "timestamp": 167.84,
+            "topic_start": 145.12,
+            "topic_end": 179.2,
+            "confidence": 0.9,
+            "status": "excluded",
+            "requires_review": false,
+            "review_reasons": [],
+            "superseded_by": null
+        },
+        {
+            "topic_id": 7,
+            "topic_label": "Dealing Sensitively / Realise Easy",
+            "text": "Yes, that's right.",
+            "decision_type": "unresolved_acceptance",
+            "speaker": "UNKNOWN",
+            "timestamp": 185.88,
+            "topic_start": 179.2,
+            "topic_end": 195.89,
+            "confidence": 0.4,
+            "status": "review",
+            "requires_review": true,
+            "review_reasons": [
+                "acceptance_without_detected_proposal"
+            ],
+            "superseded_by": null
+        },
+        {
+            "topic_id": 8,
+            "topic_label": "Look Report / Highlights",
+            "text": "So I wondered if we could start with a review of the current training approach and look at what we need to do to address the problems brought up in the survey.",
+            "decision_type": "proposal",
+            "speaker": "UNKNOWN",
+            "timestamp": 199.36,
+            "topic_start": 195.89,
+            "topic_end": 241.05,
+            "confidence": 0.55,
+            "status": "confirmed",
+            "requires_review": true,
+            "review_reasons": [
+                "proposal_not_yet_confirmed"
+            ],
+            "superseded_by": null,
+            "confirmed_by": "Yes.",
+            "confirmation_timestamp": 202.84,
+            "is_final_decision": false
+        },
+        {
+            "topic_id": 8,
+            "topic_label": "Look Report / Highlights",
+            "text": "Start with a review of the current training approach and look at what we need to do to address the problems brought up in the survey.",
+            "decision_type": "agreed_decision",
+            "speaker": "UNKNOWN",
+            "timestamp": 199.36,
+            "topic_start": 195.89,
+            "topic_end": 241.05,
+            "confidence": 0.85,
+            "status": "active",
+            "requires_review": false,
+            "review_reasons": [],
+            "superseded_by": null,
+            "is_final_decision": true,
+            "original_proposal": "So I wondered if we could start with a review of the current training approach and look at what we need to do to address the problems brought up in the survey.",
+            "confirmation_text": "Yes.",
+            "confirmation_timestamp": 202.84
+        },
+        {
+            "topic_id": 8,
+            "topic_label": "Look Report / Highlights",
+            "text": "We could do that.",
+            "decision_type": "proposal",
+            "speaker": "UNKNOWN",
+            "timestamp": 206.31,
+            "topic_start": 195.89,
+            "topic_end": 241.05,
+            "confidence": 0.55,
+            "status": "pending",
+            "requires_review": true,
+            "review_reasons": [
+                "proposal_not_yet_confirmed"
+            ],
+            "superseded_by": null
+        },
+        {
+            "topic_id": 8,
+            "topic_label": "Look Report / Highlights",
+            "text": "So perhaps you and I could look at the report together?",
+            "decision_type": "proposal",
+            "speaker": "UNKNOWN",
+            "timestamp": 216.73,
+            "topic_start": 195.89,
+            "topic_end": 241.05,
+            "confidence": 0.55,
+            "status": "confirmed",
+            "requires_review": true,
+            "review_reasons": [
+                "proposal_not_yet_confirmed"
+            ],
+            "superseded_by": null,
+            "confirmed_by": "Yes, OK.",
+            "confirmation_timestamp": 220.21,
+            "is_final_decision": false
+        },
+        {
+            "topic_id": 8,
+            "topic_label": "Look Report / Highlights",
+            "text": "Look at the report together.",
+            "decision_type": "agreed_decision",
+            "speaker": "UNKNOWN",
+            "timestamp": 216.73,
+            "topic_start": 195.89,
+            "topic_end": 241.05,
+            "confidence": 0.85,
+            "status": "active",
+            "requires_review": false,
+            "review_reasons": [],
+            "superseded_by": null,
+            "is_final_decision": true,
+            "original_proposal": "So perhaps you and I could look at the report together?",
+            "confirmation_text": "Yes, OK.",
+            "confirmation_timestamp": 220.21
+        },
+        {
+            "topic_id": 8,
+            "topic_label": "Look Report / Highlights",
+            "text": "Then we'll be able to decide what needs addressing and how.",
+            "decision_type": "future_decision",
+            "speaker": "UNKNOWN",
+            "timestamp": 223.68,
+            "topic_start": 195.89,
+            "topic_end": 241.05,
+            "confidence": 0.9,
+            "status": "excluded",
+            "requires_review": false,
+            "review_reasons": [],
+            "superseded_by": null
+        },
+        {
+            "topic_id": 8,
+            "topic_label": "Look Report / Highlights",
+            "text": "Perhaps we could start with the highlights first.",
+            "decision_type": "proposal",
+            "speaker": "UNKNOWN",
+            "timestamp": 237.58,
+            "topic_start": 195.89,
+            "topic_end": 241.05,
+            "confidence": 0.55,
+            "status": "pending",
+            "requires_review": true,
+            "review_reasons": [
+                "proposal_not_yet_confirmed"
+            ],
+            "superseded_by": null
+        }
+    ]
+}

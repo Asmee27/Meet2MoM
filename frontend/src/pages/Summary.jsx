@@ -236,12 +236,17 @@ export default function Summary() {
                           {typeof decision === "string"
                             ? decision
                             : decision?.text || "Decision text unavailable"}
+                          {(decision?.warnings || []).map((warning) => (
+                            <span className="minutes-warning" key={warning}>
+                              ⚠ {warning}
+                            </span>
+                          ))}
                         </p>
                       </div>
                     ))
                   ) : (
                     <p className="empty-state-text">
-                      No explicit decisions recorded.
+                      No decisions could be confirmed from transcript evidence.
                     </p>
                   )}
                 </div>
@@ -262,8 +267,15 @@ export default function Summary() {
 
                       {momData.action_items.map((item, index) => (
                         <div className="table-row" key={index}>
-                          <span>{item.task || "Not specified"}</span>
-                          <span>{item.owner || "Not specified"}</span>
+                          <span>
+                            {item.task || "Not specified"}
+                            {(item.warnings || []).map((warning) => (
+                              <span className="minutes-warning" key={warning}>
+                                ⚠ {warning}
+                              </span>
+                            ))}
+                          </span>
+                          <span>{item.owner || "Not assigned"}</span>
                           <span>{item.dueDate || "Not specified"}</span>
                         </div>
                       ))}
@@ -274,6 +286,46 @@ export default function Summary() {
                     </p>
                   )}
                 </div>
+
+                {/* HELD FOR REVIEW: shown, never part of the confirmed minutes */}
+
+                {Array.isArray(momData.needs_review) && momData.needs_review.length > 0 && (
+                  <div className="minutes-block minutes-needs-review">
+                    <h3>Held for Review (not confirmed)</h3>
+                    <p className="empty-state-text">
+                      These items could not be confirmed from transcript evidence and are
+                      not decisions or tasks of record.
+                    </p>
+                    {momData.needs_review.map((item) => (
+                      <div className="minutes-decision" key={item.claim_id}>
+                        <span>{item.claim_type === "decision" ? "D" : "A"}</span>
+                        <p>
+                          {item.text}
+                          {(item.reasons || []).map((reason) => (
+                            <span className="minutes-warning" key={reason}>
+                              {reason}
+                            </span>
+                          ))}
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {momData.extraction &&
+                  (momData.extraction.fallback_reason ||
+                    !["completed", "no_claims"].includes(momData.extraction.status)) && (
+                    <p className="empty-state-text minutes-extraction-note">
+                      Extraction status: {momData.extraction.status}
+                      {momData.extraction.mode_used
+                        ? ` (extractor used: ${momData.extraction.mode_used})`
+                        : ""}
+                      {momData.extraction.fallback_reason
+                        ? ` · ${momData.extraction.fallback_reason}`
+                        : ""}
+                      {momData.extraction.reason ? ` · ${momData.extraction.reason}` : ""}
+                    </p>
+                  )}
 
                 {/* FOLLOW UPS */}
 

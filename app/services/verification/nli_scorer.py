@@ -6,7 +6,7 @@ import logging
 import random
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +22,7 @@ MAX_PREMISE_CHARS = 1200
 PREMISE_CONTEXT = 1
 BACKGROUND_N = 5
 CONTENT_COVERAGE_MIN = 0.5
+SECONDARY_HYPOTHESIS_TOP_N = 3
 NLI_MODEL = "MoritzLaurer/mDeBERTa-v3-base-mnli-xnli"
 STOPWORDS = {
     "the", "a", "an", "and", "or", "of", "to", "in", "on", "for", "with", "at",
@@ -49,6 +50,8 @@ class PairScore:
     contradict: float
     provenance: str
     expanded: bool
+    # Utterances actually included in the scored premise (span + context).
+    premise_utt_ids: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -69,6 +72,13 @@ class ClaimNLIResult:
     n_pairs: int
     evidence_mismatch: bool
     proposed_utt_ids: list[str]
+    # Where the strongest contradiction came from (core hypothesis only), so a
+    # possible reversal can be shown to the reviewer instead of just a number.
+    x_union_utt_ids: list[str] = field(default_factory=list)
+    x_union_provenance: str | None = None
+    x_core: float = 0.0
+    # Entailment from the cited utterances alone (no neighbouring context).
+    e_cited_strict: float | None = None
 
 
 def content_coverage(claim_text: str, premise_text: str) -> float:
@@ -114,6 +124,20 @@ def expand_premise(meeting_id: str, utt_ids: list[str], context: int = PREMISE_C
     return " ".join(expanded)
 
 
+def expand_utt_ids(meeting_id: str, utt_ids: list[str], context: int = PREMISE_CONTEXT) -> list[str]:
+    """The utterance ids covered by expand_premise() for the same inputs."""
+    if not utt_ids:
+        return []
+    utts = db.get_utterances(meeting_id)
+    order = [u.utt_id for u in utts]
+    positions = [order.index(i) for i in utt_ids if i in order]
+    if not positions:
+        return list(utt_ids)
+    start = max(0, min(positions) - context)
+    end = min(len(order), max(positions) + context + 1)
+    return order[start:end]
+
+
 def background_entailment(
     scorer: "NLIScorer",
     meeting_id: str,
@@ -144,13 +168,14 @@ def background_entailment(
     seed = int(hashlib.sha256(claim_text.encode("utf-8")).hexdigest()[:8], 16) & 0xFFFFFFFF
     rng = random.Random(seed)
     sample = rng.sample(candidate_spans, k=min(BACKGROUND_N, len(candidate_spans)))
-    scores = []
+    pairs = []
     for span in sample:
         premise = expand_premise(meeting_id, list(getattr(span, "utt_ids", [])), PREMISE_CONTEXT)
         if not premise:
             premise = getattr(span, "text", "")
-        raw = scorer.score_pairs([(premise, claim_text)])
-        scores.append(float(raw[0].get("entailment", 0.0)))
+        pairs.append((premise, claim_text))
+    raw = scorer.score_pairs_cached(meeting_id, pairs)
+    scores = [float(item.get("entailment", 0.0)) for item in raw]
     return sum(scores) / len(scores) if scores else 0.0
 
 
@@ -269,7 +294,13 @@ class NLIScorer:
             {"text": premise[:MAX_PREMISE_CHARS], "text_pair": hypothesis}
             for premise, hypothesis in pairs
         ]
-        raw = pipe(inputs, batch_size=self.batch_size)
+        # Batch similar lengths together to avoid padding every pair to the
+        # longest premise; results are restored to the caller's order.
+        order = sorted(range(len(inputs)), key=lambda i: len(inputs[i]["text"]) + len(inputs[i]["text_pair"]))
+        raw_sorted = pipe([inputs[i] for i in order], batch_size=self.batch_size)
+        raw = [None] * len(inputs)
+        for position, index in enumerate(order):
+            raw[index] = raw_sorted[position]
         results: list[dict[str, float]] = []
         for scores in raw:
             out = {"entailment": 0.0, "neutral": 0.0, "contradiction": 0.0}
@@ -300,12 +331,33 @@ class NLIScorer:
             results.append(out)
         return results
 
+    def score_pairs_cached(self, meeting_id: str, pairs: list[tuple[str, str]]) -> list[dict]:
+        """Score pairs through the per-meeting pair cache, in one batch."""
+        cache = self._load_cache(meeting_id)
+        keys = [self._pair_cache_key(p, h, self.model_name) for p, h in pairs]
+        missing = [(key, pair) for key, pair in zip(keys, pairs) if key not in cache]
+        if missing:
+            self.cache_misses += len(missing)
+            for (key, _), scores in zip(missing, self.score_pairs([pair for _, pair in missing])):
+                cache[key] = {
+                    "entailment": float(scores.get("entailment", 0.0)),
+                    "neutral": float(scores.get("neutral", 0.0)),
+                    "contradiction": float(scores.get("contradiction", 0.0)),
+                }
+            self._save_cache(meeting_id, cache)
+        self.cache_hits += len(pairs) - len(missing)
+        return [cache[key] for key in keys]
+
     def score_claim(self, cc: ClaimCandidates, claim_payload: dict) -> ClaimNLIResult:
         hyps = build_hypotheses(claim_payload)
         pair_specs: list[dict[str, Any]] = []
         all_candidate_spans = list(getattr(cc, "candidates", []))
-        for candidate in all_candidate_spans:
-            for hyp in hyps:
+        for rank, candidate in enumerate(all_candidate_spans):
+            # The core hypothesis is checked against every candidate; secondary
+            # hypotheses (state/owner/deadline) only against the strongest few,
+            # which is all fusion needs and roughly halves NLI cost per claim.
+            candidate_hyps = hyps if rank < SECONDARY_HYPOTHESIS_TOP_N else hyps[:1]
+            for hyp in candidate_hyps:
                 premise_text = getattr(candidate.span, "text", "")
                 expanded = expand_premise(cc.meeting_id, list(candidate.span.utt_ids), PREMISE_CONTEXT)
                 candidate_premise = expanded or premise_text
@@ -318,9 +370,26 @@ class NLIScorer:
                         "premise": candidate_premise,
                         "hypothesis": hyp.text,
                         "expanded": candidate_premise != premise_text,
+                        "premise_utt_ids": expand_utt_ids(cc.meeting_id, list(candidate.span.utt_ids), PREMISE_CONTEXT)
+                        if candidate_premise != premise_text else list(candidate.span.utt_ids),
                     }
                 )
         if cc.cited_span is not None:
+            # The cited utterances alone, without neighbouring context: detects
+            # citations that are only "supported" thanks to an adjacent utterance.
+            core = next(h for h in hyps if h.kind == "core")
+            pair_specs.append(
+                {
+                    "span_id": cc.cited_span.span_id,
+                    "utt_ids": list(cc.cited_span.utt_ids),
+                    "hypothesis_kind": core.kind,
+                    "provenance": "cited_strict",
+                    "premise": cc.cited_span.text,
+                    "hypothesis": core.text,
+                    "expanded": False,
+                    "premise_utt_ids": list(cc.cited_span.utt_ids),
+                }
+            )
             for hyp in hyps:
                 cited_text = cc.cited_span.text
                 expanded = expand_premise(cc.meeting_id, list(cc.cited_span.utt_ids), PREMISE_CONTEXT)
@@ -334,6 +403,8 @@ class NLIScorer:
                         "premise": cited_premise,
                         "hypothesis": hyp.text,
                         "expanded": cited_premise != cited_text,
+                        "premise_utt_ids": expand_utt_ids(cc.meeting_id, list(cc.cited_span.utt_ids), PREMISE_CONTEXT)
+                        if cited_premise != cited_text else list(cc.cited_span.utt_ids),
                     }
                 )
 
@@ -379,14 +450,20 @@ class NLIScorer:
                     contradict=score["contradiction"],
                     provenance=spec["provenance"],
                     expanded=bool(spec["expanded"]),
+                    premise_utt_ids=list(spec["premise_utt_ids"]),
                 )
             )
 
-        core_scores = [s for s in scored if s.hypothesis_kind == "core"]
+        core_scores = [s for s in scored if s.hypothesis_kind == "core" and s.provenance != "cited_strict"]
         e_union = max((s.entail for s in core_scores), default=0.0)
-        x_union = max((s.contradict for s in scored), default=0.0)
+        x_union = max((s.contradict for s in scored if s.provenance != "cited_strict"), default=0.0)
         cited_scores = [s for s in scored if s.hypothesis_kind == "core" and s.provenance == "cited_span"]
         e_cited = max((s.entail for s in cited_scores), default=0.0)
+        strict_scores = [s for s in scored if s.provenance == "cited_strict"]
+        e_cited_strict = max((s.entail for s in strict_scores), default=None)
+        # "Best alternative" and contradictions come from cited/retrieved premises
+        # with context, not from the strict probe.
+        scored_for_union = [s for s in scored if s.provenance != "cited_strict"]
         x_cited = max((s.contradict for s in cited_scores), default=0.0)
 
         exclude_utt_ids = set()
@@ -411,11 +488,13 @@ class NLIScorer:
         content_ok = content_value >= CONTENT_COVERAGE_MIN if cc.cited_span is not None else False
 
         per_hypothesis: dict[str, float] = {}
-        for kind in {item.hypothesis_kind for item in scored}:
+        for kind in {item.hypothesis_kind for item in scored_for_union}:
             per_hypothesis[kind] = max(
-                (s.entail for s in scored if s.hypothesis_kind == kind),
+                (s.entail for s in scored_for_union if s.hypothesis_kind == kind),
                 default=0.0,
             )
+
+        strongest_contradiction = max(core_scores, key=lambda item: item.contradict, default=None)
 
         best_span = max(core_scores, key=lambda item: item.entail, default=None)
         best_span_id = best_span.span_id if best_span is not None else None
@@ -451,6 +530,10 @@ class NLIScorer:
             n_pairs=len(scored),
             evidence_mismatch=evidence_mismatch,
             proposed_utt_ids=proposed_utt_ids,
+            x_union_utt_ids=list(strongest_contradiction.premise_utt_ids) if strongest_contradiction else [],
+            x_union_provenance=strongest_contradiction.provenance if strongest_contradiction else None,
+            x_core=strongest_contradiction.contradict if strongest_contradiction else 0.0,
+            e_cited_strict=e_cited_strict,
         )
 
 

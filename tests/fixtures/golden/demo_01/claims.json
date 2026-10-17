@@ -1,0 +1,40 @@
+{
+  "claims": [
+    {
+      "claim_id": "demo_01_d00000",
+      "meeting_id": "demo_01",
+      "text": "Start with a review of the current training approach and look at what we need to do to address the problems brought up in the survey.",
+      "evidence": [
+        "u00030"
+      ],
+      "claim_type": "decision",
+      "state": "accepted",
+      "proposer": null,
+      "conditional": false,
+      "condition_text": null,
+      "uncertainty": "low"
+    },
+    {
+      "claim_id": "demo_01_d00001",
+      "meeting_id": "demo_01",
+      "text": "Look at the report together.",
+      "evidence": [
+        "u00033"
+      ],
+      "claim_type": "decision",
+      "state": "accepted",
+      "proposer": null,
+      "conditional": false,
+      "condition_text": null,
+      "uncertainty": "low"
+    }
+  ],
+  "dropped": [],
+  "stats": {
+    "accepted": 2,
+    "dropped": 0,
+    "by_reason": {},
+    "drop_rate": 0.0,
+    "mode_used": "rules"
+  }
+}
