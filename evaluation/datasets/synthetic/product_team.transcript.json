@@ -1,0 +1,86 @@
+{
+ "synthetic": true,
+ "segments": [
+  {
+   "utt_id": "u00000",
+   "start": 0.0,
+   "end": 3.15,
+   "speaker": "Lena",
+   "text": "Checkout conversion dropped eight percent after the last release.",
+   "speaker_attribution_confidence": 0.9,
+   "avg_logprob": -0.15
+  },
+  {
+   "utt_id": "u00001",
+   "start": 3.45,
+   "end": 8.0,
+   "speaker": "Omar",
+   "text": "I think it's the new address form, it has too many required fields.",
+   "speaker_attribution_confidence": 0.9,
+   "avg_logprob": -0.15
+  },
+  {
+   "utt_id": "u00002",
+   "start": 8.3,
+   "end": 11.1,
+   "speaker": "Lena",
+   "text": "Can we make the second address line optional?",
+   "speaker_attribution_confidence": 0.9,
+   "avg_logprob": -0.15
+  },
+  {
+   "utt_id": "u00003",
+   "start": 11.4,
+   "end": 12.9,
+   "speaker": "Omar",
+   "text": "Yes, that's easy.",
+   "speaker_attribution_confidence": 0.9,
+   "avg_logprob": -0.15
+  },
+  {
+   "utt_id": "u00004",
+   "start": 13.2,
+   "end": 16.0,
+   "speaker": "Lena",
+   "text": "Okay, so the second address line becomes optional.",
+   "speaker_attribution_confidence": 0.9,
+   "avg_logprob": -0.15
+  },
+  {
+   "utt_id": "u00005",
+   "start": 16.3,
+   "end": 18.4,
+   "speaker": "Priya",
+   "text": "We could also add Apple Pay.",
+   "speaker_attribution_confidence": 0.9,
+   "avg_logprob": -0.15
+  },
+  {
+   "utt_id": "u00006",
+   "start": 18.7,
+   "end": 22.9,
+   "speaker": "Lena",
+   "text": "Maybe, but that's a bigger project, let's not commit to it today.",
+   "speaker_attribution_confidence": 0.9,
+   "avg_logprob": -0.15
+  },
+  {
+   "utt_id": "u00007",
+   "start": 23.2,
+   "end": 26.35,
+   "speaker": "Omar",
+   "text": "I'll ship the address form fix in tomorrow's release.",
+   "speaker_attribution_confidence": 0.9,
+   "avg_logprob": -0.15
+  },
+  {
+   "utt_id": "u00008",
+   "start": 26.65,
+   "end": 30.85,
+   "speaker": "Priya",
+   "text": "And I can write up an A/B test plan if that helps.",
+   "speaker_attribution_confidence": 0.9,
+   "avg_logprob": -0.15
+  }
+ ]
+}

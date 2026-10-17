@@ -1,0 +1,68 @@
+{
+ "synthetic": true,
+ "segments": [
+  {
+   "utt_id": "u00000",
+   "start": 0.0,
+   "end": 2.1,
+   "speaker": "Prof. Chen",
+   "text": "The workshop deadline is the twentieth.",
+   "speaker_attribution_confidence": 0.9,
+   "avg_logprob": -0.15
+  },
+  {
+   "utt_id": "u00001",
+   "start": 2.4,
+   "end": 4.85,
+   "speaker": "Aditi",
+   "text": "My experiments still need about two weeks.",
+   "speaker_attribution_confidence": 0.9,
+   "avg_logprob": -0.15
+  },
+  {
+   "utt_id": "u00002",
+   "start": 5.15,
+   "end": 9.0,
+   "speaker": "Prof. Chen",
+   "text": "Hypothetically, if we dropped the ablation study, could you make it?",
+   "speaker_attribution_confidence": 0.9,
+   "avg_logprob": -0.15
+  },
+  {
+   "utt_id": "u00003",
+   "start": 9.3,
+   "end": 11.75,
+   "speaker": "Aditi",
+   "text": "Probably, but the paper would be weaker.",
+   "speaker_attribution_confidence": 0.9,
+   "avg_logprob": -0.15
+  },
+  {
+   "utt_id": "u00004",
+   "start": 12.05,
+   "end": 15.9,
+   "speaker": "Marco",
+   "text": "I'd rather we aim for the main conference in March instead.",
+   "speaker_attribution_confidence": 0.9,
+   "avg_logprob": -0.15
+  },
+  {
+   "utt_id": "u00005",
+   "start": 16.2,
+   "end": 21.1,
+   "speaker": "Prof. Chen",
+   "text": "Hmm. I'm not convinced yet. Let's decide next week once Aditi has preliminary results.",
+   "speaker_attribution_confidence": 0.9,
+   "avg_logprob": -0.15
+  },
+  {
+   "utt_id": "u00006",
+   "start": 21.4,
+   "end": 23.5,
+   "speaker": "Aditi",
+   "text": "I'll send preliminary results by Wednesday.",
+   "speaker_attribution_confidence": 0.9,
+   "avg_logprob": -0.15
+  }
+ ]
+}

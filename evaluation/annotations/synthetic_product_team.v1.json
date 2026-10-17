@@ -1,0 +1,69 @@
+{
+ "schema": "meet2mom-gold-v1",
+ "meeting_id": "syn_product_team",
+ "version": 1,
+ "synthetic": true,
+ "domain": "software product team",
+ "split": "synthetic-test",
+ "seen_during_development": false,
+ "transcript": "evaluation/datasets/synthetic/product_team.transcript.json",
+ "annotator": "Claude (author-written synthetic meeting and labels). Created 2026-10-16.",
+ "items": [
+  {
+   "id": "syn_product_team.d1",
+   "type": "decision",
+   "text": "Make the second address line optional",
+   "confirmed": true,
+   "evidence": [
+    "u00002",
+    "u00003",
+    "u00004"
+   ],
+   "state": "accepted"
+  },
+  {
+   "id": "syn_product_team.d2",
+   "type": "decision",
+   "text": "Add Apple Pay",
+   "confirmed": false,
+   "evidence": [
+    "u00005",
+    "u00006"
+   ],
+   "state": "proposed"
+  },
+  {
+   "id": "syn_product_team.a3",
+   "type": "action",
+   "text": "Ship the address form fix",
+   "confirmed": true,
+   "evidence": [
+    "u00007"
+   ],
+   "commitment": "firm",
+   "owner": "Omar",
+   "owner_aliases": [
+    "Omar"
+   ],
+   "owner_type": "explicit_first_person",
+   "deadline": "in tomorrow's release"
+  },
+  {
+   "id": "syn_product_team.a4",
+   "type": "action",
+   "text": "Write an A/B test plan",
+   "confirmed": false,
+   "evidence": [
+    "u00008"
+   ],
+   "commitment": "tentative",
+   "owner": "Priya",
+   "owner_aliases": [
+    "Priya"
+   ],
+   "owner_type": "explicit_first_person",
+   "deadline": null
+  }
+ ],
+ "negatives": []
+}

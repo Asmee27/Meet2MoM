@@ -1,0 +1,62 @@
+{
+ "schema": "meet2mom-gold-v1",
+ "meeting_id": "syn_event_planning",
+ "version": 1,
+ "synthetic": true,
+ "domain": "corporate event planning",
+ "split": "synthetic-test",
+ "seen_during_development": false,
+ "transcript": "evaluation/datasets/synthetic/event_planning.transcript.json",
+ "annotator": "Claude (author-written synthetic meeting and labels). Created 2026-10-16.",
+ "items": [
+  {
+   "id": "syn_event_planning.d1",
+   "type": "decision",
+   "text": "Book the city hotel for the offsite",
+   "confirmed": true,
+   "evidence": [
+    "u00002",
+    "u00003",
+    "u00004",
+    "u00005"
+   ],
+   "state": "accepted"
+  },
+  {
+   "id": "syn_event_planning.a2",
+   "type": "action",
+   "text": "Handle catering and prepare menu options",
+   "confirmed": true,
+   "evidence": [
+    "u00007",
+    "u00008",
+    "u00009"
+   ],
+   "commitment": "firm",
+   "owner": "Grace",
+   "owner_aliases": [
+    "Grace"
+   ],
+   "owner_type": "explicit_first_person",
+   "deadline": "by the end of the month"
+  },
+  {
+   "id": "syn_event_planning.d3",
+   "type": "decision",
+   "text": "Hire a photographer",
+   "confirmed": false,
+   "evidence": [
+    "u00010"
+   ],
+   "state": "proposed"
+  }
+ ],
+ "negatives": [
+  {
+   "evidence": [
+    "u00006"
+   ],
+   "reason": "Question"
+  }
+ ]
+}

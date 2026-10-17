@@ -1,0 +1,104 @@
+{
+ "synthetic": true,
+ "segments": [
+  {
+   "utt_id": "u00000",
+   "start": 0.0,
+   "end": 4.55,
+   "speaker": "Dr. Mehta",
+   "text": "Okay, the main issue this week is the night shift gap on Saturday.",
+   "speaker_attribution_confidence": 0.9,
+   "avg_logprob": -0.15
+  },
+  {
+   "utt_id": "u00001",
+   "start": 4.85,
+   "end": 8.0,
+   "speaker": "Nurse Joy",
+   "text": "We are short two nurses from eleven to seven.",
+   "speaker_attribution_confidence": 0.9,
+   "avg_logprob": -0.15
+  },
+  {
+   "utt_id": "u00002",
+   "start": 8.3,
+   "end": 11.45,
+   "speaker": "Dr. Mehta",
+   "text": "Could we pull one nurse from the day ward?",
+   "speaker_attribution_confidence": 0.9,
+   "avg_logprob": -0.15
+  },
+  {
+   "utt_id": "u00003",
+   "start": 11.75,
+   "end": 15.95,
+   "speaker": "Nurse Joy",
+   "text": "No, the day ward is already at minimum staffing, that won't work.",
+   "speaker_attribution_confidence": 0.9,
+   "avg_logprob": -0.15
+  },
+  {
+   "utt_id": "u00004",
+   "start": 16.25,
+   "end": 19.75,
+   "speaker": "Admin Ravi",
+   "text": "What if we bring in agency staff for that night?",
+   "speaker_attribution_confidence": 0.9,
+   "avg_logprob": -0.15
+  },
+  {
+   "utt_id": "u00005",
+   "start": 20.05,
+   "end": 23.2,
+   "speaker": "Dr. Mehta",
+   "text": "Yes, let's do that, agency staff for Saturday night.",
+   "speaker_attribution_confidence": 0.9,
+   "avg_logprob": -0.15
+  },
+  {
+   "utt_id": "u00006",
+   "start": 23.5,
+   "end": 25.0,
+   "speaker": "Nurse Joy",
+   "text": "Agreed.",
+   "speaker_attribution_confidence": 0.9,
+   "avg_logprob": -0.15
+  },
+  {
+   "utt_id": "u00007",
+   "start": 25.3,
+   "end": 28.8,
+   "speaker": "Admin Ravi",
+   "text": "I'll call the agency and book two nurses by Thursday.",
+   "speaker_attribution_confidence": 0.9,
+   "avg_logprob": -0.15
+  },
+  {
+   "utt_id": "u00008",
+   "start": 29.1,
+   "end": 30.6,
+   "speaker": "Dr. Mehta",
+   "text": "Great, thanks Ravi.",
+   "speaker_attribution_confidence": 0.9,
+   "avg_logprob": -0.15
+  },
+  {
+   "utt_id": "u00009",
+   "start": 30.9,
+   "end": 34.4,
+   "speaker": "Nurse Joy",
+   "text": "Also, someone should update the on-call rota on the intranet.",
+   "speaker_attribution_confidence": 0.9,
+   "avg_logprob": -0.15
+  },
+  {
+   "utt_id": "u00010",
+   "start": 34.7,
+   "end": 36.45,
+   "speaker": "Dr. Mehta",
+   "text": "We'll figure that out later.",
+   "speaker_attribution_confidence": 0.9,
+   "avg_logprob": -0.15
+  }
+ ]
+}

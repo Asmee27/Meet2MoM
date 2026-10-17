@@ -1,0 +1,77 @@
+{
+ "synthetic": true,
+ "segments": [
+  {
+   "utt_id": "u00000",
+   "start": 0.0,
+   "end": 3.15,
+   "speaker": "CFO Nadia",
+   "text": "Marketing spend is twenty percent over budget this quarter.",
+   "speaker_attribution_confidence": 0.9,
+   "avg_logprob": -0.15
+  },
+  {
+   "utt_id": "u00001",
+   "start": 3.45,
+   "end": 7.65,
+   "speaker": "Head of Marketing Leo",
+   "text": "Most of that is the trade show, which was approved in January.",
+   "speaker_attribution_confidence": 0.9,
+   "avg_logprob": -0.15
+  },
+  {
+   "utt_id": "u00002",
+   "start": 7.95,
+   "end": 11.8,
+   "speaker": "CFO Nadia",
+   "text": "Understood. Going forward, any spend above ten thousand needs my sign-off.",
+   "speaker_attribution_confidence": 0.9,
+   "avg_logprob": -0.15
+  },
+  {
+   "utt_id": "u00003",
+   "start": 12.1,
+   "end": 13.6,
+   "speaker": "Head of Marketing Leo",
+   "text": "That's fine.",
+   "speaker_attribution_confidence": 0.9,
+   "avg_logprob": -0.15
+  },
+  {
+   "utt_id": "u00004",
+   "start": 13.9,
+   "end": 17.05,
+   "speaker": "CEO Arun",
+   "text": "Agreed, let's make that the policy from next month.",
+   "speaker_attribution_confidence": 0.9,
+   "avg_logprob": -0.15
+  },
+  {
+   "utt_id": "u00005",
+   "start": 17.35,
+   "end": 20.5,
+   "speaker": "CFO Nadia",
+   "text": "Leo, please send me a revised forecast for Q4.",
+   "speaker_attribution_confidence": 0.9,
+   "avg_logprob": -0.15
+  },
+  {
+   "utt_id": "u00006",
+   "start": 20.8,
+   "end": 25.0,
+   "speaker": "Head of Marketing Leo",
+   "text": "Will do, I'll have it ready by the end of next week.",
+   "speaker_attribution_confidence": 0.9,
+   "avg_logprob": -0.15
+  },
+  {
+   "utt_id": "u00007",
+   "start": 25.3,
+   "end": 29.85,
+   "speaker": "CEO Arun",
+   "text": "We might also need to freeze hiring, but let's not decide that today.",
+   "speaker_attribution_confidence": 0.9,
+   "avg_logprob": -0.15
+  }
+ ]
+}

@@ -1,0 +1,104 @@
+{
+ "synthetic": true,
+ "segments": [
+  {
+   "utt_id": "u00000",
+   "start": 0.0,
+   "end": 5.25,
+   "speaker": "Sana",
+   "text": "For the offsite we have two venue options, the lakeside resort or the city hotel.",
+   "speaker_attribution_confidence": 0.9,
+   "avg_logprob": -0.15
+  },
+  {
+   "utt_id": "u00001",
+   "start": 5.55,
+   "end": 8.7,
+   "speaker": "Tom",
+   "text": "The resort is nicer but it's two hours away.",
+   "speaker_attribution_confidence": 0.9,
+   "avg_logprob": -0.15
+  },
+  {
+   "utt_id": "u00002",
+   "start": 9.0,
+   "end": 12.15,
+   "speaker": "Sana",
+   "text": "I'd prefer the city hotel, it's easier for everyone.",
+   "speaker_attribution_confidence": 0.9,
+   "avg_logprob": -0.15
+  },
+  {
+   "utt_id": "u00003",
+   "start": 12.45,
+   "end": 13.95,
+   "speaker": "Tom",
+   "text": "Fine by me.",
+   "speaker_attribution_confidence": 0.9,
+   "avg_logprob": -0.15
+  },
+  {
+   "utt_id": "u00004",
+   "start": 14.25,
+   "end": 15.75,
+   "speaker": "Grace",
+   "text": "Me too, city hotel.",
+   "speaker_attribution_confidence": 0.9,
+   "avg_logprob": -0.15
+  },
+  {
+   "utt_id": "u00005",
+   "start": 16.05,
+   "end": 18.15,
+   "speaker": "Sana",
+   "text": "Great, we'll book the city hotel.",
+   "speaker_attribution_confidence": 0.9,
+   "avg_logprob": -0.15
+  },
+  {
+   "utt_id": "u00006",
+   "start": 18.45,
+   "end": 19.95,
+   "speaker": "Tom",
+   "text": "Who's handling catering?",
+   "speaker_attribution_confidence": 0.9,
+   "avg_logprob": -0.15
+  },
+  {
+   "utt_id": "u00007",
+   "start": 20.25,
+   "end": 21.75,
+   "speaker": "Grace",
+   "text": "I can take catering.",
+   "speaker_attribution_confidence": 0.9,
+   "avg_logprob": -0.15
+  },
+  {
+   "utt_id": "u00008",
+   "start": 22.05,
+   "end": 26.95,
+   "speaker": "Sana",
+   "text": "Perfect, thanks Grace. Could you have menu options by the end of the month?",
+   "speaker_attribution_confidence": 0.9,
+   "avg_logprob": -0.15
+  },
+  {
+   "utt_id": "u00009",
+   "start": 27.25,
+   "end": 29.35,
+   "speaker": "Grace",
+   "text": "Yes, end of the month works.",
+   "speaker_attribution_confidence": 0.9,
+   "avg_logprob": -0.15
+  },
+  {
+   "utt_id": "u00010",
+   "start": 29.65,
+   "end": 32.1,
+   "speaker": "Tom",
+   "text": "Maybe we should also hire a photographer.",
+   "speaker_attribution_confidence": 0.9,
+   "avg_logprob": -0.15
+  }
+ ]
+}

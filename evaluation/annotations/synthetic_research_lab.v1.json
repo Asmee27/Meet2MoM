@@ -1,0 +1,55 @@
+{
+ "schema": "meet2mom-gold-v1",
+ "meeting_id": "syn_research_lab",
+ "version": 1,
+ "synthetic": true,
+ "domain": "university research lab",
+ "split": "synthetic-test",
+ "seen_during_development": false,
+ "transcript": "evaluation/datasets/synthetic/research_lab.transcript.json",
+ "annotator": "Claude (author-written synthetic meeting and labels). Created 2026-10-16.",
+ "items": [
+  {
+   "id": "syn_research_lab.d1",
+   "type": "decision",
+   "text": "Target the main conference in March instead of the workshop",
+   "confirmed": false,
+   "evidence": [
+    "u00004",
+    "u00005"
+   ],
+   "state": "proposed"
+  },
+  {
+   "id": "syn_research_lab.a2",
+   "type": "action",
+   "text": "Send preliminary results",
+   "confirmed": true,
+   "evidence": [
+    "u00006"
+   ],
+   "commitment": "firm",
+   "owner": "Aditi",
+   "owner_aliases": [
+    "Aditi"
+   ],
+   "owner_type": "explicit_first_person",
+   "deadline": "by Wednesday"
+  }
+ ],
+ "negatives": [
+  {
+   "evidence": [
+    "u00002",
+    "u00003"
+   ],
+   "reason": "Hypothetical ('if we dropped the ablation study')"
+  },
+  {
+   "evidence": [
+    "u00005"
+   ],
+   "reason": "Decision explicitly deferred"
+  }
+ ]
+}

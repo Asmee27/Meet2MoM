@@ -1,0 +1,86 @@
+{
+ "synthetic": true,
+ "segments": [
+  {
+   "utt_id": "u00000",
+   "start": 0.0,
+   "end": 3.15,
+   "speaker": "Principal Rao",
+   "text": "The annual day is on the fifteenth of December.",
+   "speaker_attribution_confidence": 0.9,
+   "avg_logprob": -0.15
+  },
+  {
+   "utt_id": "u00001",
+   "start": 3.45,
+   "end": 8.35,
+   "speaker": "Mrs. Iyer",
+   "text": "I think we should move it to a weekend so more parents can come.",
+   "speaker_attribution_confidence": 0.9,
+   "avg_logprob": -0.15
+  },
+  {
+   "utt_id": "u00002",
+   "start": 8.65,
+   "end": 12.15,
+   "speaker": "Mr. Das",
+   "text": "That depends on whether the auditorium is free on Saturday.",
+   "speaker_attribution_confidence": 0.9,
+   "avg_logprob": -0.15
+  },
+  {
+   "utt_id": "u00003",
+   "start": 12.45,
+   "end": 17.0,
+   "speaker": "Principal Rao",
+   "text": "Right. If the auditorium is free, we'll move it to Saturday the fourteenth.",
+   "speaker_attribution_confidence": 0.9,
+   "avg_logprob": -0.15
+  },
+  {
+   "utt_id": "u00004",
+   "start": 17.3,
+   "end": 18.8,
+   "speaker": "Mrs. Iyer",
+   "text": "Sounds reasonable.",
+   "speaker_attribution_confidence": 0.9,
+   "avg_logprob": -0.15
+  },
+  {
+   "utt_id": "u00005",
+   "start": 19.1,
+   "end": 21.9,
+   "speaker": "Mr. Das",
+   "text": "I can check with the auditorium manager tomorrow.",
+   "speaker_attribution_confidence": 0.9,
+   "avg_logprob": -0.15
+  },
+  {
+   "utt_id": "u00006",
+   "start": 22.2,
+   "end": 25.0,
+   "speaker": "Principal Rao",
+   "text": "Please do, and let us know by Friday.",
+   "speaker_attribution_confidence": 0.9,
+   "avg_logprob": -0.15
+  },
+  {
+   "utt_id": "u00007",
+   "start": 25.3,
+   "end": 27.05,
+   "speaker": "Mrs. Iyer",
+   "text": "Should we also sell refreshments?",
+   "speaker_attribution_confidence": 0.9,
+   "avg_logprob": -0.15
+  },
+  {
+   "utt_id": "u00008",
+   "start": 27.35,
+   "end": 30.5,
+   "speaker": "Mr. Das",
+   "text": "Hmm, I'm not sure about that, maybe next year.",
+   "speaker_attribution_confidence": 0.9,
+   "avg_logprob": -0.15
+  }
+ ]
+}
