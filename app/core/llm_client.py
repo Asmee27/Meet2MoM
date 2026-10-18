@@ -22,6 +22,7 @@ Guarantees:
 
 import json
 import logging
+import os
 import re
 import time
 import urllib.request
@@ -119,6 +120,11 @@ class LLMClient:
     def _execute_provider_call(self, system: str, user: str, max_tokens: int) -> str:
         """Execute a single provider call without retry logic."""
         if self.provider == "stub":
+            if "PYTEST_CURRENT_TEST" not in os.environ and not os.environ.get("TESTING"):
+                raise RuntimeError(
+                    "LLM_PROVIDER=stub cannot be used outside of tests. "
+                    "Configure a valid provider (e.g., gemini, openai) or use EXTRACTOR=rules."
+                )
             self.call_count += 1
             if self.stub_responses:
                 resp = self.stub_responses.pop(0)

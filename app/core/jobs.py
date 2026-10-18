@@ -62,13 +62,15 @@ def _now() -> datetime:
 
 def _emit(meeting_id: str, stage: str, state: str, error: str | None = None) -> None:
     """Write a JobStatus row to the DB."""
+    now = _now()
     job = JobStatus(
         meeting_id=meeting_id,
         stage=stage,
         progress=_STAGE_PROGRESS.get(stage, 0.0),
         state=state,
         error=error,
-        updated_at=_now(),
+        updated_at=now,
+        heartbeat_at=now if state == "running" else None,
     )
     try:
         upsert_job_status(job)
@@ -90,6 +92,10 @@ def run_pipeline(meeting_id: str, file_path: Path) -> None:
 
     Progress is emitted to the DB after every stage completes.
     """
+    # Stop console output from crashing the pipeline on non-UTF-8 streams (e.g. Windows cp1252)
+    from app.core.console import make_stdio_unicode_safe
+    make_stdio_unicode_safe()
+
     # Ensure the DB schema exists (idempotent)
     try:
         init_db()

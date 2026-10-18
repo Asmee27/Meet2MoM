@@ -282,3 +282,17 @@ CACHE_DIARIZATION = True
 PIPELINE_CACHE_FILE = (
     METADATA_DIR / "pipeline_cache.json"
 )
+
+# ==========================================================
+# ASYNC JOB RUNNER & WORKER SETTINGS
+# ==========================================================
+
+# Execution mode: "inline" (default, runs in FastAPI BackgroundTasks) or "worker" (standalone process)
+JOB_RUNNER = os.getenv("JOB_RUNNER", "inline").strip().lower()
+
+WORKER_POLL_INTERVAL_SECONDS = float(os.getenv("WORKER_POLL_INTERVAL_SECONDS", "1.0"))
+WORKER_STALE_TIMEOUT_SECONDS = float(os.getenv("WORKER_STALE_TIMEOUT_SECONDS", "300.0"))
+WORKER_MAX_RETRIES = int(os.getenv("WORKER_MAX_RETRIES", "3"))
+
+# Topic title generation mode: "extractive" (default) or "llm"
+TOPIC_TITLES = os.getenv("TOPIC_TITLES", "extractive").strip().lower()

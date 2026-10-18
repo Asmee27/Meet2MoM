@@ -3,9 +3,10 @@ from __future__ import annotations
 import json
 import sqlite3
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Generator, List, Optional
+from uuid import uuid4
 
 from app.core.config import DB_PATH
 from app.schemas.claim import ActionItem, ClaimBase, Decision
@@ -22,8 +23,9 @@ def get_conn(db_path: Optional[Path | str] = None) -> Generator[sqlite3.Connecti
     path = Path(db_path or DB_PATH)
     path.parent.mkdir(parents=True, exist_ok=True)
 
-    conn = sqlite3.connect(str(path))
+    conn = sqlite3.connect(str(path), timeout=15.0)
     conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA journal_mode = WAL")
     conn.row_factory = sqlite3.Row
 
     try:
@@ -132,11 +134,27 @@ def init_db(db_path: Optional[Path | str] = None) -> None:
                 progress REAL,
                 state TEXT,
                 error TEXT,
-                updated_at TEXT
+                updated_at TEXT,
+                heartbeat_at TEXT,
+                retry_count INTEGER DEFAULT 0,
+                file_path TEXT,
+                claim_token TEXT
             );
             """
         )
+        for col_def in (
+            "heartbeat_at TEXT",
+            "retry_count INTEGER DEFAULT 0",
+            "file_path TEXT",
+            "claim_token TEXT",
+        ):
+            try:
+                conn.execute(f"ALTER TABLE jobs ADD COLUMN {col_def}")
+            except sqlite3.OperationalError:
+                pass
+
         _migrate(conn)
+
 
 
 # ---------------------------------------------------------------------------
@@ -145,7 +163,7 @@ def init_db(db_path: Optional[Path | str] = None) -> None:
 # Migrations only ADD tables/indexes; they never rewrite or drop existing
 # data. Each step is idempotent (IF NOT EXISTS) and bumps user_version.
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 _MIGRATION_V1 = """
 CREATE TABLE IF NOT EXISTS extraction_runs (
@@ -211,12 +229,81 @@ CREATE TABLE IF NOT EXISTS evidence_corrections (
 );
 """
 
+_MIGRATION_V2 = """
+CREATE TABLE IF NOT EXISTS review_drafts (
+    meeting_id      TEXT PRIMARY KEY,
+    draft_status    TEXT NOT NULL DEFAULT 'draft' CHECK (draft_status IN ('draft', 'approved', 'reopened')),
+    meeting_title   TEXT,
+    summary         TEXT,
+    created_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL,
+    FOREIGN KEY (meeting_id) REFERENCES meetings(meeting_id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS review_items (
+    item_id             TEXT NOT NULL,
+    meeting_id          TEXT NOT NULL,
+    original_claim_id   TEXT,
+    item_type           TEXT NOT NULL CHECK (item_type IN ('decision', 'action')),
+    text                TEXT NOT NULL,
+    state               TEXT,
+    owner               TEXT,
+    owner_type          TEXT,
+    deadline_text       TEXT,
+    deadline_resolved   TEXT,
+    evidence_ids        TEXT NOT NULL DEFAULT '[]',
+    review_status       TEXT NOT NULL CHECK (review_status IN ('original', 'edited', 'added', 'rejected', 'accepted_from_held')),
+    is_excluded         INTEGER NOT NULL DEFAULT 0,
+    order_index         INTEGER NOT NULL DEFAULT 0,
+    updated_at          TEXT NOT NULL,
+    PRIMARY KEY (meeting_id, item_id),
+    FOREIGN KEY (meeting_id) REFERENCES meetings(meeting_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_review_items_meeting ON review_items(meeting_id);
+
+CREATE TABLE IF NOT EXISTS review_audit_log (
+    audit_id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    meeting_id      TEXT NOT NULL,
+    item_id         TEXT,
+    action          TEXT NOT NULL,
+    field_name      TEXT,
+    old_value       TEXT,
+    new_value       TEXT,
+    reason          TEXT,
+    reviewer_id     TEXT,
+    timestamp       TEXT NOT NULL,
+    FOREIGN KEY (meeting_id) REFERENCES meetings(meeting_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_review_audit_meeting ON review_audit_log(meeting_id);
+
+CREATE TABLE IF NOT EXISTS approved_snapshots (
+    snapshot_id     TEXT PRIMARY KEY,
+    meeting_id      TEXT NOT NULL,
+    version         INTEGER NOT NULL DEFAULT 1,
+    approved_by     TEXT,
+    approved_at     TEXT NOT NULL,
+    mom_payload     TEXT NOT NULL,
+    reopened_at     TEXT,
+    reopened_by     TEXT,
+    reopen_reason   TEXT,
+    FOREIGN KEY (meeting_id) REFERENCES meetings(meeting_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_approved_snapshots_meeting ON approved_snapshots(meeting_id, version);
+"""
+
 
 def _migrate(conn: sqlite3.Connection) -> None:
     current = conn.execute("PRAGMA user_version").fetchone()[0]
     if current < 1:
         conn.executescript(_MIGRATION_V1)
         conn.execute("PRAGMA user_version = 1")
+        current = 1
+    if current < 2:
+        conn.executescript(_MIGRATION_V2)
+        conn.execute("PRAGMA user_version = 2")
 
 
 def get_schema_version(db_path: Optional[Path | str] = None) -> int:
@@ -613,16 +700,50 @@ def delete_utterances_for_meeting(
             _execute(c)
 
 
+def _row_to_job(row: sqlite3.Row) -> JobStatus:
+    keys = row.keys() if hasattr(row, "keys") else []
+    hb = row["heartbeat_at"] if "heartbeat_at" in keys and row["heartbeat_at"] else None
+    retries = row["retry_count"] if "retry_count" in keys and row["retry_count"] is not None else 0
+    fp = row["file_path"] if "file_path" in keys else None
+    token = row["claim_token"] if "claim_token" in keys else None
+
+    return JobStatus(
+        meeting_id=row["meeting_id"],
+        stage=row["stage"],
+        progress=row["progress"],
+        state=row["state"],
+        error=row["error"],
+        updated_at=datetime.fromisoformat(row["updated_at"]) if row["updated_at"] else datetime.now(timezone.utc),
+        heartbeat_at=datetime.fromisoformat(hb) if hb else None,
+        retry_count=retries,
+        file_path=fp,
+        claim_token=token,
+    )
+
+
 def upsert_job_status(
     job: JobStatus,
     db_path: Optional[Path | str] = None,
 ) -> None:
-    """Upsert a JobStatus record."""
+    """Upsert a JobStatus record, preserving prior metadata when omitted."""
     with get_conn(db_path) as conn:
+        cursor = conn.execute(
+            "SELECT retry_count, file_path, claim_token, heartbeat_at FROM jobs WHERE meeting_id = ?",
+            (job.meeting_id,),
+        )
+        existing = cursor.fetchone()
+        file_path = job.file_path or (existing["file_path"] if existing else None)
+        retry_count = max(job.retry_count, (existing["retry_count"] if existing and existing["retry_count"] is not None else 0))
+        claim_token = job.claim_token or (existing["claim_token"] if existing else None)
+        heartbeat_at = (job.heartbeat_at.isoformat() if job.heartbeat_at else None) or (existing["heartbeat_at"] if existing else None)
+
         conn.execute(
             """
-            INSERT OR REPLACE INTO jobs (meeting_id, stage, progress, state, error, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT OR REPLACE INTO jobs (
+                meeting_id, stage, progress, state, error, updated_at,
+                heartbeat_at, retry_count, file_path, claim_token
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 job.meeting_id,
@@ -631,6 +752,10 @@ def upsert_job_status(
                 job.state,
                 job.error,
                 job.updated_at.isoformat(),
+                heartbeat_at,
+                retry_count,
+                file_path,
+                claim_token,
             ),
         )
 
@@ -643,7 +768,8 @@ def get_job_status(
     with get_conn(db_path) as conn:
         cursor = conn.execute(
             """
-            SELECT meeting_id, stage, progress, state, error, updated_at
+            SELECT meeting_id, stage, progress, state, error, updated_at,
+                   heartbeat_at, retry_count, file_path, claim_token
             FROM jobs
             WHERE meeting_id = ?
             """,
@@ -654,14 +780,198 @@ def get_job_status(
     if not row:
         return None
 
-    return JobStatus(
-        meeting_id=row["meeting_id"],
-        stage=row["stage"],
-        progress=row["progress"],
-        state=row["state"],
-        error=row["error"],
-        updated_at=datetime.fromisoformat(row["updated_at"]),
-    )
+    return _row_to_job(row)
+
+
+def claim_next_job(
+    worker_id: Optional[str] = None,
+    db_path: Optional[Path | str] = None,
+) -> Optional[JobStatus]:
+    """
+    Atomically claim the next queued job for execution.
+    Two workers calling this in sequence (or concurrently) will never claim the same job.
+    Uses an atomic UPDATE with rowcount verification and a unique claim token.
+    """
+    token = f"{worker_id or 'worker'}_{uuid4().hex}"
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    with get_conn(db_path) as conn:
+        conn.execute("PRAGMA busy_timeout = 5000")
+        cursor = conn.execute(
+            """
+            UPDATE jobs
+            SET state = 'running',
+                stage = 'uploaded',
+                claim_token = ?,
+                heartbeat_at = ?,
+                updated_at = ?
+            WHERE meeting_id = (
+                SELECT meeting_id
+                FROM jobs
+                WHERE state = 'queued'
+                ORDER BY updated_at ASC
+                LIMIT 1
+            ) AND state = 'queued'
+            """,
+            (token, now_iso, now_iso),
+        )
+        if cursor.rowcount == 0:
+            return None
+
+        row = conn.execute(
+            """
+            SELECT meeting_id, stage, progress, state, error, updated_at,
+                   heartbeat_at, retry_count, file_path, claim_token
+            FROM jobs
+            WHERE claim_token = ?
+            """,
+            (token,),
+        ).fetchone()
+
+        if not row:
+            return None
+        return _row_to_job(row)
+
+
+def update_job_heartbeat(
+    meeting_id: str,
+    db_path: Optional[Path | str] = None,
+) -> None:
+    """Update heartbeat timestamp for a currently running job."""
+    now_iso = datetime.now(timezone.utc).isoformat()
+    with get_conn(db_path) as conn:
+        conn.execute(
+            """
+            UPDATE jobs
+            SET heartbeat_at = ?, updated_at = ?
+            WHERE meeting_id = ?
+            """,
+            (now_iso, now_iso, meeting_id),
+        )
+
+
+def recover_stale_jobs(
+    stale_timeout_seconds: float = 300.0,
+    max_retries: int = 3,
+    db_path: Optional[Path | str] = None,
+) -> List[Dict[str, Any]]:
+    """
+    On worker startup, scan for jobs stuck in 'running' state whose heartbeat is
+    older than stale_timeout_seconds (or missing).
+    - If retry_count >= max_retries: mark state='failed' with error explanation.
+    - Otherwise: increment retry_count, reset state='queued', and clear claim_token/heartbeat.
+    Returns list of recovered job summaries.
+    """
+    now = datetime.now(timezone.utc)
+    now_iso = now.isoformat()
+    recovered = []
+
+    with get_conn(db_path) as conn:
+        conn.execute("PRAGMA busy_timeout = 5000")
+        rows = conn.execute(
+            """
+            SELECT meeting_id, stage, progress, state, error, updated_at,
+                   heartbeat_at, retry_count, file_path, claim_token
+            FROM jobs
+            WHERE state = 'running'
+            """
+        ).fetchall()
+
+        for row in rows:
+            mid = row["meeting_id"]
+            keys = row.keys() if hasattr(row, "keys") else []
+            hb_str = row["heartbeat_at"] if "heartbeat_at" in keys and row["heartbeat_at"] else None
+            up_str = row["updated_at"]
+
+            last_active = None
+            if hb_str:
+                try:
+                    last_active = datetime.fromisoformat(hb_str)
+                except ValueError:
+                    pass
+            if last_active is None and up_str:
+                try:
+                    last_active = datetime.fromisoformat(up_str)
+                except ValueError:
+                    pass
+
+            if last_active is None:
+                is_stale = True
+            else:
+                if last_active.tzinfo is None:
+                    last_active = last_active.replace(tzinfo=timezone.utc)
+                is_stale = (now - last_active).total_seconds() > stale_timeout_seconds
+
+            if not is_stale:
+                continue
+
+            current_retries = (row["retry_count"] if "retry_count" in keys and row["retry_count"] is not None else 0)
+            next_retries = current_retries + 1
+
+            if next_retries > max_retries:
+                err_msg = f"Job failed: exceeded maximum retries ({max_retries}) after worker timeout/crash."
+                conn.execute(
+                    """
+                    UPDATE jobs
+                    SET state = 'failed',
+                        error = ?,
+                        retry_count = ?,
+                        claim_token = NULL,
+                        updated_at = ?
+                    WHERE meeting_id = ?
+                    """,
+                    (err_msg, next_retries, now_iso, mid),
+                )
+                recovered.append({
+                    "meeting_id": mid,
+                    "action": "failed",
+                    "retries": next_retries,
+                    "error": err_msg,
+                })
+            else:
+                conn.execute(
+                    """
+                    UPDATE jobs
+                    SET state = 'queued',
+                        stage = 'uploaded',
+                        progress = 0.0,
+                        heartbeat_at = NULL,
+                        claim_token = NULL,
+                        retry_count = ?,
+                        error = ?,
+                        updated_at = ?
+                    WHERE meeting_id = ?
+                    """,
+                    (next_retries, f"Recovered from stale running state (retry {next_retries}/{max_retries})", now_iso, mid),
+                )
+                recovered.append({
+                    "meeting_id": mid,
+                    "action": "requeued",
+                    "retries": next_retries,
+                })
+
+    return recovered
+
+
+def release_job(
+    meeting_id: str,
+    db_path: Optional[Path | str] = None,
+) -> None:
+    """Release a running job back to 'queued' state (e.g. on SIGINT/SIGTERM)."""
+    now_iso = datetime.now(timezone.utc).isoformat()
+    with get_conn(db_path) as conn:
+        conn.execute(
+            """
+            UPDATE jobs
+            SET state = 'queued',
+                heartbeat_at = NULL,
+                claim_token = NULL,
+                updated_at = ?
+            WHERE meeting_id = ? AND state = 'running'
+            """,
+            (now_iso, meeting_id),
+        )
+
 
 
 # ---------------------------------------------------------------------------
@@ -886,3 +1196,561 @@ def record_evidence_correction(
                 _now_iso(),
             ),
         )
+
+
+# ---------------------------------------------------------------------------
+# Phase 3: Review Drafts, Review Items, Audit Logging, and Approved Snapshots
+# ---------------------------------------------------------------------------
+
+def init_review_draft(
+    meeting_id: str,
+    db_path: Optional[Path | str] = None,
+) -> Dict[str, Any]:
+    """
+    Initialize or retrieve the review draft for a meeting.
+    Populates review_items from claims if review_items is currently empty.
+    Preserves original AI claims unchanged.
+    """
+    init_db(db_path)
+    ensure_meeting(meeting_id, db_path=db_path)
+    now = _now_iso()
+
+    with get_conn(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO review_drafts (meeting_id, draft_status, meeting_title, summary, created_at, updated_at)
+            VALUES (?, 'draft', 'Meeting Minutes', NULL, ?, ?)
+            ON CONFLICT(meeting_id) DO NOTHING
+            """,
+            (meeting_id, now, now),
+        )
+
+        item_count = conn.execute(
+            "SELECT COUNT(*) FROM review_items WHERE meeting_id = ?",
+            (meeting_id,),
+        ).fetchone()[0]
+
+        if item_count == 0:
+            claims = get_claims_with_evidence(meeting_id, db_path=db_path)
+            results = get_verification_results(meeting_id, db_path=db_path)
+
+            rows = []
+            for idx, c in enumerate(claims):
+                cid = c["claim_id"]
+                payload = c.get("payload") or {}
+                evidence_list = c.get("evidence") or []
+                method_res = results.get(cid, {})
+                fusion_label = (method_res.get("fusion") or {}).get("label", "unverified")
+
+                review_status = "rejected" if fusion_label == "rejected" else "original"
+                is_excluded = 1 if fusion_label == "rejected" else 0
+
+                rows.append((
+                    cid,
+                    meeting_id,
+                    cid,
+                    c["claim_type"],
+                    c["text"],
+                    payload.get("state"),
+                    payload.get("owner"),
+                    payload.get("owner_type"),
+                    payload.get("deadline_text"),
+                    payload.get("deadline_resolved"),
+                    json.dumps(evidence_list),
+                    review_status,
+                    is_excluded,
+                    idx,
+                    now,
+                ))
+
+            if rows:
+                conn.executemany(
+                    """
+                    INSERT INTO review_items (
+                        item_id, meeting_id, original_claim_id, item_type, text,
+                        state, owner, owner_type, deadline_text, deadline_resolved,
+                        evidence_ids, review_status, is_excluded, order_index, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    rows,
+                )
+
+    return get_review_draft(meeting_id, db_path=db_path)  # type: ignore[return-value]
+
+
+def get_review_draft(
+    meeting_id: str,
+    db_path: Optional[Path | str] = None,
+) -> Optional[Dict[str, Any]]:
+    """Retrieve full review draft with its ordered review items."""
+    init_db(db_path)
+    with get_conn(db_path) as conn:
+        draft_row = conn.execute(
+            "SELECT * FROM review_drafts WHERE meeting_id = ?",
+            (meeting_id,),
+        ).fetchone()
+
+        if not draft_row:
+            return None
+
+        draft = dict(draft_row)
+
+        item_rows = conn.execute(
+            """
+            SELECT * FROM review_items
+            WHERE meeting_id = ?
+            ORDER BY order_index ASC, rowid ASC
+            """,
+            (meeting_id,),
+        ).fetchall()
+
+        items = []
+        for r in item_rows:
+            item = dict(r)
+            item["evidence_ids"] = json.loads(item["evidence_ids"]) if item["evidence_ids"] else []
+            item["is_excluded"] = bool(item["is_excluded"])
+            items.append(item)
+
+        draft["items"] = items
+        return draft
+
+
+def update_review_item(
+    meeting_id: str,
+    item_id: str,
+    updates: Dict[str, Any],
+    reviewer: Optional[str] = None,
+    reason: Optional[str] = None,
+    db_path: Optional[Path | str] = None,
+) -> Dict[str, Any]:
+    """
+    Update a review item in the draft and record an audit entry.
+    Rejects modifications if the draft is currently approved.
+    Marks item review_status as 'edited' if text, owner, deadline, or evidence changed.
+    """
+    now = _now_iso()
+    with get_conn(db_path) as conn:
+        draft = conn.execute(
+            "SELECT draft_status FROM review_drafts WHERE meeting_id = ?",
+            (meeting_id,),
+        ).fetchone()
+
+        if not draft:
+            raise ValueError(f"No review draft found for meeting {meeting_id}.")
+        if draft["draft_status"] == "approved":
+            raise ValueError("Cannot edit an approved MoM. Please reopen review first.")
+
+        cur = conn.execute(
+            "SELECT * FROM review_items WHERE meeting_id = ? AND item_id = ?",
+            (meeting_id, item_id),
+        ).fetchone()
+
+        if not cur:
+            raise ValueError(f"Review item {item_id} not found for meeting {meeting_id}.")
+
+        current_item = dict(cur)
+        current_evidence = json.loads(current_item["evidence_ids"]) if current_item["evidence_ids"] else []
+
+        # Audit meaningful changes
+        fields_to_track = [
+            ("text", updates.get("text")),
+            ("owner", updates.get("owner")),
+            ("deadline_text", updates.get("deadline_text")),
+            ("deadline_resolved", updates.get("deadline_resolved")),
+            ("state", updates.get("state")),
+            ("is_excluded", int(updates["is_excluded"]) if "is_excluded" in updates else None),
+            ("evidence_ids", json.dumps(updates["evidence_ids"]) if "evidence_ids" in updates else None),
+        ]
+
+        text_or_meta_changed = False
+        for field, new_val in fields_to_track:
+            if new_val is not None:
+                old_val = current_item.get(field)
+                if field == "is_excluded":
+                    old_val = int(old_val) if old_val is not None else 0
+                if str(old_val) != str(new_val):
+                    if field in ("text", "owner", "deadline_text", "evidence_ids"):
+                        text_or_meta_changed = True
+                    conn.execute(
+                        """
+                        INSERT INTO review_audit_log (
+                            meeting_id, item_id, action, field_name,
+                            old_value, new_value, reason, reviewer_id, timestamp
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            meeting_id,
+                            item_id,
+                            f"edit_{field}",
+                            field,
+                            str(old_val),
+                            str(new_val),
+                            reason,
+                            reviewer,
+                            now,
+                        ),
+                    )
+
+        new_status = current_item["review_status"]
+        if text_or_meta_changed and new_status == "original":
+            new_status = "edited"
+
+        new_text = updates.get("text", current_item["text"])
+        new_state = updates.get("state", current_item["state"])
+        new_owner = updates.get("owner", current_item["owner"])
+        new_owner_type = updates.get("owner_type", current_item["owner_type"])
+        new_deadline_text = updates.get("deadline_text", current_item["deadline_text"])
+        new_deadline_resolved = updates.get("deadline_resolved", current_item["deadline_resolved"])
+        new_evidence_ids = (
+            json.dumps(updates["evidence_ids"]) if "evidence_ids" in updates else current_item["evidence_ids"]
+        )
+        new_is_excluded = (
+            int(updates["is_excluded"]) if "is_excluded" in updates else current_item["is_excluded"]
+        )
+
+        conn.execute(
+            """
+            UPDATE review_items SET
+                text = ?, state = ?, owner = ?, owner_type = ?,
+                deadline_text = ?, deadline_resolved = ?, evidence_ids = ?,
+                review_status = ?, is_excluded = ?, updated_at = ?
+            WHERE meeting_id = ? AND item_id = ?
+            """,
+            (
+                new_text, new_state, new_owner, new_owner_type,
+                new_deadline_text, new_deadline_resolved, new_evidence_ids,
+                new_status, new_is_excluded, now,
+                meeting_id, item_id,
+            ),
+        )
+
+        conn.execute(
+            "UPDATE review_drafts SET updated_at = ? WHERE meeting_id = ?",
+            (now, meeting_id),
+        )
+
+    return get_review_item(meeting_id, item_id, db_path=db_path)  # type: ignore[return-value]
+
+
+def get_review_item(
+    meeting_id: str,
+    item_id: str,
+    db_path: Optional[Path | str] = None,
+) -> Optional[Dict[str, Any]]:
+    """Retrieve a single review item."""
+    with get_conn(db_path) as conn:
+        row = conn.execute(
+            "SELECT * FROM review_items WHERE meeting_id = ? AND item_id = ?",
+            (meeting_id, item_id),
+        ).fetchone()
+        if not row:
+            return None
+        item = dict(row)
+        item["evidence_ids"] = json.loads(item["evidence_ids"]) if item["evidence_ids"] else []
+        item["is_excluded"] = bool(item["is_excluded"])
+        return item
+
+
+def add_review_item(
+    meeting_id: str,
+    item_data: Dict[str, Any],
+    reviewer: Optional[str] = None,
+    reason: Optional[str] = None,
+    db_path: Optional[Path | str] = None,
+) -> Dict[str, Any]:
+    """Add a new decision or action item to the review draft."""
+    init_db(db_path)
+    now = _now_iso()
+
+    with get_conn(db_path) as conn:
+        draft = conn.execute(
+            "SELECT draft_status FROM review_drafts WHERE meeting_id = ?",
+            (meeting_id,),
+        ).fetchone()
+
+        if not draft:
+            raise ValueError(f"No review draft found for meeting {meeting_id}.")
+        if draft["draft_status"] == "approved":
+            raise ValueError("Cannot add items to an approved MoM. Please reopen review first.")
+
+        item_id = item_data.get("item_id") or f"manual_{uuid4().hex[:10]}"
+        item_type = item_data.get("item_type", "decision")
+        if item_type not in ("decision", "action"):
+            raise ValueError(f"Invalid item_type: {item_type}")
+
+        text = item_data.get("text", "").strip()
+        if not text:
+            raise ValueError("Item text cannot be empty.")
+
+        evidence_ids = item_data.get("evidence_ids") or []
+        order_row = conn.execute(
+            "SELECT COALESCE(MAX(order_index), 0) + 1 FROM review_items WHERE meeting_id = ?",
+            (meeting_id,),
+        ).fetchone()
+        order_index = order_row[0]
+
+        conn.execute(
+            """
+            INSERT INTO review_items (
+                item_id, meeting_id, original_claim_id, item_type, text,
+                state, owner, owner_type, deadline_text, deadline_resolved,
+                evidence_ids, review_status, is_excluded, order_index, updated_at
+            ) VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, 'added', ?, ?, ?)
+            """,
+            (
+                item_id, meeting_id, item_type, text,
+                item_data.get("state", "accepted"),
+                item_data.get("owner"),
+                item_data.get("owner_type", "unassigned" if item_type == "action" else None),
+                item_data.get("deadline_text"),
+                item_data.get("deadline_resolved"),
+                json.dumps(evidence_ids),
+                1 if item_data.get("is_excluded") else 0,
+                order_index,
+                now,
+            ),
+        )
+
+        conn.execute(
+            """
+            INSERT INTO review_audit_log (
+                meeting_id, item_id, action, field_name,
+                old_value, new_value, reason, reviewer_id, timestamp
+            ) VALUES (?, ?, 'add_item', 'text', NULL, ?, ?, ?, ?)
+            """,
+            (meeting_id, item_id, text, reason, reviewer, now),
+        )
+
+        conn.execute(
+            "UPDATE review_drafts SET updated_at = ? WHERE meeting_id = ?",
+            (now, meeting_id),
+        )
+
+    return get_review_item(meeting_id, item_id, db_path=db_path)  # type: ignore[return-value]
+
+
+def record_audit_event(
+    meeting_id: str,
+    action: str,
+    item_id: Optional[str] = None,
+    field_name: Optional[str] = None,
+    old_value: Optional[str] = None,
+    new_value: Optional[str] = None,
+    reason: Optional[str] = None,
+    reviewer_id: Optional[str] = None,
+    timestamp: Optional[str] = None,
+    db_path: Optional[Path | str] = None,
+) -> None:
+    """Record an audit event into review_audit_log."""
+    init_db(db_path)
+    ts = timestamp or _now_iso()
+    with get_conn(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO review_audit_log (
+                meeting_id, item_id, action, field_name,
+                old_value, new_value, reason, reviewer_id, timestamp
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (meeting_id, item_id, action, field_name, old_value, new_value, reason, reviewer_id, ts),
+        )
+
+
+def get_review_audit_log(
+    meeting_id: str,
+    db_path: Optional[Path | str] = None,
+) -> List[Dict[str, Any]]:
+    """Retrieve full audit history for a meeting ordered chronologically."""
+    init_db(db_path)
+    with get_conn(db_path) as conn:
+        rows = conn.execute(
+            "SELECT * FROM review_audit_log WHERE meeting_id = ? ORDER BY audit_id ASC",
+            (meeting_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def approve_review_draft(
+    meeting_id: str,
+    reviewer: str,
+    notes: Optional[str] = None,
+    mom_payload: Optional[Dict[str, Any]] = None,
+    db_path: Optional[Path | str] = None,
+) -> Dict[str, Any]:
+    """
+    Explicitly approve and lock the current review draft.
+    Persists an immutable approved snapshot, updates draft status, and writes audit event.
+    Idempotent: if already approved and not reopened, returns existing latest snapshot.
+    """
+    init_db(db_path)
+    if not reviewer or not reviewer.strip():
+        raise ValueError("A reviewer identity must be provided to approve minutes.")
+
+    now = _now_iso()
+    with get_conn(db_path) as conn:
+        draft = conn.execute(
+            "SELECT draft_status FROM review_drafts WHERE meeting_id = ?",
+            (meeting_id,),
+        ).fetchone()
+
+        if draft and draft["draft_status"] == "approved":
+            latest = conn.execute(
+                "SELECT * FROM approved_snapshots WHERE meeting_id = ? ORDER BY version DESC LIMIT 1",
+                (meeting_id,),
+            ).fetchone()
+            if latest:
+                res = dict(latest)
+                res["mom_payload"] = json.loads(res["mom_payload"])
+                return res
+
+        v_row = conn.execute(
+            "SELECT COALESCE(MAX(version), 0) + 1 FROM approved_snapshots WHERE meeting_id = ?",
+            (meeting_id,),
+        ).fetchone()
+        version = int(v_row[0])
+
+        snapshot_id = f"{meeting_id}_v{version}_{uuid4().hex[:6]}"
+        payload_dict = mom_payload or {}
+        payload_dict["approved_version"] = version
+        payload_dict["approved_by"] = reviewer
+        payload_dict["approved_at"] = now
+        payload_str = json.dumps(payload_dict, ensure_ascii=False)
+
+        conn.execute(
+            """
+            INSERT INTO approved_snapshots (
+                snapshot_id, meeting_id, version, approved_by, approved_at,
+                mom_payload, reopened_at, reopened_by, reopen_reason
+            ) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL)
+            """,
+            (snapshot_id, meeting_id, version, reviewer, now, payload_str),
+        )
+
+        conn.execute(
+            "UPDATE review_drafts SET draft_status = 'approved', updated_at = ? WHERE meeting_id = ?",
+            (now, meeting_id),
+        )
+
+        conn.execute(
+            "UPDATE meetings SET status = 'approved' WHERE meeting_id = ?",
+            (meeting_id,),
+        )
+
+        conn.execute(
+            """
+            INSERT INTO review_audit_log (
+                meeting_id, item_id, action, field_name,
+                old_value, new_value, reason, reviewer_id, timestamp
+            ) VALUES (?, NULL, 'approve_mom', 'status', 'draft', ?, ?, ?, ?)
+            """,
+            (meeting_id, f"v{version}", notes, reviewer, now),
+        )
+
+    return {
+        "snapshot_id": snapshot_id,
+        "meeting_id": meeting_id,
+        "version": version,
+        "approved_by": reviewer,
+        "approved_at": now,
+        "mom_payload": payload_dict,
+    }
+
+
+def reopen_review_draft(
+    meeting_id: str,
+    reviewer: str,
+    reason: str,
+    db_path: Optional[Path | str] = None,
+) -> Dict[str, Any]:
+    """
+    Reopen an approved review draft for further human editing.
+    Requires an explicit reason. Preserves the prior approved snapshot intact.
+    """
+    init_db(db_path)
+    if not reviewer or not reviewer.strip():
+        raise ValueError("A reviewer identity must be provided to reopen review.")
+    if not reason or not reason.strip():
+        raise ValueError("A reason must be provided to reopen approved minutes.")
+
+    now = _now_iso()
+    with get_conn(db_path) as conn:
+        draft = conn.execute(
+            "SELECT draft_status FROM review_drafts WHERE meeting_id = ?",
+            (meeting_id,),
+        ).fetchone()
+
+        if not draft or draft["draft_status"] != "approved":
+            raise ValueError("Review draft is not approved; cannot reopen.")
+
+        # Annotate latest snapshot with reopening info without deleting it
+        conn.execute(
+            """
+            UPDATE approved_snapshots SET
+                reopened_at = ?, reopened_by = ?, reopen_reason = ?
+            WHERE meeting_id = ? AND version = (
+                SELECT MAX(version) FROM approved_snapshots WHERE meeting_id = ?
+            )
+            """,
+            (now, reviewer, reason, meeting_id, meeting_id),
+        )
+
+        conn.execute(
+            "UPDATE review_drafts SET draft_status = 'reopened', updated_at = ? WHERE meeting_id = ?",
+            (now, meeting_id),
+        )
+
+        conn.execute(
+            "UPDATE meetings SET status = 'review_reopened' WHERE meeting_id = ?",
+            (meeting_id,),
+        )
+
+        conn.execute(
+            """
+            INSERT INTO review_audit_log (
+                meeting_id, item_id, action, field_name,
+                old_value, new_value, reason, reviewer_id, timestamp
+            ) VALUES (?, NULL, 'reopen_review', 'status', 'approved', 'reopened', ?, ?, ?)
+            """,
+            (meeting_id, reason, reviewer, now),
+        )
+
+    return get_review_draft(meeting_id, db_path=db_path)  # type: ignore[return-value]
+
+
+def get_latest_approved_snapshot(
+    meeting_id: str,
+    db_path: Optional[Path | str] = None,
+) -> Optional[Dict[str, Any]]:
+    """Retrieve latest approved snapshot for a meeting."""
+    init_db(db_path)
+    with get_conn(db_path) as conn:
+        row = conn.execute(
+            "SELECT * FROM approved_snapshots WHERE meeting_id = ? ORDER BY version DESC LIMIT 1",
+            (meeting_id,),
+        ).fetchone()
+        if not row:
+            return None
+        res = dict(row)
+        res["mom_payload"] = json.loads(res["mom_payload"]) if res["mom_payload"] else {}
+        return res
+
+
+def get_all_approved_snapshots(
+    meeting_id: str,
+    db_path: Optional[Path | str] = None,
+) -> List[Dict[str, Any]]:
+    """Retrieve version history of all approved snapshots."""
+    init_db(db_path)
+    with get_conn(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT snapshot_id, meeting_id, version, approved_by, approved_at,
+                   reopened_at, reopened_by, reopen_reason
+            FROM approved_snapshots
+            WHERE meeting_id = ?
+            ORDER BY version ASC
+            """,
+            (meeting_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
