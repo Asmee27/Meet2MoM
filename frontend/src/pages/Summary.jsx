@@ -1,4 +1,5 @@
 import { useMeetingFlow } from "../context/MeetingFlowContext";
+import "../components/ClaimVerification.css";
 
 export default function Summary() {
   const {
@@ -79,7 +80,12 @@ export default function Summary() {
     downloadTextFile,
     downloadMeetingPdf,
     exportWordDocument,
-    sendMeetingEmail
+    sendMeetingEmail,
+    // Phase 3
+    reviewData,
+    downloadApprovedJson,
+    isDownloadingJson,
+    jsonExportError,
   } = useMeetingFlow();
 
   return (
@@ -361,16 +367,46 @@ export default function Summary() {
                   <h2>Download your meeting minutes</h2>
                   <p>
                     Export the server-generated Minutes of Meeting as a
-                    professional PDF.
+                    professional PDF or approved JSON snapshot.
                   </p>
                 </div>
+
+                {/* Phase 3: approved snapshot metadata */}
+                {(() => {
+                  const snap = reviewData?.latest_approved_snapshot;
+                  const isApproved = reviewData?.draft_status === "approved";
+                  if (isApproved && snap) {
+                    return (
+                      <div className="approved-snapshot-strip" data-testid="snapshot-strip">
+                        <strong>✓ Approved</strong>
+                        <span>{snap.version || "v1"}</span>
+                        <span>by {snap.approved_by || "reviewer"}</span>
+                        {snap.approved_at && (
+                          <span>
+                            on {new Date(snap.approved_at).toLocaleString()}
+                          </span>
+                        )}
+                        {snap.notes && <span>· "{snap.notes}"</span>}
+                      </div>
+                    );
+                  }
+                  if (!isApproved) {
+                    return (
+                      <div className="unapproved-warning" data-testid="unapproved-warning">
+                        ⚠ These minutes have not been approved. Go to Step 4 · Review to
+                        approve before exporting the final version.
+                      </div>
+                    );
+                  }
+                  return null;
+                })()}
 
                 <div className="export-buttons">
 
                   <button
                     type="button"
                     className={`export-button ${
-                      exportStatus.pdf ? "completed" : "primary"
+                      exportStatus?.pdf ? "completed" : "primary"
                     }`}
                     onClick={downloadMeetingPdf}
                     disabled={isDownloadingPdf}
@@ -383,24 +419,59 @@ export default function Summary() {
                       <strong>
                         {isDownloadingPdf
                           ? "Preparing PDF..."
-                          : exportStatus.pdf
+                          : exportStatus?.pdf
                           ? "PDF ✓ Downloaded"
                           : "Download PDF"}
                       </strong>
 
                       <small>
-                        {exportStatus.pdf
+                        {exportStatus?.pdf
                           ? "Meeting minutes PDF downloaded"
+                          : reviewData?.draft_status === "approved"
+                          ? "Download the approved snapshot PDF"
                           : "Download the generated Meet2MoM PDF"}
                       </small>
                     </span>
                   </button>
+
+                  {/* Phase 3: JSON export (only shown when approved) */}
+                  {reviewData?.draft_status === "approved" && (
+                    <>
+                      <button
+                        type="button"
+                        className="export-button-json"
+                        onClick={downloadApprovedJson}
+                        disabled={isDownloadingJson}
+                        data-testid="download-json-button"
+                      >
+                        <span className="export-button-icon">
+                          {isDownloadingJson ? "…" : "{ }"}
+                        </span>
+                        <span>
+                          <strong>
+                            {isDownloadingJson ? "Exporting…" : "Download Approved JSON"}
+                          </strong>
+                          <small>Machine-readable approved snapshot</small>
+                        </span>
+                      </button>
+                      {jsonExportError && (
+                        <p
+                          className="edit-form-error"
+                          role="alert"
+                          data-testid="json-export-error"
+                        >
+                          {jsonExportError}
+                        </p>
+                      )}
+                    </>
+                  )}
 
                 </div>
 
               </div>
             </>
           )}
+
 
           {!isGeneratingMom && !momData && !momError && (
             <div className="processing-card">

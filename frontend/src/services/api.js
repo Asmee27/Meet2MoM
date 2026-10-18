@@ -1,4 +1,4 @@
-﻿// src/services/api.js
+// src/services/api.js
 // Single source of truth for all backend API calls.
 
 export const API_BASE_URL =
@@ -153,4 +153,89 @@ export async function generateMom(meetingId) {
   const data = await res.json();
   if (!res.ok) throw new Error(data?.detail || "MoM generation failed.");
   return data;
+}
+
+// ---------------------------------------------------------------------------
+// Phase 3: Review Drafts, Item Editing, Approvals, and Audit Log
+// ---------------------------------------------------------------------------
+
+export async function getReview(meetingId) {
+  const res = await fetch(`${API_BASE_URL}/api/meetings/${meetingId}/review`);
+  const data = await res.json();
+  if (!res.ok) throw new Error(data?.detail || "Unable to load review draft.");
+  return data;
+}
+
+export async function updateReviewItem(meetingId, itemId, payload) {
+  const res = await fetch(
+    `${API_BASE_URL}/api/meetings/${meetingId}/review/items/${encodeURIComponent(itemId)}`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify(payload),
+    }
+  );
+  const data = await res.json();
+  if (!res.ok) throw new Error(data?.detail || "Unable to update review item.");
+  return data;
+}
+
+export async function addReviewItem(meetingId, payload) {
+  const res = await fetch(
+    `${API_BASE_URL}/api/meetings/${meetingId}/review/items`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify(payload),
+    }
+  );
+  const data = await res.json();
+  if (!res.ok) throw new Error(data?.detail || "Unable to add review item.");
+  return data;
+}
+
+export async function approveReview(meetingId, reviewer, notes = "") {
+  const res = await fetch(
+    `${API_BASE_URL}/api/meetings/${meetingId}/approve`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify({ reviewer, notes }),
+    }
+  );
+  const data = await res.json();
+  if (!res.ok) throw new Error(data?.detail || "Approval failed.");
+  return data;
+}
+
+export async function reopenReview(meetingId, reviewer, reason) {
+  const res = await fetch(
+    `${API_BASE_URL}/api/meetings/${meetingId}/reopen`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify({ reviewer, reason }),
+    }
+  );
+  const data = await res.json();
+  if (!res.ok) throw new Error(data?.detail || "Reopening review failed.");
+  return data;
+}
+
+export async function getAuditLog(meetingId) {
+  const res = await fetch(`${API_BASE_URL}/api/meetings/${meetingId}/audit-log`);
+  const data = await res.json();
+  if (!res.ok) throw new Error(data?.detail || "Unable to load audit history.");
+  return data.audit_log || [];
+}
+
+export async function exportApprovedJson(meetingId) {
+  const res = await fetch(`${API_BASE_URL}/api/meetings/${meetingId}/export/json`);
+  const data = await res.json();
+  if (!res.ok) throw new Error(data?.detail || "Unable to export approved JSON.");
+  return data;
+}
+
+export function getAudioUrl(meetingId) {
+  return `${API_BASE_URL}/api/meetings/${meetingId}/audio`;
 }

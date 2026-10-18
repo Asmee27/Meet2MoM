@@ -6,6 +6,7 @@ from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Generator, List, Optional
+from uuid import uuid4
 
 from app.core.config import DB_PATH
 from app.schemas.claim import ActionItem, ClaimBase, Decision
@@ -145,7 +146,7 @@ def init_db(db_path: Optional[Path | str] = None) -> None:
 # Migrations only ADD tables/indexes; they never rewrite or drop existing
 # data. Each step is idempotent (IF NOT EXISTS) and bumps user_version.
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 _MIGRATION_V1 = """
 CREATE TABLE IF NOT EXISTS extraction_runs (
@@ -211,12 +212,81 @@ CREATE TABLE IF NOT EXISTS evidence_corrections (
 );
 """
 
+_MIGRATION_V2 = """
+CREATE TABLE IF NOT EXISTS review_drafts (
+    meeting_id      TEXT PRIMARY KEY,
+    draft_status    TEXT NOT NULL DEFAULT 'draft' CHECK (draft_status IN ('draft', 'approved', 'reopened')),
+    meeting_title   TEXT,
+    summary         TEXT,
+    created_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL,
+    FOREIGN KEY (meeting_id) REFERENCES meetings(meeting_id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS review_items (
+    item_id             TEXT NOT NULL,
+    meeting_id          TEXT NOT NULL,
+    original_claim_id   TEXT,
+    item_type           TEXT NOT NULL CHECK (item_type IN ('decision', 'action')),
+    text                TEXT NOT NULL,
+    state               TEXT,
+    owner               TEXT,
+    owner_type          TEXT,
+    deadline_text       TEXT,
+    deadline_resolved   TEXT,
+    evidence_ids        TEXT NOT NULL DEFAULT '[]',
+    review_status       TEXT NOT NULL CHECK (review_status IN ('original', 'edited', 'added', 'rejected', 'accepted_from_held')),
+    is_excluded         INTEGER NOT NULL DEFAULT 0,
+    order_index         INTEGER NOT NULL DEFAULT 0,
+    updated_at          TEXT NOT NULL,
+    PRIMARY KEY (meeting_id, item_id),
+    FOREIGN KEY (meeting_id) REFERENCES meetings(meeting_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_review_items_meeting ON review_items(meeting_id);
+
+CREATE TABLE IF NOT EXISTS review_audit_log (
+    audit_id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    meeting_id      TEXT NOT NULL,
+    item_id         TEXT,
+    action          TEXT NOT NULL,
+    field_name      TEXT,
+    old_value       TEXT,
+    new_value       TEXT,
+    reason          TEXT,
+    reviewer_id     TEXT,
+    timestamp       TEXT NOT NULL,
+    FOREIGN KEY (meeting_id) REFERENCES meetings(meeting_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_review_audit_meeting ON review_audit_log(meeting_id);
+
+CREATE TABLE IF NOT EXISTS approved_snapshots (
+    snapshot_id     TEXT PRIMARY KEY,
+    meeting_id      TEXT NOT NULL,
+    version         INTEGER NOT NULL DEFAULT 1,
+    approved_by     TEXT,
+    approved_at     TEXT NOT NULL,
+    mom_payload     TEXT NOT NULL,
+    reopened_at     TEXT,
+    reopened_by     TEXT,
+    reopen_reason   TEXT,
+    FOREIGN KEY (meeting_id) REFERENCES meetings(meeting_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_approved_snapshots_meeting ON approved_snapshots(meeting_id, version);
+"""
+
 
 def _migrate(conn: sqlite3.Connection) -> None:
     current = conn.execute("PRAGMA user_version").fetchone()[0]
     if current < 1:
         conn.executescript(_MIGRATION_V1)
         conn.execute("PRAGMA user_version = 1")
+        current = 1
+    if current < 2:
+        conn.executescript(_MIGRATION_V2)
+        conn.execute("PRAGMA user_version = 2")
 
 
 def get_schema_version(db_path: Optional[Path | str] = None) -> int:
@@ -886,3 +956,561 @@ def record_evidence_correction(
                 _now_iso(),
             ),
         )
+
+
+# ---------------------------------------------------------------------------
+# Phase 3: Review Drafts, Review Items, Audit Logging, and Approved Snapshots
+# ---------------------------------------------------------------------------
+
+def init_review_draft(
+    meeting_id: str,
+    db_path: Optional[Path | str] = None,
+) -> Dict[str, Any]:
+    """
+    Initialize or retrieve the review draft for a meeting.
+    Populates review_items from claims if review_items is currently empty.
+    Preserves original AI claims unchanged.
+    """
+    init_db(db_path)
+    ensure_meeting(meeting_id, db_path=db_path)
+    now = _now_iso()
+
+    with get_conn(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO review_drafts (meeting_id, draft_status, meeting_title, summary, created_at, updated_at)
+            VALUES (?, 'draft', 'Meeting Minutes', NULL, ?, ?)
+            ON CONFLICT(meeting_id) DO NOTHING
+            """,
+            (meeting_id, now, now),
+        )
+
+        item_count = conn.execute(
+            "SELECT COUNT(*) FROM review_items WHERE meeting_id = ?",
+            (meeting_id,),
+        ).fetchone()[0]
+
+        if item_count == 0:
+            claims = get_claims_with_evidence(meeting_id, db_path=db_path)
+            results = get_verification_results(meeting_id, db_path=db_path)
+
+            rows = []
+            for idx, c in enumerate(claims):
+                cid = c["claim_id"]
+                payload = c.get("payload") or {}
+                evidence_list = c.get("evidence") or []
+                method_res = results.get(cid, {})
+                fusion_label = (method_res.get("fusion") or {}).get("label", "unverified")
+
+                review_status = "rejected" if fusion_label == "rejected" else "original"
+                is_excluded = 1 if fusion_label == "rejected" else 0
+
+                rows.append((
+                    cid,
+                    meeting_id,
+                    cid,
+                    c["claim_type"],
+                    c["text"],
+                    payload.get("state"),
+                    payload.get("owner"),
+                    payload.get("owner_type"),
+                    payload.get("deadline_text"),
+                    payload.get("deadline_resolved"),
+                    json.dumps(evidence_list),
+                    review_status,
+                    is_excluded,
+                    idx,
+                    now,
+                ))
+
+            if rows:
+                conn.executemany(
+                    """
+                    INSERT INTO review_items (
+                        item_id, meeting_id, original_claim_id, item_type, text,
+                        state, owner, owner_type, deadline_text, deadline_resolved,
+                        evidence_ids, review_status, is_excluded, order_index, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    rows,
+                )
+
+    return get_review_draft(meeting_id, db_path=db_path)  # type: ignore[return-value]
+
+
+def get_review_draft(
+    meeting_id: str,
+    db_path: Optional[Path | str] = None,
+) -> Optional[Dict[str, Any]]:
+    """Retrieve full review draft with its ordered review items."""
+    init_db(db_path)
+    with get_conn(db_path) as conn:
+        draft_row = conn.execute(
+            "SELECT * FROM review_drafts WHERE meeting_id = ?",
+            (meeting_id,),
+        ).fetchone()
+
+        if not draft_row:
+            return None
+
+        draft = dict(draft_row)
+
+        item_rows = conn.execute(
+            """
+            SELECT * FROM review_items
+            WHERE meeting_id = ?
+            ORDER BY order_index ASC, rowid ASC
+            """,
+            (meeting_id,),
+        ).fetchall()
+
+        items = []
+        for r in item_rows:
+            item = dict(r)
+            item["evidence_ids"] = json.loads(item["evidence_ids"]) if item["evidence_ids"] else []
+            item["is_excluded"] = bool(item["is_excluded"])
+            items.append(item)
+
+        draft["items"] = items
+        return draft
+
+
+def update_review_item(
+    meeting_id: str,
+    item_id: str,
+    updates: Dict[str, Any],
+    reviewer: Optional[str] = None,
+    reason: Optional[str] = None,
+    db_path: Optional[Path | str] = None,
+) -> Dict[str, Any]:
+    """
+    Update a review item in the draft and record an audit entry.
+    Rejects modifications if the draft is currently approved.
+    Marks item review_status as 'edited' if text, owner, deadline, or evidence changed.
+    """
+    now = _now_iso()
+    with get_conn(db_path) as conn:
+        draft = conn.execute(
+            "SELECT draft_status FROM review_drafts WHERE meeting_id = ?",
+            (meeting_id,),
+        ).fetchone()
+
+        if not draft:
+            raise ValueError(f"No review draft found for meeting {meeting_id}.")
+        if draft["draft_status"] == "approved":
+            raise ValueError("Cannot edit an approved MoM. Please reopen review first.")
+
+        cur = conn.execute(
+            "SELECT * FROM review_items WHERE meeting_id = ? AND item_id = ?",
+            (meeting_id, item_id),
+        ).fetchone()
+
+        if not cur:
+            raise ValueError(f"Review item {item_id} not found for meeting {meeting_id}.")
+
+        current_item = dict(cur)
+        current_evidence = json.loads(current_item["evidence_ids"]) if current_item["evidence_ids"] else []
+
+        # Audit meaningful changes
+        fields_to_track = [
+            ("text", updates.get("text")),
+            ("owner", updates.get("owner")),
+            ("deadline_text", updates.get("deadline_text")),
+            ("deadline_resolved", updates.get("deadline_resolved")),
+            ("state", updates.get("state")),
+            ("is_excluded", int(updates["is_excluded"]) if "is_excluded" in updates else None),
+            ("evidence_ids", json.dumps(updates["evidence_ids"]) if "evidence_ids" in updates else None),
+        ]
+
+        text_or_meta_changed = False
+        for field, new_val in fields_to_track:
+            if new_val is not None:
+                old_val = current_item.get(field)
+                if field == "is_excluded":
+                    old_val = int(old_val) if old_val is not None else 0
+                if str(old_val) != str(new_val):
+                    if field in ("text", "owner", "deadline_text", "evidence_ids"):
+                        text_or_meta_changed = True
+                    conn.execute(
+                        """
+                        INSERT INTO review_audit_log (
+                            meeting_id, item_id, action, field_name,
+                            old_value, new_value, reason, reviewer_id, timestamp
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            meeting_id,
+                            item_id,
+                            f"edit_{field}",
+                            field,
+                            str(old_val),
+                            str(new_val),
+                            reason,
+                            reviewer,
+                            now,
+                        ),
+                    )
+
+        new_status = current_item["review_status"]
+        if text_or_meta_changed and new_status == "original":
+            new_status = "edited"
+
+        new_text = updates.get("text", current_item["text"])
+        new_state = updates.get("state", current_item["state"])
+        new_owner = updates.get("owner", current_item["owner"])
+        new_owner_type = updates.get("owner_type", current_item["owner_type"])
+        new_deadline_text = updates.get("deadline_text", current_item["deadline_text"])
+        new_deadline_resolved = updates.get("deadline_resolved", current_item["deadline_resolved"])
+        new_evidence_ids = (
+            json.dumps(updates["evidence_ids"]) if "evidence_ids" in updates else current_item["evidence_ids"]
+        )
+        new_is_excluded = (
+            int(updates["is_excluded"]) if "is_excluded" in updates else current_item["is_excluded"]
+        )
+
+        conn.execute(
+            """
+            UPDATE review_items SET
+                text = ?, state = ?, owner = ?, owner_type = ?,
+                deadline_text = ?, deadline_resolved = ?, evidence_ids = ?,
+                review_status = ?, is_excluded = ?, updated_at = ?
+            WHERE meeting_id = ? AND item_id = ?
+            """,
+            (
+                new_text, new_state, new_owner, new_owner_type,
+                new_deadline_text, new_deadline_resolved, new_evidence_ids,
+                new_status, new_is_excluded, now,
+                meeting_id, item_id,
+            ),
+        )
+
+        conn.execute(
+            "UPDATE review_drafts SET updated_at = ? WHERE meeting_id = ?",
+            (now, meeting_id),
+        )
+
+    return get_review_item(meeting_id, item_id, db_path=db_path)  # type: ignore[return-value]
+
+
+def get_review_item(
+    meeting_id: str,
+    item_id: str,
+    db_path: Optional[Path | str] = None,
+) -> Optional[Dict[str, Any]]:
+    """Retrieve a single review item."""
+    with get_conn(db_path) as conn:
+        row = conn.execute(
+            "SELECT * FROM review_items WHERE meeting_id = ? AND item_id = ?",
+            (meeting_id, item_id),
+        ).fetchone()
+        if not row:
+            return None
+        item = dict(row)
+        item["evidence_ids"] = json.loads(item["evidence_ids"]) if item["evidence_ids"] else []
+        item["is_excluded"] = bool(item["is_excluded"])
+        return item
+
+
+def add_review_item(
+    meeting_id: str,
+    item_data: Dict[str, Any],
+    reviewer: Optional[str] = None,
+    reason: Optional[str] = None,
+    db_path: Optional[Path | str] = None,
+) -> Dict[str, Any]:
+    """Add a new decision or action item to the review draft."""
+    init_db(db_path)
+    now = _now_iso()
+
+    with get_conn(db_path) as conn:
+        draft = conn.execute(
+            "SELECT draft_status FROM review_drafts WHERE meeting_id = ?",
+            (meeting_id,),
+        ).fetchone()
+
+        if not draft:
+            raise ValueError(f"No review draft found for meeting {meeting_id}.")
+        if draft["draft_status"] == "approved":
+            raise ValueError("Cannot add items to an approved MoM. Please reopen review first.")
+
+        item_id = item_data.get("item_id") or f"manual_{uuid4().hex[:10]}"
+        item_type = item_data.get("item_type", "decision")
+        if item_type not in ("decision", "action"):
+            raise ValueError(f"Invalid item_type: {item_type}")
+
+        text = item_data.get("text", "").strip()
+        if not text:
+            raise ValueError("Item text cannot be empty.")
+
+        evidence_ids = item_data.get("evidence_ids") or []
+        order_row = conn.execute(
+            "SELECT COALESCE(MAX(order_index), 0) + 1 FROM review_items WHERE meeting_id = ?",
+            (meeting_id,),
+        ).fetchone()
+        order_index = order_row[0]
+
+        conn.execute(
+            """
+            INSERT INTO review_items (
+                item_id, meeting_id, original_claim_id, item_type, text,
+                state, owner, owner_type, deadline_text, deadline_resolved,
+                evidence_ids, review_status, is_excluded, order_index, updated_at
+            ) VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, 'added', ?, ?, ?)
+            """,
+            (
+                item_id, meeting_id, item_type, text,
+                item_data.get("state", "accepted"),
+                item_data.get("owner"),
+                item_data.get("owner_type", "unassigned" if item_type == "action" else None),
+                item_data.get("deadline_text"),
+                item_data.get("deadline_resolved"),
+                json.dumps(evidence_ids),
+                1 if item_data.get("is_excluded") else 0,
+                order_index,
+                now,
+            ),
+        )
+
+        conn.execute(
+            """
+            INSERT INTO review_audit_log (
+                meeting_id, item_id, action, field_name,
+                old_value, new_value, reason, reviewer_id, timestamp
+            ) VALUES (?, ?, 'add_item', 'text', NULL, ?, ?, ?, ?)
+            """,
+            (meeting_id, item_id, text, reason, reviewer, now),
+        )
+
+        conn.execute(
+            "UPDATE review_drafts SET updated_at = ? WHERE meeting_id = ?",
+            (now, meeting_id),
+        )
+
+    return get_review_item(meeting_id, item_id, db_path=db_path)  # type: ignore[return-value]
+
+
+def record_audit_event(
+    meeting_id: str,
+    action: str,
+    item_id: Optional[str] = None,
+    field_name: Optional[str] = None,
+    old_value: Optional[str] = None,
+    new_value: Optional[str] = None,
+    reason: Optional[str] = None,
+    reviewer_id: Optional[str] = None,
+    timestamp: Optional[str] = None,
+    db_path: Optional[Path | str] = None,
+) -> None:
+    """Record an audit event into review_audit_log."""
+    init_db(db_path)
+    ts = timestamp or _now_iso()
+    with get_conn(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO review_audit_log (
+                meeting_id, item_id, action, field_name,
+                old_value, new_value, reason, reviewer_id, timestamp
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (meeting_id, item_id, action, field_name, old_value, new_value, reason, reviewer_id, ts),
+        )
+
+
+def get_review_audit_log(
+    meeting_id: str,
+    db_path: Optional[Path | str] = None,
+) -> List[Dict[str, Any]]:
+    """Retrieve full audit history for a meeting ordered chronologically."""
+    init_db(db_path)
+    with get_conn(db_path) as conn:
+        rows = conn.execute(
+            "SELECT * FROM review_audit_log WHERE meeting_id = ? ORDER BY audit_id ASC",
+            (meeting_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def approve_review_draft(
+    meeting_id: str,
+    reviewer: str,
+    notes: Optional[str] = None,
+    mom_payload: Optional[Dict[str, Any]] = None,
+    db_path: Optional[Path | str] = None,
+) -> Dict[str, Any]:
+    """
+    Explicitly approve and lock the current review draft.
+    Persists an immutable approved snapshot, updates draft status, and writes audit event.
+    Idempotent: if already approved and not reopened, returns existing latest snapshot.
+    """
+    init_db(db_path)
+    if not reviewer or not reviewer.strip():
+        raise ValueError("A reviewer identity must be provided to approve minutes.")
+
+    now = _now_iso()
+    with get_conn(db_path) as conn:
+        draft = conn.execute(
+            "SELECT draft_status FROM review_drafts WHERE meeting_id = ?",
+            (meeting_id,),
+        ).fetchone()
+
+        if draft and draft["draft_status"] == "approved":
+            latest = conn.execute(
+                "SELECT * FROM approved_snapshots WHERE meeting_id = ? ORDER BY version DESC LIMIT 1",
+                (meeting_id,),
+            ).fetchone()
+            if latest:
+                res = dict(latest)
+                res["mom_payload"] = json.loads(res["mom_payload"])
+                return res
+
+        v_row = conn.execute(
+            "SELECT COALESCE(MAX(version), 0) + 1 FROM approved_snapshots WHERE meeting_id = ?",
+            (meeting_id,),
+        ).fetchone()
+        version = int(v_row[0])
+
+        snapshot_id = f"{meeting_id}_v{version}_{uuid4().hex[:6]}"
+        payload_dict = mom_payload or {}
+        payload_dict["approved_version"] = version
+        payload_dict["approved_by"] = reviewer
+        payload_dict["approved_at"] = now
+        payload_str = json.dumps(payload_dict, ensure_ascii=False)
+
+        conn.execute(
+            """
+            INSERT INTO approved_snapshots (
+                snapshot_id, meeting_id, version, approved_by, approved_at,
+                mom_payload, reopened_at, reopened_by, reopen_reason
+            ) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL)
+            """,
+            (snapshot_id, meeting_id, version, reviewer, now, payload_str),
+        )
+
+        conn.execute(
+            "UPDATE review_drafts SET draft_status = 'approved', updated_at = ? WHERE meeting_id = ?",
+            (now, meeting_id),
+        )
+
+        conn.execute(
+            "UPDATE meetings SET status = 'approved' WHERE meeting_id = ?",
+            (meeting_id,),
+        )
+
+        conn.execute(
+            """
+            INSERT INTO review_audit_log (
+                meeting_id, item_id, action, field_name,
+                old_value, new_value, reason, reviewer_id, timestamp
+            ) VALUES (?, NULL, 'approve_mom', 'status', 'draft', ?, ?, ?, ?)
+            """,
+            (meeting_id, f"v{version}", notes, reviewer, now),
+        )
+
+    return {
+        "snapshot_id": snapshot_id,
+        "meeting_id": meeting_id,
+        "version": version,
+        "approved_by": reviewer,
+        "approved_at": now,
+        "mom_payload": payload_dict,
+    }
+
+
+def reopen_review_draft(
+    meeting_id: str,
+    reviewer: str,
+    reason: str,
+    db_path: Optional[Path | str] = None,
+) -> Dict[str, Any]:
+    """
+    Reopen an approved review draft for further human editing.
+    Requires an explicit reason. Preserves the prior approved snapshot intact.
+    """
+    init_db(db_path)
+    if not reviewer or not reviewer.strip():
+        raise ValueError("A reviewer identity must be provided to reopen review.")
+    if not reason or not reason.strip():
+        raise ValueError("A reason must be provided to reopen approved minutes.")
+
+    now = _now_iso()
+    with get_conn(db_path) as conn:
+        draft = conn.execute(
+            "SELECT draft_status FROM review_drafts WHERE meeting_id = ?",
+            (meeting_id,),
+        ).fetchone()
+
+        if not draft or draft["draft_status"] != "approved":
+            raise ValueError("Review draft is not approved; cannot reopen.")
+
+        # Annotate latest snapshot with reopening info without deleting it
+        conn.execute(
+            """
+            UPDATE approved_snapshots SET
+                reopened_at = ?, reopened_by = ?, reopen_reason = ?
+            WHERE meeting_id = ? AND version = (
+                SELECT MAX(version) FROM approved_snapshots WHERE meeting_id = ?
+            )
+            """,
+            (now, reviewer, reason, meeting_id, meeting_id),
+        )
+
+        conn.execute(
+            "UPDATE review_drafts SET draft_status = 'reopened', updated_at = ? WHERE meeting_id = ?",
+            (now, meeting_id),
+        )
+
+        conn.execute(
+            "UPDATE meetings SET status = 'review_reopened' WHERE meeting_id = ?",
+            (meeting_id,),
+        )
+
+        conn.execute(
+            """
+            INSERT INTO review_audit_log (
+                meeting_id, item_id, action, field_name,
+                old_value, new_value, reason, reviewer_id, timestamp
+            ) VALUES (?, NULL, 'reopen_review', 'status', 'approved', 'reopened', ?, ?, ?)
+            """,
+            (meeting_id, reason, reviewer, now),
+        )
+
+    return get_review_draft(meeting_id, db_path=db_path)  # type: ignore[return-value]
+
+
+def get_latest_approved_snapshot(
+    meeting_id: str,
+    db_path: Optional[Path | str] = None,
+) -> Optional[Dict[str, Any]]:
+    """Retrieve latest approved snapshot for a meeting."""
+    init_db(db_path)
+    with get_conn(db_path) as conn:
+        row = conn.execute(
+            "SELECT * FROM approved_snapshots WHERE meeting_id = ? ORDER BY version DESC LIMIT 1",
+            (meeting_id,),
+        ).fetchone()
+        if not row:
+            return None
+        res = dict(row)
+        res["mom_payload"] = json.loads(res["mom_payload"]) if res["mom_payload"] else {}
+        return res
+
+
+def get_all_approved_snapshots(
+    meeting_id: str,
+    db_path: Optional[Path | str] = None,
+) -> List[Dict[str, Any]]:
+    """Retrieve version history of all approved snapshots."""
+    init_db(db_path)
+    with get_conn(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT snapshot_id, meeting_id, version, approved_by, approved_at,
+                   reopened_at, reopened_by, reopen_reason
+            FROM approved_snapshots
+            WHERE meeting_id = ?
+            ORDER BY version ASC
+            """,
+            (meeting_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+

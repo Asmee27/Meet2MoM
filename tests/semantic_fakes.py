@@ -34,7 +34,7 @@ def _content(text: str) -> set[str]:
 
 
 class FakeEmbedder:
-    def encode(self, texts, normalize_embeddings=True, show_progress_bar=False):
+    def encode(self, texts, normalize_embeddings=True, show_progress_bar=False, **kwargs):
         rows = []
         for text in texts:
             vector = np.zeros(256, dtype=np.float32)
@@ -109,4 +109,5 @@ def install_semantic_fakes(monkeypatch) -> FakeNLIPipeline:
     pipe = FakeNLIPipeline()
     monkeypatch.setattr(RetrievalIndex, "_load_model", lambda self: embedder)
     monkeypatch.setattr("app.core.model_registry.get_hf_pipeline", lambda *a, **k: pipe)
+    monkeypatch.setattr("app.core.model_registry.get_sentence_transformer", lambda *a, **k: embedder)
     return pipe

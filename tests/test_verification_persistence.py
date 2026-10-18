@@ -57,7 +57,7 @@ def test_migration_upgrades_a_v0_database_without_touching_existing_rows(tmp_pat
     db.init_db(path)  # idempotent
 
     assert NEW_TABLES <= _tables(path)
-    assert db.get_schema_version(path) == db.SCHEMA_VERSION == 1
+    assert db.get_schema_version(path) == db.SCHEMA_VERSION
     with sqlite3.connect(path) as conn:
         after = {t: conn.execute(f"SELECT * FROM {t} ORDER BY 1").fetchall() for t in before}
         assert conn.execute("PRAGMA foreign_key_check").fetchall() == []

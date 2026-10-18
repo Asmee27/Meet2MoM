@@ -34,7 +34,7 @@ from app.services.pipeline.recorded_pipeline_adapter import (
 )
 
 from pydantic import BaseModel
-from typing import Literal
+from typing import Any, Dict, List, Literal, Optional
 
 from app.services.pipeline.intelligence_service import (
     ensure_extraction,
@@ -901,6 +901,501 @@ def review_evidence_suggestion(
 
 
 # ============================================================
+# PHASE 3: REVIEW DRAFTS, APPROVALS, AUDIT LOG, AND EXPORTS
+# ============================================================
+
+class ReviewItemUpdate(BaseModel):
+    text: Optional[str] = None
+    owner: Optional[str] = None
+    owner_type: Optional[str] = None
+    deadline_text: Optional[str] = None
+    deadline_resolved: Optional[str] = None
+    state: Optional[str] = None
+    is_excluded: Optional[bool] = None
+    evidence_ids: Optional[List[str]] = None
+    reviewer: Optional[str] = None
+    reason: Optional[str] = None
+
+
+class ReviewItemCreate(BaseModel):
+    item_type: Literal["decision", "action"]
+    text: str
+    owner: Optional[str] = None
+    owner_type: Optional[str] = "unassigned"
+    deadline_text: Optional[str] = None
+    deadline_resolved: Optional[str] = None
+    state: Optional[str] = "accepted"
+    is_excluded: Optional[bool] = False
+    evidence_ids: Optional[List[str]] = []
+    reviewer: Optional[str] = None
+    reason: Optional[str] = None
+
+
+class ApproveReviewRequest(BaseModel):
+    reviewer: str
+    notes: Optional[str] = None
+
+
+class ReopenReviewRequest(BaseModel):
+    reviewer: str
+    reason: str
+
+
+def _build_review_response(meeting_id: str) -> Dict[str, Any]:
+    validate_file_id(meeting_id)
+    if _db.get_meeting(meeting_id) is None:
+        raise HTTPException(status_code=404, detail="Meeting not found.")
+
+    draft = _db.init_review_draft(meeting_id)
+    claims_view = build_claims_view(meeting_id)
+    claims_by_id = {c["claim_id"]: c for c in claims_view["claims"]}
+
+    utterances = _db.get_utterances(meeting_id)
+    utts_by_id = {u.utt_id: u for u in utterances}
+
+    items = []
+    for item in draft.get("items") or []:
+        orig_id = item.get("original_claim_id")
+        orig_claim = claims_by_id.get(orig_id) if orig_id else None
+
+        evidence_models = []
+        for uid in item.get("evidence_ids") or []:
+            if uid in utts_by_id:
+                u = utts_by_id[uid]
+                evidence_models.append({
+                    "utt_id": u.utt_id,
+                    "speaker": u.speaker_name or u.speaker_id,
+                    "speaker_id": u.speaker_id,
+                    "start": u.start,
+                    "end": u.end,
+                    "text": u.text,
+                    "asr_conf": u.asr_conf,
+                    "spk_conf": u.spk_conf,
+                    "overlap": bool(u.overlap),
+                })
+
+        # Determine display status
+        if item["is_excluded"]:
+            display_status = "excluded"
+        elif item["review_status"] == "edited":
+            display_status = "human_edited"
+        elif item["review_status"] == "added":
+            display_status = "added"
+        elif item["review_status"] == "rejected":
+            display_status = "rejected"
+        elif orig_claim:
+            display_status = orig_claim["verification"]["final"]["label"]
+        else:
+            display_status = "unverified"
+
+        items.append({
+            **item,
+            "evidence": evidence_models,
+            "display_status": display_status,
+            "verification": orig_claim["verification"] if orig_claim else None,
+            "suggestion": orig_claim.get("suggestion") if orig_claim else None,
+            "contradiction": orig_claim.get("contradiction") if orig_claim else None,
+            "correction": orig_claim.get("correction") if orig_claim else None,
+        })
+
+    approved_snapshot = _db.get_latest_approved_snapshot(meeting_id)
+    approval_history = _db.get_all_approved_snapshots(meeting_id)
+
+    counts = {
+        "total_items": len(items),
+        "original": sum(1 for it in items if it["review_status"] == "original"),
+        "edited": sum(1 for it in items if it["review_status"] == "edited"),
+        "added": sum(1 for it in items if it["review_status"] == "added"),
+        "excluded": sum(1 for it in items if it["is_excluded"]),
+        "confirmed": sum(
+            1 for it in items
+            if not it["is_excluded"] and (
+                it["review_status"] in ("edited", "added") or
+                it["display_status"] in ("verified", "verified_with_warning")
+            ) and (it["item_type"] != "decision" or it.get("state") == "accepted")
+        ),
+        "needs_review": sum(
+            1 for it in items
+            if not it["is_excluded"] and
+            it["review_status"] == "original" and
+            it["display_status"] not in ("verified", "verified_with_warning")
+        ),
+        "rejected": sum(
+            1 for it in items
+            if it["review_status"] == "rejected" or it["display_status"] == "rejected"
+        ),
+    }
+
+    return {
+        "meeting_id": meeting_id,
+        "draft_status": draft["draft_status"],
+        "meeting_title": draft.get("meeting_title") or "Meeting Minutes",
+        "summary": draft.get("summary"),
+        "approved_snapshot": approved_snapshot,
+        "latest_approved_snapshot": approved_snapshot,
+        "approval_history": approval_history,
+        "counts": counts,
+        "items": items,
+        "updated_at": draft["updated_at"],
+    }
+
+
+@router.get("/meetings/{meeting_id}/review")
+def get_meeting_review(meeting_id: str):
+    """Retrieve the interactive review draft with items, verification, and approval status."""
+    return _build_review_response(meeting_id)
+
+
+@router.put("/meetings/{meeting_id}/review/items/{item_id}")
+def update_review_item_endpoint(
+    meeting_id: str,
+    item_id: str,
+    request: ReviewItemUpdate,
+):
+    """
+    Update a decision or action item in the review draft.
+    Records field-level diffs in the review audit log.
+    Rejects changes if the draft is currently approved (must be reopened first).
+    """
+    validate_file_id(meeting_id)
+    draft = _db.init_review_draft(meeting_id)
+    if draft["draft_status"] == "approved":
+        raise HTTPException(
+            status_code=409,
+            detail="Cannot edit an approved MoM. Please reopen review first.",
+        )
+
+    updates = request.model_dump(exclude_unset=True, exclude={"reviewer", "reason"})
+    try:
+        updated_item = _db.update_review_item(
+            meeting_id,
+            item_id,
+            updates,
+            reviewer=request.reviewer,
+            reason=request.reason,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    review = _build_review_response(meeting_id)
+    return {
+        "item": updated_item,
+        "review": review,
+    }
+
+
+@router.post("/meetings/{meeting_id}/review/items")
+def add_review_item_endpoint(
+    meeting_id: str,
+    request: ReviewItemCreate,
+):
+    """
+    Add a new human-curated decision or action item to the review draft.
+    Rejects additions if the draft is currently approved.
+    """
+    validate_file_id(meeting_id)
+    draft = _db.init_review_draft(meeting_id)
+    if draft["draft_status"] == "approved":
+        raise HTTPException(
+            status_code=409,
+            detail="Cannot add items to an approved MoM. Please reopen review first.",
+        )
+
+    item_data = request.model_dump(exclude={"reviewer", "reason"})
+    try:
+        new_item = _db.add_review_item(
+            meeting_id,
+            item_data,
+            reviewer=request.reviewer,
+            reason=request.reason,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    review = _build_review_response(meeting_id)
+    return {
+        "item": new_item,
+        "review": review,
+    }
+
+
+@router.post("/meetings/{meeting_id}/approve")
+def approve_meeting_review(
+    meeting_id: str,
+    request: ApproveReviewRequest,
+):
+    """
+    Explicitly approve and lock the Minutes of Meeting.
+    Freezes the approved snapshot into the database, records the reviewer identity
+    in the audit log, and generates the approved PDF artifact.
+    Idempotent: re-approving an already-approved draft returns the current snapshot.
+    """
+    validate_file_id(meeting_id)
+    if not request.reviewer or not request.reviewer.strip():
+        raise HTTPException(status_code=422, detail="Reviewer name is required.")
+
+    draft = _db.init_review_draft(meeting_id)
+
+    # Idempotent return
+    if draft["draft_status"] == "approved":
+        latest = _db.get_latest_approved_snapshot(meeting_id)
+        if latest:
+            return {
+                "status": "approved",
+                "message": "Meeting is already approved.",
+                "snapshot": latest,
+                "mom": latest["mom_payload"],
+            }
+
+    storage = get_storage(meeting_id)
+    view = build_claims_view(meeting_id)
+    claims_by_id = {c["claim_id"]: c for c in view["claims"]}
+    utterances = _db.get_utterances(meeting_id)
+    utts_by_id = {u.utt_id: u for u in utterances}
+    duration = max((u.end for u in utterances), default=0.0)
+    participants = sorted({
+        str(u.speaker_name or u.speaker_id)
+        for u in utterances
+        if (u.speaker_name or u.speaker_id) not in {None, "", "SPEAKER_UNKNOWN", "UNKNOWN"}
+    })
+    topics = _load_topics(storage)
+    extraction = view["extraction"] or {}
+    verification_run = view["verification_run"] or {}
+
+    items = draft.get("items") or []
+
+    decisions = []
+    action_items = []
+    excluded_items = []
+
+    for it in items:
+        if it.get("is_excluded"):
+            excluded_items.append(it)
+            continue
+
+        orig = claims_by_id.get(it["original_claim_id"]) if it.get("original_claim_id") else None
+        is_edited = it.get("review_status") == "edited"
+        is_added = it.get("review_status") == "added"
+
+        evidence_ids = it.get("evidence_ids") or []
+        first_ev = utts_by_id.get(evidence_ids[0]) if evidence_ids else None
+        spk = (first_ev.speaker_name or first_ev.speaker_id) if first_ev else None
+        tstamp = first_ev.start if first_ev else None
+
+        if is_edited:
+            status_label = "Human Edited / Reviewer Approved"
+            is_exportable = it.get("state") == "accepted"
+        elif is_added:
+            status_label = "Reviewer Added & Approved"
+            is_exportable = it.get("state") == "accepted"
+        else:
+            status_label = orig["verification"]["final"]["label"] if orig else "unverified"
+            is_exportable = orig["exportable"] if orig else False
+
+        warnings = [
+            r["message"] for r in (orig["verification"]["final"]["reasons"] if orig and orig.get("verification") else [])
+            if r.get("severity") == "warning"
+        ]
+
+        if it["item_type"] == "decision":
+            if is_exportable:
+                decisions.append({
+                    "claim_id": it["item_id"],
+                    "text": it["text"],
+                    "state": it.get("state") or "accepted",
+                    "speaker": spk,
+                    "timestamp": tstamp,
+                    "verification_status": status_label,
+                    "evidence_ids": evidence_ids,
+                    "warnings": warnings,
+                    "review_status": it.get("review_status"),
+                })
+            else:
+                excluded_items.append(it)
+        elif it["item_type"] == "action":
+            if is_exportable:
+                action_items.append({
+                    "claim_id": it["item_id"],
+                    "task": it["text"],
+                    "owner": it.get("owner") or "Not assigned",
+                    "owner_type": it.get("owner_type") or "unassigned",
+                    "dueDate": it.get("deadline_resolved") or it.get("deadline_text") or "Not specified",
+                    "speaker": spk,
+                    "timestamp": tstamp,
+                    "verification_status": status_label,
+                    "evidence_ids": evidence_ids,
+                    "warnings": warnings,
+                    "review_status": it.get("review_status"),
+                })
+            else:
+                excluded_items.append(it)
+
+    follow_ups = [
+        f"Deadline not specified for '{item['task']}'."
+        for item in action_items
+        if not item.get("dueDate") or item.get("dueDate") == "Not specified"
+    ]
+    follow_ups += [
+        f"Owner not assigned for '{item['task']}'."
+        for item in action_items
+        if not item.get("owner") or item.get("owner") == "Not assigned"
+    ]
+
+    mom = {
+        "file_id": meeting_id,
+        "meeting_title": draft.get("meeting_title") or "Meeting Minutes",
+        "meeting_date": None,
+        "duration_seconds": round(duration, 2),
+        "language": _meeting_language(storage, utterances),
+        "participants": participants,
+        "summary": draft.get("summary") or build_summary(topics, decisions, action_items, len(excluded_items), extraction),
+        "summary_method": "reviewer_approved" if draft.get("summary") else "deterministic_overview",
+        "discussion_points": build_discussion_points(topics),
+        "decisions": decisions,
+        "action_items": action_items,
+        "needs_review": [],
+        "excluded_from_mom": [{"claim_id": ex["item_id"], "text": ex["text"]} for ex in excluded_items],
+        "follow_ups": follow_ups,
+        "verification": {
+            "strategy": "deterministic + retrieval/NLI semantic verification + human reviewer approval",
+            "approved": True,
+            "approved_by": request.reviewer,
+            "approved_at": _db._now_iso(),
+            "run_status": (verification_run or {}).get("status"),
+            "config_version": (verification_run or {}).get("config_version"),
+            "model_version": (verification_run or {}).get("model_version"),
+            "confirmed_decisions": len(decisions),
+            "reliable_action_items": len(action_items),
+            "excluded_items": len(excluded_items),
+        },
+        "status": "approved",
+    }
+
+    snapshot = _db.approve_review_draft(
+        meeting_id,
+        reviewer=request.reviewer,
+        notes=request.notes,
+        mom_payload=mom,
+    )
+
+    write_json(storage.path_for("mom", "mom.json"), mom)
+    write_json(storage.root / "mom.json", mom)
+    pdf_path = build_pdf(meeting_id, mom)
+
+    return {
+        "status": "approved",
+        "message": "Minutes of Meeting approved and locked successfully.",
+        "snapshot_id": snapshot["snapshot_id"],
+        "version": snapshot["version"],
+        "approved_by": snapshot["approved_by"],
+        "approved_at": snapshot["approved_at"],
+        "pdf_file": pdf_path.name,
+        "mom": mom,
+    }
+
+
+@router.post("/meetings/{meeting_id}/reopen")
+def reopen_meeting_review(
+    meeting_id: str,
+    request: ReopenReviewRequest,
+):
+    """
+    Reopen an approved meeting review for further corrections.
+    Preserves previously approved snapshot rows in approved_snapshots.
+    """
+    validate_file_id(meeting_id)
+    if not request.reviewer or not request.reviewer.strip():
+        raise HTTPException(status_code=422, detail="Reviewer name is required.")
+    if not request.reason or not request.reason.strip():
+        raise HTTPException(status_code=422, detail="Reopening reason is required.")
+
+    draft = _db.get_review_draft(meeting_id)
+    if not draft or draft["draft_status"] != "approved":
+        raise HTTPException(
+            status_code=409,
+            detail="Review draft is not approved; cannot reopen.",
+        )
+
+    try:
+        updated_draft = _db.reopen_review_draft(
+            meeting_id,
+            reviewer=request.reviewer,
+            reason=request.reason,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    return _build_review_response(meeting_id)
+
+
+@router.get("/meetings/{meeting_id}/audit-log")
+def get_meeting_audit_log(meeting_id: str):
+    """Retrieve full chronological audit history of review actions."""
+    validate_file_id(meeting_id)
+    return {
+        "meeting_id": meeting_id,
+        "audit_log": _db.get_review_audit_log(meeting_id),
+    }
+
+
+@router.get("/meetings/{meeting_id}/export/json")
+def export_mom_json(meeting_id: str, preview: bool = False):
+    """Export the approved MoM in JSON format from the persisted snapshot."""
+    validate_file_id(meeting_id)
+    snapshot = _db.get_latest_approved_snapshot(meeting_id)
+    if snapshot is not None:
+        return snapshot["mom_payload"]
+
+    if preview:
+        return create_mom(meeting_id)
+
+    raise HTTPException(
+        status_code=409,
+        detail="MoM has not been approved yet. Approve minutes before exporting, or pass ?preview=true to preview.",
+    )
+
+
+@router.get("/meetings/{meeting_id}/audio")
+def get_meeting_audio(meeting_id: str):
+    """Stream or download audio file for the meeting with Range support."""
+    validate_file_id(meeting_id)
+    storage = get_storage(meeting_id)
+
+    candidates = [
+        p for p in storage.recording.glob("recording.*")
+        if p.is_file() and p.suffix.lower() in ALLOWED_EXTENSIONS
+    ]
+    if not candidates:
+        candidates = [
+            p for p in storage.audio.glob("*.wav")
+            if p.is_file() and not p.name.startswith("chunk_")
+        ]
+    if not candidates:
+        candidates = [
+            p for p in storage.root.glob("recording.*")
+            if p.is_file() and p.suffix.lower() in ALLOWED_EXTENSIONS
+        ]
+
+    if not candidates:
+        raise HTTPException(
+            status_code=404,
+            detail="Audio recording not available for this meeting.",
+        )
+
+    audio_file = candidates[0]
+    ext = audio_file.suffix.lower()
+    media_type = "audio/wav" if ext == ".wav" else "audio/mp4"
+    if ext == ".mp3":
+        media_type = "audio/mpeg"
+
+    return FileResponse(
+        path=str(audio_file),
+        media_type=media_type,
+        filename=audio_file.name,
+    )
+
+
+# ============================================================
 # TOPIC → DISCUSSION POINTS
 # ============================================================
 
@@ -1103,6 +1598,9 @@ def build_summary(
             f"{'were' if review_count != 1 else 'was'} held back for human review."
         )
 
+    if (extraction or {}).get("fallback_reason"):
+        parts.append(f"[Degraded extraction: {(extraction or {}).get('fallback_reason')}].")
+
     return " ".join(parts)
 
 
@@ -1218,6 +1716,7 @@ def create_mom(
             "mode_requested": extraction.get("mode_requested"),
             "mode_used": extraction.get("mode_used"),
             "fallback_reason": extraction.get("fallback_reason"),
+            "degraded_extraction": bool(extraction.get("fallback_reason")),
             "reason": extraction.get("reason"),
         },
         "intelligence": {
@@ -1792,44 +2291,28 @@ def download_mom(
     file_id: str,
 ):
 
-    storage = get_storage(
-        file_id
-    )
+    storage = get_storage(file_id)
+    snapshot = _db.get_latest_approved_snapshot(file_id)
+    pdf_path = storage.path_for("mom", "Meet2MoM-Meeting-Minutes.pdf")
 
-    pdf_path = storage.path_for(
-        "mom",
-        "Meet2MoM-Meeting-Minutes.pdf"
-    )
+    if snapshot is not None:
+        if not pdf_path.exists():
+            pdf_path = build_pdf(file_id, snapshot["mom_payload"])
+    else:
+        if not pdf_path.exists():
+            pdf_path = storage.root / "Meet2MoM-Meeting-Minutes.pdf"
 
-    if not pdf_path.exists():
-        pdf_path = storage.root / "Meet2MoM-Meeting-Minutes.pdf"
+        if not pdf_path.exists():
+            mom_path = storage.path_for("mom", "mom.json")
+            if not mom_path.exists():
+                mom_path = storage.root / "mom.json"
 
-    if not pdf_path.exists():
+            if mom_path.exists():
+                mom = read_json(mom_path, "MoM not found.")
+            else:
+                mom = create_mom(file_id)
 
-        mom_path = storage.path_for(
-            "mom",
-            "mom.json"
-        )
-        if not mom_path.exists():
-            mom_path = storage.root / "mom.json"
-
-        if mom_path.exists():
-
-            mom = read_json(
-                mom_path,
-                "MoM not found.",
-            )
-
-        else:
-
-            mom = create_mom(
-                file_id
-            )
-
-        pdf_path = build_pdf(
-            file_id,
-            mom,
-        )
+            pdf_path = build_pdf(file_id, mom)
 
     return FileResponse(
         path=str(

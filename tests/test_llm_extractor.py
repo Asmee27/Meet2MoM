@@ -15,7 +15,7 @@ import logging
 from uuid import uuid4
 import pytest
 
-from app.core.llm_client import LLMClient, LLMOutputError
+from app.core.llm_client import LLMClient, LLMClientError, LLMOutputError
 from app.services.intelligence.context_builder import ExtractionWindow
 from app.services.intelligence.llm_extractor import (
     extract_from_window,
@@ -184,3 +184,26 @@ def test_api_key_never_logged(caplog):
         client.complete_json(system="sys", user="user")
 
     assert secret_key not in caplog.text, "API key must never appear in log records"
+
+
+def test_stub_provider_cannot_be_used_outside_tests(monkeypatch):
+    client = LLMClient(provider="stub", model="test-stub")
+    # Simulate production/outside-test environment
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    monkeypatch.delenv("TESTING", raising=False)
+
+    with pytest.raises((RuntimeError, LLMClientError), match="cannot be used outside of tests"):
+        client.complete_json(system="sys", user="user")
+
+
+def test_degraded_extraction_marked_in_summary():
+    from app.api.meeting_routes import build_summary
+    topics = [{"topic_label": "Architecture"}]
+    decisions = [{"text": "Use SQLite"}]
+    actions = []
+    extraction = {
+        "status": "completed",
+        "fallback_reason": "LLM_PROVIDER=stub is a test fixture, not a real extractor",
+    }
+    summary = build_summary(topics, decisions, actions, review_count=0, extraction=extraction)
+    assert "[Degraded extraction: LLM_PROVIDER=stub is a test fixture, not a real extractor]" in summary

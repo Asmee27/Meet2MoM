@@ -84,6 +84,8 @@ def llm_unavailable_reason(client: Optional[LLMClient] = None) -> Optional[str]:
     empty result, so it must never count as a successful extraction.
     """
     if client is not None:
+        if getattr(client, "provider", None) == "stub" and "PYTEST_CURRENT_TEST" not in os.environ and not os.environ.get("TESTING"):
+            return "LLM_PROVIDER=stub cannot be used outside of tests"
         return None
     provider = (config.LLM_PROVIDER or "stub").strip().lower()
     if provider == "stub":
