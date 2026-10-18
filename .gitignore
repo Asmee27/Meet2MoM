@@ -35,3 +35,10 @@ demo_data.zip
 .venv_test/
 __pycache__/
 *.pyc
+
+# Archives
+*.zip
+
+# Evaluation artifacts
+eval_data/
+evaluation/results/
