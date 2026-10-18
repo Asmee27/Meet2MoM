@@ -14,8 +14,10 @@ Phase 3 comprehensive review workflow tests:
 from __future__ import annotations
 
 import json
+import zlib
 import pytest
 from fastapi.testclient import TestClient
+from reportlab.pdfbase import pdfutils
 
 from app.api.main import app
 from app.core import config, db
@@ -349,4 +351,115 @@ def test_database_migration_v1_to_v2_and_restart(tmp_path):
         conn.execute("INSERT INTO review_drafts (meeting_id, draft_status, created_at, updated_at) VALUES ('m_legacy', 'draft', '2026-10-17', '2026-10-17')")
         draft = conn.execute("SELECT * FROM review_drafts WHERE meeting_id = 'm_legacy'").fetchone()
         assert draft["draft_status"] == "draft"
+
+
+def test_evidence_appendix_in_json_and_pdf(client):
+    mid, d_id, a_id = _setup_verified_meeting()
+    client.post(f"/api/verify/{mid}")
+
+    # 1. Add a reviewer-curated item with no cited utterances
+    add_res = client.post(f"/api/meetings/{mid}/review/items", json={
+        "item_type": "decision",
+        "text": "Reviewer manual decision",
+        "reviewer": "Madhura",
+        "evidence_ids": [],
+    })
+    assert add_res.status_code == 200
+    added_item_id = add_res.json()["item"]["item_id"]
+
+    # 2. Exclude the decision item d_id
+    ex_res = client.put(f"/api/meetings/{mid}/review/items/{d_id}", json={
+        "is_excluded": True,
+        "reviewer": "Madhura",
+        "reason": "Out of scope decision",
+    })
+    assert ex_res.status_code == 200
+
+    # 3. Unapproved JSON export without preview returns 409
+    unapproved_res = client.get(f"/api/meetings/{mid}/export/json")
+    assert unapproved_res.status_code == 409
+
+    # 4. Unapproved export with preview=true succeeds and includes evidence_appendix
+    preview_res = client.get(f"/api/meetings/{mid}/export/json?preview=true")
+    assert preview_res.status_code == 200
+    preview_mom = preview_res.json()
+    assert "evidence_appendix" in preview_mom
+
+    # 5. Approve the meeting review
+    app_res = client.post(f"/api/meetings/{mid}/approve", json={"reviewer": "Madhura"})
+    assert app_res.status_code == 200
+
+    # 6. Approved JSON export contains authoritative evidence appendix
+    export_res = client.get(f"/api/meetings/{mid}/export/json")
+    assert export_res.status_code == 200
+    mom = export_res.json()
+    assert "evidence_appendix" in mom
+    appendix = mom["evidence_appendix"]
+
+    # Utterances from database
+    utts = {u.utt_id: u for u in db.get_utterances(mid)}
+
+    # Excluded item d_id must NOT appear anywhere in the appendix
+    item_ids_in_appendix = [row["item_id"] for row in appendix]
+    assert d_id not in item_ids_in_appendix
+
+    # Reviewer-added item must appear with evidence_role 'none' and explicit note
+    reviewer_rows = [row for row in appendix if row["item_id"] == added_item_id]
+    assert len(reviewer_rows) == 1
+    r_row = reviewer_rows[0]
+    assert r_row["evidence_role"] == "none"
+    assert r_row["quote"] == "Reviewer-added; no transcript evidence"
+    assert r_row["utt_id"] is None
+    assert r_row["speaker"] is None
+    assert r_row["start_s"] is None
+    assert r_row["end_s"] is None
+    assert r_row["start_label"] is None
+    assert r_row["end_label"] is None
+    assert "deterministic" in r_row["verifier_versions"]
+    assert "semantic" in r_row["verifier_versions"]
+    assert "thresholds" in r_row["verifier_versions"]
+
+    # Action item a_id cited 'u00006'
+    action_rows = [row for row in appendix if row["item_id"] == a_id]
+    assert len(action_rows) == 1
+    a_row = action_rows[0]
+    assert a_row["utt_id"] == "u00006"
+    assert a_row["quote"] == utts["u00006"].text
+    assert a_row["speaker"] == (utts["u00006"].speaker_name or utts["u00006"].speaker_id)
+    assert a_row["start_label"] == "00:30"
+    assert a_row["end_label"] == "00:34"
+    assert a_row["evidence_role"] in ("evidence", "confirmation")
+    assert a_row["start_s"] == round(utts["u00006"].start, 2)
+    assert a_row["end_s"] == round(utts["u00006"].end, 2)
+
+    # 7. PDF download builds without error and contains the heading 'Evidence Appendix'
+    pdf_res = client.get(f"/api/download-mom/{mid}")
+    assert pdf_res.status_code == 200
+    assert pdf_res.content[:4] == b"%PDF"
+
+    # Verify decompressed PDF streams contain 'Evidence Appendix'
+    raw_pdf = pdf_res.content
+    idx = 0
+    found_heading = False
+    while True:
+        s_idx = raw_pdf.find(b"stream\n", idx)
+        if s_idx == -1:
+            break
+        start = s_idx + len(b"stream\n")
+        term = raw_pdf.find(b"~>", start)
+        if term == -1:
+            break
+        stream_data = raw_pdf[start:term + 2]
+        try:
+            decoded = pdfutils.asciiBase85Decode(stream_data)
+            decomp = zlib.decompress(decoded)
+            if b"Evidence Appendix" in decomp:
+                found_heading = True
+                break
+        except Exception:
+            pass
+        idx = term + 2
+
+    assert found_heading is True
+
 

@@ -1119,6 +1119,122 @@ def add_review_item_endpoint(
     }
 
 
+def build_evidence_appendix(
+    meeting_id: str,
+    mom: dict,
+    db_path: Optional[Path | str] = None,
+) -> list[dict]:
+    """
+    Build a deterministic evidence appendix array grounding each item's decisions
+    and actions in verbatim utterances from the immutable database.
+
+    - Excluded items do not appear in the appendix.
+    - Reviewer-added items with no cited utterances appear with evidence_role: "none"
+      and quote: "Reviewer-added; no transcript evidence".
+    - Sorted deterministically: by item order, then by utterance start time.
+    """
+    utterances = _db.get_utterances(meeting_id, db_path=db_path)
+    utt_map = {u.utt_id: u for u in utterances}
+
+    v_info = mom.get("verification") or {}
+    det_ver = v_info.get("config_version") or "evidence-v1"
+    sem_ver = v_info.get("model_version") or "dialogue-v1"
+    thresh = v_info.get("thresholds") or "fused-v1"
+    verifier_versions = {
+        "deterministic": det_ver,
+        "semantic": sem_ver,
+        "thresholds": thresh,
+    }
+
+    appendix = []
+
+    # Gather items deterministically: decisions first, then actions
+    items_to_process = []
+    for d in mom.get("decisions", []):
+        if not (d.get("excluded") or d.get("is_excluded")):
+            items_to_process.append(("decision", d))
+
+    for a in mom.get("action_items", []):
+        if not (a.get("excluded") or a.get("is_excluded")):
+            items_to_process.append(("action", a))
+
+    for item_type, item in items_to_process:
+        item_id = item.get("claim_id") or item.get("item_id")
+        item_status = item.get("review_status") or item.get("verification_status") or "verified"
+        verification_label = item.get("verification_status") or "verified"
+        evidence_ids = item.get("evidence_ids") or []
+
+        if not evidence_ids:
+            appendix.append({
+                "item_id": item_id,
+                "item_type": item_type,
+                "item_status": item_status,
+                "utt_id": None,
+                "speaker": None,
+                "start_s": None,
+                "end_s": None,
+                "start_label": None,
+                "end_label": None,
+                "quote": "Reviewer-added; no transcript evidence",
+                "evidence_role": "none",
+                "verification_label": verification_label,
+                "verifier_versions": verifier_versions,
+            })
+            continue
+
+        cited_utts = [utt_map[uid] for uid in evidence_ids if uid in utt_map]
+        cited_utts.sort(key=lambda u: (u.start, u.end, u.utt_id))
+
+        if not cited_utts:
+            appendix.append({
+                "item_id": item_id,
+                "item_type": item_type,
+                "item_status": item_status,
+                "utt_id": None,
+                "speaker": None,
+                "start_s": None,
+                "end_s": None,
+                "start_label": None,
+                "end_label": None,
+                "quote": "Reviewer-added; no transcript evidence",
+                "evidence_role": "none",
+                "verification_label": verification_label,
+                "verifier_versions": verifier_versions,
+            })
+            continue
+
+        for idx, u in enumerate(cited_utts):
+            if item_type == "decision" and len(cited_utts) > 1 and idx == len(cited_utts) - 1:
+                role = "confirmation"
+            else:
+                role = "evidence"
+
+            start_s = round(u.start, 2)
+            end_s = round(u.end, 2)
+            s_min, s_rem = divmod(int(round(u.start)), 60)
+            e_min, e_rem = divmod(int(round(u.end)), 60)
+            start_label = f"{s_min:02d}:{s_rem:02d}"
+            end_label = f"{e_min:02d}:{e_rem:02d}"
+
+            appendix.append({
+                "item_id": item_id,
+                "item_type": item_type,
+                "item_status": item_status,
+                "utt_id": u.utt_id,
+                "speaker": u.speaker_name or u.speaker_id or "SPEAKER_UNKNOWN",
+                "start_s": start_s,
+                "end_s": end_s,
+                "start_label": start_label,
+                "end_label": end_label,
+                "quote": u.text,
+                "evidence_role": role,
+                "verification_label": verification_label,
+                "verifier_versions": verifier_versions,
+            })
+
+    return appendix
+
+
 @router.post("/meetings/{meeting_id}/approve")
 def approve_meeting_review(
     meeting_id: str,
@@ -1271,6 +1387,8 @@ def approve_meeting_review(
         "status": "approved",
     }
 
+    mom["evidence_appendix"] = build_evidence_appendix(meeting_id, mom)
+
     snapshot = _db.approve_review_draft(
         meeting_id,
         reviewer=request.reviewer,
@@ -1344,10 +1462,15 @@ def export_mom_json(meeting_id: str, preview: bool = False):
     validate_file_id(meeting_id)
     snapshot = _db.get_latest_approved_snapshot(meeting_id)
     if snapshot is not None:
-        return snapshot["mom_payload"]
+        mom = dict(snapshot["mom_payload"])
+        mom["evidence_appendix"] = build_evidence_appendix(meeting_id, mom)
+        return mom
 
     if preview:
-        return create_mom(meeting_id)
+        mom = create_mom(meeting_id)
+        if "evidence_appendix" not in mom:
+            mom["evidence_appendix"] = build_evidence_appendix(meeting_id, mom)
+        return mom
 
     raise HTTPException(
         status_code=409,
@@ -1744,6 +1867,8 @@ def create_mom(
         },
         "status": "mom_generated_from_verified_claims",
     }
+
+    mom["evidence_appendix"] = build_evidence_appendix(file_id, mom)
 
     write_json(storage.path_for("mom", "mom.json"), mom)
     write_json(storage.root / "mom.json", mom)
@@ -2187,6 +2312,85 @@ def build_pdf(
         story.append(Paragraph("Follow-ups", heading_style))
         for index, item in enumerate(follow_ups, start=1):
             story.append(Paragraph(f"{index}. {safe_pdf(item)}", body_style))
+
+    # Evidence Appendix Section
+    appendix = mom.get("evidence_appendix")
+    if appendix is None:
+        appendix = build_evidence_appendix(file_id, mom)
+
+    if appendix:
+        story.append(Spacer(1, 10))
+        story.append(Paragraph("Evidence Appendix", heading_style))
+        story.append(Paragraph(
+            "Verbatim transcript evidence grounding confirmed decisions and action items.",
+            small_style,
+        ))
+        story.append(Spacer(1, 6))
+
+        appendix_col_widths = [18 * mm, 16 * mm, 22 * mm, 24 * mm, 56 * mm, 20 * mm, 18 * mm]
+        app_header_style = ParagraphStyle(
+            "AppendixHeader", parent=small_style,
+            fontName="Helvetica-Bold", textColor=colors.white, fontSize=7.5, leading=9,
+        )
+        app_cell_style = ParagraphStyle(
+            "AppendixCell", parent=small_style,
+            fontName="Helvetica", textColor=DARK, fontSize=7.5, leading=9.5,
+        )
+        app_quote_style = ParagraphStyle(
+            "AppendixQuote", parent=small_style,
+            fontName="Helvetica-Oblique", textColor=DARK, fontSize=7.5, leading=9.5,
+        )
+
+        app_rows = [[
+            Paragraph("Item", app_header_style),
+            Paragraph("Utterance", app_header_style),
+            Paragraph("Speaker", app_header_style),
+            Paragraph("Time", app_header_style),
+            Paragraph("Quote", app_header_style),
+            Paragraph("Verification", app_header_style),
+            Paragraph("Verifier", app_header_style),
+        ]]
+
+        for row in appendix:
+            item_lbl = str(row.get("item_id") or "")
+            if len(item_lbl) > 12:
+                item_lbl = item_lbl[:10] + "…"
+            utt_lbl = str(row.get("utt_id") or "—")
+            spk_lbl = str(row.get("speaker") or "—")
+            t_lbl = (
+                f"{row.get('start_label')}–{row.get('end_label')}"
+                if row.get("start_label")
+                else "—"
+            )
+            q_text = safe_pdf(row.get("quote") or "")
+            v_lbl = safe_pdf(row.get("verification_label") or "")
+            ver_versions = row.get("verifier_versions") or {}
+            v_ver = safe_pdf(ver_versions.get("semantic") or ver_versions.get("deterministic") or "v1")
+
+            app_rows.append([
+                Paragraph(safe_pdf(item_lbl), app_cell_style),
+                Paragraph(safe_pdf(utt_lbl), app_cell_style),
+                Paragraph(safe_pdf(spk_lbl), app_cell_style),
+                Paragraph(safe_pdf(t_lbl), app_cell_style),
+                Paragraph(q_text, app_quote_style),
+                Paragraph(v_lbl, app_cell_style),
+                Paragraph(v_ver, app_cell_style),
+            ])
+
+        app_table = Table(app_rows, colWidths=appendix_col_widths, repeatRows=1)
+        app_table.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), NAVY),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, LIGHT]),
+            ("GRID", (0, 0), (-1, -1), 0.5, BORDER),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 4),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+            ("TOPPADDING", (0, 0), (-1, -1), 4),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ]))
+        story.append(app_table)
 
     story.extend([
         Spacer(1, 10),
