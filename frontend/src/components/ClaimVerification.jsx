@@ -67,12 +67,19 @@ export function EvidenceList({ title, utterances, onSeek, testId }) {
                 type="button"
                 className="evidence-seek-btn"
                 onClick={() => onSeek(u.start)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    onSeek(u.start);
+                  }
+                }}
+                aria-label={`Play from ${formatTimestamp(u.start)}`}
                 title={`Seek to ${formatTimestamp(u.start)}`}
               >
                 ▶ {formatTimestamp(u.start)}
               </button>
             ) : (
-              formatTimestamp(u.start)
+              <span className="evidence-plain-time">{formatTimestamp(u.start)}</span>
             )}{" "}
             · {u.utt_id}
           </span>

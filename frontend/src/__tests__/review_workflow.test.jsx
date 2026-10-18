@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 // Phase 3 UI tests: review editing, approval, locking, reopening, audit log, JSON export.
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 
 import { ClaimReviewCard, ReviewBadge } from "../components/ClaimVerification";
@@ -633,5 +633,119 @@ describe("API Service Layer — Phase 3 exports", () => {
     expect(typeof api.getAuditLog).toBe("function");
     expect(typeof api.exportApprovedJson).toBe("function");
     expect(typeof api.getAudioUrl).toBe("function");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 6. Audio Player Mounting & Evidence Seeking (Task 1)
+// ---------------------------------------------------------------------------
+
+describe("VerifyMeeting Page — Audio Player & Evidence Seeking", () => {
+  beforeEach(() => {
+    window.HTMLMediaElement.prototype.play = vi.fn().mockImplementation(() => Promise.resolve());
+    window.HTMLMediaElement.prototype.pause = vi.fn();
+  });
+
+  it("mounts sticky audio toolbar and seeks audio on evidence click", async () => {
+    const ctx = makeContextMock({
+      verificationData: {
+        claims: [
+          makeClaim({
+            claim_id: "c_seek_1",
+            text: "Seekable claim",
+            evidence: [utt("u00010", "Alice", 25.5, "We will deploy on Tuesday.")],
+          }),
+        ],
+        counts: { verified: 1, review: 0, rejected: 0 },
+        verification_run: { status: "completed" },
+      },
+    });
+    vi.spyOn(contextModule, "useMeetingFlow").mockReturnValue(ctx);
+
+    render(<VerifyMeeting />);
+
+    const audioPlayer = screen.getByTestId("meeting-audio-player");
+    expect(audioPlayer).toBeTruthy();
+    expect(audioPlayer.src).toContain("/api/meetings/meet_test_123/audio");
+
+    const seekBtn = screen.getByRole("button", { name: "Play from 0:25" });
+    expect(seekBtn).toBeTruthy();
+
+    await act(async () => {
+      fireEvent.click(seekBtn);
+    });
+
+    expect(audioPlayer.currentTime).toBe(25.5);
+    expect(window.HTMLMediaElement.prototype.play).toHaveBeenCalled();
+    expect(screen.getByTestId("current-evidence-time").textContent).toContain("0:25");
+  });
+
+  it("triggers seek on keyboard Enter and Space activation", async () => {
+    const ctx = makeContextMock({
+      verificationData: {
+        claims: [
+          makeClaim({
+            claim_id: "c_seek_2",
+            text: "Keyboard seek claim",
+            evidence: [utt("u00012", "Bob", 42.0, "Approved by security team.")],
+          }),
+        ],
+        counts: { verified: 1, review: 0, rejected: 0 },
+        verification_run: { status: "completed" },
+      },
+    });
+    vi.spyOn(contextModule, "useMeetingFlow").mockReturnValue(ctx);
+
+    render(<VerifyMeeting />);
+
+    const audioPlayer = screen.getByTestId("meeting-audio-player");
+    const seekBtn = screen.getByRole("button", { name: "Play from 0:42" });
+
+    // Test Enter key
+    await act(async () => {
+      fireEvent.keyDown(seekBtn, { key: "Enter" });
+    });
+    expect(audioPlayer.currentTime).toBe(42.0);
+
+    // Test Space key
+    await act(async () => {
+      fireEvent.keyDown(seekBtn, { key: " " });
+    });
+    expect(audioPlayer.currentTime).toBe(42.0);
+  });
+
+  it("hides audio player and renders plain text timestamps when audio fails (404)", async () => {
+    const ctx = makeContextMock({
+      verificationData: {
+        claims: [
+          makeClaim({
+            claim_id: "c_seek_3",
+            text: "No audio claim",
+            evidence: [utt("u00015", "Charlie", 65.0, "Discussion without recording.")],
+          }),
+        ],
+        counts: { verified: 1, review: 0, rejected: 0 },
+        verification_run: { status: "completed" },
+      },
+    });
+    vi.spyOn(contextModule, "useMeetingFlow").mockReturnValue(ctx);
+
+    render(<VerifyMeeting />);
+
+    const audioPlayer = screen.getByTestId("meeting-audio-player");
+    expect(audioPlayer).toBeTruthy();
+
+    // Trigger error event on audio element (simulating 404)
+    await act(async () => {
+      fireEvent.error(audioPlayer);
+    });
+
+    // Player and toolbar are hidden
+    expect(screen.queryByTestId("audio-toolbar")).toBeNull();
+    expect(screen.queryByTestId("meeting-audio-player")).toBeNull();
+
+    // Evidence line renders as plain text without button
+    expect(screen.queryByRole("button", { name: "Play from 1:05" })).toBeNull();
+    expect(screen.getByText("1:05")).toBeTruthy();
   });
 });

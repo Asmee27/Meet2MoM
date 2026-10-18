@@ -1,11 +1,12 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useMeetingFlow } from "../context/MeetingFlowContext";
 import {
   ClaimReviewCard,
   MethodComparison,
   ReasonList,
 } from "../components/ClaimVerification";
-import { STATUS_LABELS } from "../components/verificationFormat";
+import { STATUS_LABELS, formatTimestamp } from "../components/verificationFormat";
+import { getAudioUrl } from "../services/api";
 import "../components/ClaimVerification.css";
 
 const CONFIRMED = ["verified", "verified_with_warning"];
@@ -367,6 +368,55 @@ export default function VerifyMeeting() {
   const [showReopenModal, setShowReopenModal] = useState(false);
   const [showAddItem, setShowAddItem] = useState(false);
 
+  const audioRef = useRef(null);
+  const [hasAudio, setHasAudio] = useState(true);
+  const [currentEvidenceTime, setCurrentEvidenceTime] = useState(null);
+
+  // Probe audio availability when entering manual review
+  useEffect(() => {
+    if (!backendFileId) {
+      setHasAudio(false);
+      return;
+    }
+    let active = true;
+    fetch(getAudioUrl(backendFileId), { method: "HEAD" })
+      .then((res) => {
+        if (active) {
+          if (res.status === 404 || !res.ok) {
+            setHasAudio(false);
+          } else {
+            setHasAudio(true);
+          }
+        }
+      })
+      .catch(() => {
+        // Fallback to audio element onError event
+      });
+    return () => {
+      active = false;
+    };
+  }, [backendFileId]);
+
+  const handleSeek = (seconds) => {
+    if (!hasAudio || seconds == null) return;
+    const sec = Number(seconds);
+    if (Number.isNaN(sec)) return;
+    setCurrentEvidenceTime(sec);
+    if (audioRef.current) {
+      try {
+        audioRef.current.currentTime = sec;
+        const playPromise = audioRef.current.play?.();
+        if (playPromise && typeof playPromise.catch === "function") {
+          playPromise.catch((err) => {
+            console.warn("Audio autoplay blocked or failed:", err);
+          });
+        }
+      } catch (err) {
+        console.warn("Audio seek error:", err);
+      }
+    }
+  };
+
   // Load review draft when entering the manual review stage.
   useEffect(() => {
     if (verificationStage === "manual" && backendFileId && !reviewData && !isLoadingReview) {
@@ -636,6 +686,25 @@ export default function VerifyMeeting() {
 
       <RunNotice verificationData={verificationData} />
 
+      {/* Sticky Audio Toolbar */}
+      {hasAudio && backendFileId && (
+        <div className="sticky-audio-toolbar" data-testid="audio-toolbar">
+          <audio
+            ref={audioRef}
+            controls
+            preload="metadata"
+            src={getAudioUrl(backendFileId)}
+            onError={() => setHasAudio(false)}
+            data-testid="meeting-audio-player"
+          />
+          {currentEvidenceTime != null && (
+            <span className="current-evidence-timestamp" data-testid="current-evidence-time">
+              Current evidence: <strong>{formatTimestamp(currentEvidenceTime)}</strong>
+            </span>
+          )}
+        </div>
+      )}
+
       {suggestionError && (
         <div className="verification-run-notice" role="alert">
           <p>{suggestionError}</p>
@@ -709,6 +778,7 @@ export default function VerifyMeeting() {
               onSuggestionDecision={reviewSuggestion}
               isApproved={isApproved}
               onEdit={editReviewItem}
+              onSeek={hasAudio ? handleSeek : undefined}
             />
           ))
         )}
@@ -734,6 +804,7 @@ export default function VerifyMeeting() {
               onSuggestionDecision={reviewSuggestion}
               isApproved={isApproved}
               onEdit={editReviewItem}
+              onSeek={hasAudio ? handleSeek : undefined}
             />
           ))
         )}
@@ -755,6 +826,7 @@ export default function VerifyMeeting() {
               onSuggestionDecision={reviewSuggestion}
               isApproved={isApproved}
               onEdit={editReviewItem}
+              onSeek={hasAudio ? handleSeek : undefined}
             />
           ))}
         </div>
