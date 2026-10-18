@@ -6,6 +6,7 @@ from app.core.console import make_stdio_unicode_safe
 make_stdio_unicode_safe()
 
 from app.api.meeting_routes import router as meeting_router  # noqa: E402
+from app.api.live_routes import router as live_router  # noqa: E402
 
 app = FastAPI(
     title="Meet2MoM API",
@@ -18,13 +19,19 @@ app.add_middleware(
     allow_origins=[
         "http://localhost:5173",
         "http://127.0.0.1:5173",
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://localhost:5174",
+        "http://127.0.0.1:5174",
     ],
+    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 app.include_router(meeting_router)
+app.include_router(live_router)
 
 @app.get("/")
 def root():

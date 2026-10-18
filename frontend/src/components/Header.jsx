@@ -1,7 +1,7 @@
 import { useMeetingFlow } from "../context/MeetingFlowContext";
 
 export default function Header() {
-  const { currentStep } = useMeetingFlow();
+  const { currentStep, meetingMode } = useMeetingFlow();
 
   return (
     <>
@@ -32,7 +32,7 @@ export default function Header() {
             }`}
           >
             <span className="step-number">1</span>
-            <span>Upload</span>
+            <span>{meetingMode === "live" ? "Live Meeting" : "Upload"}</span>
           </div>
 
           <div

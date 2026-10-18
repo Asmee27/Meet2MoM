@@ -16,8 +16,17 @@ import VerifyMeeting from "./pages/VerifyMeeting";
 import Summary from "./pages/Summary";
 
 function MeetingFlow() {
-  const { currentStep } = useMeetingFlow();
-  const [meetingMode, setMeetingMode] = useState(null);
+  const { currentStep, meetingMode, setMeetingMode } = useMeetingFlow();
+
+  // If opening a shared invite link (e.g. ?room=xyz), auto-switch to Live Meeting mode
+  useState(() => {
+    try {
+      const params = new URLSearchParams(window.location.search);
+      if (params.get("room")) {
+        setMeetingMode("live");
+      }
+    } catch {}
+  });
 
   if (currentStep === 1 && !meetingMode) {
     return (

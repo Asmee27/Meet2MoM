@@ -1,8 +1,13 @@
 // src/services/api.js
 // Single source of truth for all backend API calls.
 
+const defaultBaseUrl =
+  typeof window !== "undefined" && window.location.hostname === "localhost"
+    ? "http://localhost:8000"
+    : "http://127.0.0.1:8000";
+
 export const API_BASE_URL =
-  import.meta.env.VITE_API_BASE_URL || "http://127.0.0.1:8000";
+  import.meta.env.VITE_API_BASE_URL || defaultBaseUrl;
 
 // ---------------------------------------------------------------------------
 // Health
@@ -238,4 +243,80 @@ export async function exportApprovedJson(meetingId) {
 
 export function getAudioUrl(meetingId) {
   return `${API_BASE_URL}/api/meetings/${meetingId}/audio`;
+}
+
+// ---------------------------------------------------------------------------
+// Phase 4: LiveKit Live Meeting API
+// ---------------------------------------------------------------------------
+
+export async function getLiveConfig() {
+  let res;
+  try {
+    res = await fetch(`${API_BASE_URL}/api/live/config`);
+  } catch {
+    throw new Error(`Cannot connect to backend server at ${API_BASE_URL}. Please ensure the FastAPI backend is running.`);
+  }
+  const data = await res.json();
+  if (!res.ok) throw new Error(data?.detail || "Unable to fetch LiveKit configuration.");
+  return data;
+}
+
+export async function createLiveRoom(payload = {}) {
+  let res;
+  try {
+    res = await fetch(`${API_BASE_URL}/api/live/rooms`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify(payload),
+    });
+  } catch {
+    throw new Error(`Cannot connect to backend server at ${API_BASE_URL}. Please ensure the FastAPI backend is running.`);
+  }
+  const data = await res.json();
+  if (!res.ok) throw new Error(data?.detail || "Failed to create LiveKit room.");
+  return data;
+}
+
+export async function getLiveToken(payload) {
+  let res;
+  try {
+    res = await fetch(`${API_BASE_URL}/api/live/token`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify(payload),
+    });
+  } catch {
+    throw new Error(`Cannot connect to backend server at ${API_BASE_URL}. Please ensure the FastAPI backend is running.`);
+  }
+  const data = await res.json();
+  if (!res.ok) throw new Error(data?.detail || "Failed to generate LiveKit join token.");
+  return data;
+}
+
+export async function getLiveRoomStatus(roomName) {
+  const res = await fetch(`${API_BASE_URL}/api/live/rooms/${encodeURIComponent(roomName)}`);
+  const data = await res.json();
+  if (!res.ok) throw new Error(data?.detail || "Failed to fetch room status.");
+  return data;
+}
+
+export async function endLiveRoom(roomName) {
+  const res = await fetch(`${API_BASE_URL}/api/live/rooms/${encodeURIComponent(roomName)}/end`, {
+    method: "POST",
+    headers: { Accept: "application/json" },
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data?.detail || "Failed to end LiveKit room.");
+  return data;
+}
+
+export async function updateLiveConsent(roomName, identity, consented) {
+  const res = await fetch(`${API_BASE_URL}/api/live/rooms/${encodeURIComponent(roomName)}/consent`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify({ identity, consented }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data?.detail || "Failed to update participant consent.");
+  return data;
 }

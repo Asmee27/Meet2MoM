@@ -295,4 +295,13 @@ WORKER_STALE_TIMEOUT_SECONDS = float(os.getenv("WORKER_STALE_TIMEOUT_SECONDS", "
 WORKER_MAX_RETRIES = int(os.getenv("WORKER_MAX_RETRIES", "3"))
 
 # Topic title generation mode: "extractive" (default) or "llm"
-TOPIC_TITLES = os.getenv("TOPIC_TITLES", "extractive").strip().lower()
+TOPIC_TITLES = os.getenv("TOPIC_TITLES", "extractive").strip().lower()
+
+# ==========================================================
+# LIVEKIT SETTINGS (Phase 4 Real Live Meetings)
+# ==========================================================
+
+LIVEKIT_URL = os.getenv("LIVEKIT_URL", "").strip()
+LIVEKIT_API_KEY = os.getenv("LIVEKIT_API_KEY", "").strip()
+LIVEKIT_API_SECRET = os.getenv("LIVEKIT_API_SECRET", "").strip()
+
