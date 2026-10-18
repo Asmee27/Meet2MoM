@@ -54,10 +54,13 @@ router = APIRouter(
 # PROJECT PATHS
 # ============================================================
 
+from datetime import datetime, timezone
+from app.core import config
 from app.core.config import STORAGE_ROOT
 from app.core.storage import MeetingStorage, is_valid_meeting_id
 from app.core import db as _db
 from app.core.jobs import run_pipeline, STAGES
+from app.schemas.job import JobStatus
 
 PROJECT_ROOT = (
     Path(__file__)
@@ -345,11 +348,25 @@ async def upload_meeting(
             filename=original_name,
             status="queued",
         )
+        # Always register queued job status
+        _db.upsert_job_status(
+            JobStatus(
+                meeting_id=file_id,
+                stage="uploaded",
+                progress=0.0,
+                state="queued",
+                error=None,
+                updated_at=datetime.now(timezone.utc),
+                file_path=str(destination),
+            )
+        )
     except Exception:
         pass  # DB write failures must not block upload response
 
-    # Queue background pipeline — returns immediately
-    background_tasks.add_task(run_pipeline, file_id, destination)
+    # When JOB_RUNNER is worker, only enqueue without starting inline BackgroundTasks
+    if (getattr(config, "JOB_RUNNER", "inline") or "inline").strip().lower() != "worker":
+        background_tasks.add_task(run_pipeline, file_id, destination)
+
 
     return JSONResponse(
         status_code=202,

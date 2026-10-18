@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Generator, List, Optional
 from uuid import uuid4
@@ -23,8 +23,9 @@ def get_conn(db_path: Optional[Path | str] = None) -> Generator[sqlite3.Connecti
     path = Path(db_path or DB_PATH)
     path.parent.mkdir(parents=True, exist_ok=True)
 
-    conn = sqlite3.connect(str(path))
+    conn = sqlite3.connect(str(path), timeout=15.0)
     conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA journal_mode = WAL")
     conn.row_factory = sqlite3.Row
 
     try:
@@ -133,11 +134,27 @@ def init_db(db_path: Optional[Path | str] = None) -> None:
                 progress REAL,
                 state TEXT,
                 error TEXT,
-                updated_at TEXT
+                updated_at TEXT,
+                heartbeat_at TEXT,
+                retry_count INTEGER DEFAULT 0,
+                file_path TEXT,
+                claim_token TEXT
             );
             """
         )
+        for col_def in (
+            "heartbeat_at TEXT",
+            "retry_count INTEGER DEFAULT 0",
+            "file_path TEXT",
+            "claim_token TEXT",
+        ):
+            try:
+                conn.execute(f"ALTER TABLE jobs ADD COLUMN {col_def}")
+            except sqlite3.OperationalError:
+                pass
+
         _migrate(conn)
+
 
 
 # ---------------------------------------------------------------------------
@@ -683,16 +700,50 @@ def delete_utterances_for_meeting(
             _execute(c)
 
 
+def _row_to_job(row: sqlite3.Row) -> JobStatus:
+    keys = row.keys() if hasattr(row, "keys") else []
+    hb = row["heartbeat_at"] if "heartbeat_at" in keys and row["heartbeat_at"] else None
+    retries = row["retry_count"] if "retry_count" in keys and row["retry_count"] is not None else 0
+    fp = row["file_path"] if "file_path" in keys else None
+    token = row["claim_token"] if "claim_token" in keys else None
+
+    return JobStatus(
+        meeting_id=row["meeting_id"],
+        stage=row["stage"],
+        progress=row["progress"],
+        state=row["state"],
+        error=row["error"],
+        updated_at=datetime.fromisoformat(row["updated_at"]) if row["updated_at"] else datetime.now(timezone.utc),
+        heartbeat_at=datetime.fromisoformat(hb) if hb else None,
+        retry_count=retries,
+        file_path=fp,
+        claim_token=token,
+    )
+
+
 def upsert_job_status(
     job: JobStatus,
     db_path: Optional[Path | str] = None,
 ) -> None:
-    """Upsert a JobStatus record."""
+    """Upsert a JobStatus record, preserving prior metadata when omitted."""
     with get_conn(db_path) as conn:
+        cursor = conn.execute(
+            "SELECT retry_count, file_path, claim_token, heartbeat_at FROM jobs WHERE meeting_id = ?",
+            (job.meeting_id,),
+        )
+        existing = cursor.fetchone()
+        file_path = job.file_path or (existing["file_path"] if existing else None)
+        retry_count = max(job.retry_count, (existing["retry_count"] if existing and existing["retry_count"] is not None else 0))
+        claim_token = job.claim_token or (existing["claim_token"] if existing else None)
+        heartbeat_at = (job.heartbeat_at.isoformat() if job.heartbeat_at else None) or (existing["heartbeat_at"] if existing else None)
+
         conn.execute(
             """
-            INSERT OR REPLACE INTO jobs (meeting_id, stage, progress, state, error, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT OR REPLACE INTO jobs (
+                meeting_id, stage, progress, state, error, updated_at,
+                heartbeat_at, retry_count, file_path, claim_token
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 job.meeting_id,
@@ -701,6 +752,10 @@ def upsert_job_status(
                 job.state,
                 job.error,
                 job.updated_at.isoformat(),
+                heartbeat_at,
+                retry_count,
+                file_path,
+                claim_token,
             ),
         )
 
@@ -713,7 +768,8 @@ def get_job_status(
     with get_conn(db_path) as conn:
         cursor = conn.execute(
             """
-            SELECT meeting_id, stage, progress, state, error, updated_at
+            SELECT meeting_id, stage, progress, state, error, updated_at,
+                   heartbeat_at, retry_count, file_path, claim_token
             FROM jobs
             WHERE meeting_id = ?
             """,
@@ -724,14 +780,198 @@ def get_job_status(
     if not row:
         return None
 
-    return JobStatus(
-        meeting_id=row["meeting_id"],
-        stage=row["stage"],
-        progress=row["progress"],
-        state=row["state"],
-        error=row["error"],
-        updated_at=datetime.fromisoformat(row["updated_at"]),
-    )
+    return _row_to_job(row)
+
+
+def claim_next_job(
+    worker_id: Optional[str] = None,
+    db_path: Optional[Path | str] = None,
+) -> Optional[JobStatus]:
+    """
+    Atomically claim the next queued job for execution.
+    Two workers calling this in sequence (or concurrently) will never claim the same job.
+    Uses an atomic UPDATE with rowcount verification and a unique claim token.
+    """
+    token = f"{worker_id or 'worker'}_{uuid4().hex}"
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    with get_conn(db_path) as conn:
+        conn.execute("PRAGMA busy_timeout = 5000")
+        cursor = conn.execute(
+            """
+            UPDATE jobs
+            SET state = 'running',
+                stage = 'uploaded',
+                claim_token = ?,
+                heartbeat_at = ?,
+                updated_at = ?
+            WHERE meeting_id = (
+                SELECT meeting_id
+                FROM jobs
+                WHERE state = 'queued'
+                ORDER BY updated_at ASC
+                LIMIT 1
+            ) AND state = 'queued'
+            """,
+            (token, now_iso, now_iso),
+        )
+        if cursor.rowcount == 0:
+            return None
+
+        row = conn.execute(
+            """
+            SELECT meeting_id, stage, progress, state, error, updated_at,
+                   heartbeat_at, retry_count, file_path, claim_token
+            FROM jobs
+            WHERE claim_token = ?
+            """,
+            (token,),
+        ).fetchone()
+
+        if not row:
+            return None
+        return _row_to_job(row)
+
+
+def update_job_heartbeat(
+    meeting_id: str,
+    db_path: Optional[Path | str] = None,
+) -> None:
+    """Update heartbeat timestamp for a currently running job."""
+    now_iso = datetime.now(timezone.utc).isoformat()
+    with get_conn(db_path) as conn:
+        conn.execute(
+            """
+            UPDATE jobs
+            SET heartbeat_at = ?, updated_at = ?
+            WHERE meeting_id = ?
+            """,
+            (now_iso, now_iso, meeting_id),
+        )
+
+
+def recover_stale_jobs(
+    stale_timeout_seconds: float = 300.0,
+    max_retries: int = 3,
+    db_path: Optional[Path | str] = None,
+) -> List[Dict[str, Any]]:
+    """
+    On worker startup, scan for jobs stuck in 'running' state whose heartbeat is
+    older than stale_timeout_seconds (or missing).
+    - If retry_count >= max_retries: mark state='failed' with error explanation.
+    - Otherwise: increment retry_count, reset state='queued', and clear claim_token/heartbeat.
+    Returns list of recovered job summaries.
+    """
+    now = datetime.now(timezone.utc)
+    now_iso = now.isoformat()
+    recovered = []
+
+    with get_conn(db_path) as conn:
+        conn.execute("PRAGMA busy_timeout = 5000")
+        rows = conn.execute(
+            """
+            SELECT meeting_id, stage, progress, state, error, updated_at,
+                   heartbeat_at, retry_count, file_path, claim_token
+            FROM jobs
+            WHERE state = 'running'
+            """
+        ).fetchall()
+
+        for row in rows:
+            mid = row["meeting_id"]
+            keys = row.keys() if hasattr(row, "keys") else []
+            hb_str = row["heartbeat_at"] if "heartbeat_at" in keys and row["heartbeat_at"] else None
+            up_str = row["updated_at"]
+
+            last_active = None
+            if hb_str:
+                try:
+                    last_active = datetime.fromisoformat(hb_str)
+                except ValueError:
+                    pass
+            if last_active is None and up_str:
+                try:
+                    last_active = datetime.fromisoformat(up_str)
+                except ValueError:
+                    pass
+
+            if last_active is None:
+                is_stale = True
+            else:
+                if last_active.tzinfo is None:
+                    last_active = last_active.replace(tzinfo=timezone.utc)
+                is_stale = (now - last_active).total_seconds() > stale_timeout_seconds
+
+            if not is_stale:
+                continue
+
+            current_retries = (row["retry_count"] if "retry_count" in keys and row["retry_count"] is not None else 0)
+            next_retries = current_retries + 1
+
+            if next_retries > max_retries:
+                err_msg = f"Job failed: exceeded maximum retries ({max_retries}) after worker timeout/crash."
+                conn.execute(
+                    """
+                    UPDATE jobs
+                    SET state = 'failed',
+                        error = ?,
+                        retry_count = ?,
+                        claim_token = NULL,
+                        updated_at = ?
+                    WHERE meeting_id = ?
+                    """,
+                    (err_msg, next_retries, now_iso, mid),
+                )
+                recovered.append({
+                    "meeting_id": mid,
+                    "action": "failed",
+                    "retries": next_retries,
+                    "error": err_msg,
+                })
+            else:
+                conn.execute(
+                    """
+                    UPDATE jobs
+                    SET state = 'queued',
+                        stage = 'uploaded',
+                        progress = 0.0,
+                        heartbeat_at = NULL,
+                        claim_token = NULL,
+                        retry_count = ?,
+                        error = ?,
+                        updated_at = ?
+                    WHERE meeting_id = ?
+                    """,
+                    (next_retries, f"Recovered from stale running state (retry {next_retries}/{max_retries})", now_iso, mid),
+                )
+                recovered.append({
+                    "meeting_id": mid,
+                    "action": "requeued",
+                    "retries": next_retries,
+                })
+
+    return recovered
+
+
+def release_job(
+    meeting_id: str,
+    db_path: Optional[Path | str] = None,
+) -> None:
+    """Release a running job back to 'queued' state (e.g. on SIGINT/SIGTERM)."""
+    now_iso = datetime.now(timezone.utc).isoformat()
+    with get_conn(db_path) as conn:
+        conn.execute(
+            """
+            UPDATE jobs
+            SET state = 'queued',
+                heartbeat_at = NULL,
+                claim_token = NULL,
+                updated_at = ?
+            WHERE meeting_id = ? AND state = 'running'
+            """,
+            (now_iso, meeting_id),
+        )
+
 
 
 # ---------------------------------------------------------------------------

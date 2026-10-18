@@ -62,13 +62,15 @@ def _now() -> datetime:
 
 def _emit(meeting_id: str, stage: str, state: str, error: str | None = None) -> None:
     """Write a JobStatus row to the DB."""
+    now = _now()
     job = JobStatus(
         meeting_id=meeting_id,
         stage=stage,
         progress=_STAGE_PROGRESS.get(stage, 0.0),
         state=state,
         error=error,
-        updated_at=_now(),
+        updated_at=now,
+        heartbeat_at=now if state == "running" else None,
     )
     try:
         upsert_job_status(job)
