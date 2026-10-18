@@ -1,0 +1,109 @@
+{
+  "timestamp": "2026-10-18 08:42:42 UTC",
+  "input_file": "input\\test_meeting.mp4",
+  "cpu_info": {
+    "model": "11th Gen Intel(R) Core(TM) i5-1155G7 @ 2.50GHz",
+    "machine": "AMD64",
+    "logical_cores": 8
+  },
+  "os_info": "Windows 10 (10.0.26300)",
+  "asr_benchmark": {
+    "model_size": "small",
+    "compute_type": "int8",
+    "device": "cpu",
+    "beam_size": 5,
+    "vad_filter": true,
+    "model_load_time_seconds": 4.3,
+    "audio_duration_seconds": 248.13,
+    "total_runs": 3,
+    "cold_run": {
+      "run_index": 1,
+      "is_cold": true,
+      "wall_time_seconds": 68.62,
+      "audio_duration_seconds": 248.13,
+      "rtf": 0.2765,
+      "segment_count": 35,
+      "low_confidence_segments": 0
+    },
+    "warm_runs": [
+      {
+        "run_index": 2,
+        "is_cold": false,
+        "wall_time_seconds": 68.17,
+        "audio_duration_seconds": 248.13,
+        "rtf": 0.2747,
+        "segment_count": 35,
+        "low_confidence_segments": 0
+      },
+      {
+        "run_index": 3,
+        "is_cold": false,
+        "wall_time_seconds": 64.84,
+        "audio_duration_seconds": 248.13,
+        "rtf": 0.2613,
+        "segment_count": 35,
+        "low_confidence_segments": 0
+      }
+    ],
+    "warm_mean_time_seconds": 66.5,
+    "warm_min_time_seconds": 64.84,
+    "warm_mean_rtf": 0.268,
+    "warm_min_rtf": 0.2613,
+    "runs_detail": [
+      {
+        "run_index": 1,
+        "is_cold": true,
+        "wall_time_seconds": 68.62,
+        "audio_duration_seconds": 248.13,
+        "rtf": 0.2765,
+        "segment_count": 35,
+        "low_confidence_segments": 0
+      },
+      {
+        "run_index": 2,
+        "is_cold": false,
+        "wall_time_seconds": 68.17,
+        "audio_duration_seconds": 248.13,
+        "rtf": 0.2747,
+        "segment_count": 35,
+        "low_confidence_segments": 0
+      },
+      {
+        "run_index": 3,
+        "is_cold": false,
+        "wall_time_seconds": 64.84,
+        "audio_duration_seconds": 248.13,
+        "rtf": 0.2613,
+        "segment_count": 35,
+        "low_confidence_segments": 0
+      }
+    ]
+  },
+  "quality_comparison": {
+    "available": true,
+    "golden_file": "tests\\fixtures\\golden\\demo_01\\frontend_transcript.json",
+    "golden_segment_count": 39,
+    "hypothesis_segment_count": 35,
+    "golden_low_confidence_count": 0,
+    "hypothesis_low_confidence_count": 0,
+    "wer_stats": {
+      "reference_words": 566,
+      "hypothesis_words": 566,
+      "edit_distance": 8,
+      "wer": 0.0141
+    }
+  },
+  "e2e_pipeline": {
+    "wall_time_seconds": 503.51,
+    "success": true,
+    "error": null,
+    "note": "Measured in preceding verified pipeline run"
+  },
+  "baseline_comparison": {
+    "baseline_asr_time_seconds": 427.29,
+    "baseline_audio_duration_seconds": 248.13,
+    "baseline_rtf": 1.722,
+    "speedup_vs_baseline_min": 6.59,
+    "speedup_vs_baseline_mean": 6.43
+  }
+}

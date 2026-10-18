@@ -92,6 +92,10 @@ def run_pipeline(meeting_id: str, file_path: Path) -> None:
 
     Progress is emitted to the DB after every stage completes.
     """
+    # Stop console output from crashing the pipeline on non-UTF-8 streams (e.g. Windows cp1252)
+    from app.core.console import make_stdio_unicode_safe
+    make_stdio_unicode_safe()
+
     # Ensure the DB schema exists (idempotent)
     try:
         init_db()
