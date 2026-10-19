@@ -28,7 +28,7 @@ transcript index → windows (≤ 60 utterances, 10 overlap) → LLM per window
 
 | Situation | What happens | Where it shows |
 |---|---|---|
-| Real provider configured and working | `mode_used = llm`, `extractor_version = llm:<provider>:<model>:v2` | MoM, PDF and Summary page: "Extracted by LLM: gemini / gemini-2.5-flash" |
+| Real provider configured and working | `mode_used = llm`, `extractor_version = llm:<provider>:<model>:v2` | MoM, PDF and Summary page: "Extracted by LLM: gemini / gemini-3.8-flash" |
 | `LLM_PROVIDER=stub`, missing key, missing model, unsupported provider | No network call. The local fallback runs | "Extraction status … (extractor used: hybrid/rules) · LLM_PROVIDER=… has no API key configured" |
 | HTTP error, timeout, blocked response, non-JSON or wrong-schema output | Retries where sensible: 429/5xx and timeouts, up to 3 times; one JSON repair attempt. Then the local fallback runs | "LLM extraction failed: LLM request timed out after 60s" (or the provider message) |
 | An LLM detail is not in its own citations | The detail is removed and the claim is kept. Logged in `claims.json` → `stats.llm_grounding` | The claim is shown without the invented date or proposer |
@@ -45,10 +45,26 @@ outside tests and is always reported as unavailable in production.
 
 | `LLM_PROVIDER` | Key variable | `LLM_MODEL` | Notes |
 |---|---|---|---|
-| `gemini` (**recommended**) | `GEMINI_API_KEY` or `LLM_API_KEY` | optional; defaults to `gemini-2.5-flash` | JSON response mode, key sent as the `x-goog-api-key` header |
+| `gemini` (**recommended**) | `GEMINI_API_KEY` or `LLM_API_KEY` | optional; defaults to `gemini-3.8-flash` | JSON response mode, key sent as the `x-goog-api-key` header |
 | `openai` | `OPENAI_API_KEY` or `LLM_API_KEY` | **required** | `LLM_BASE_URL` for OpenAI-compatible endpoints |
 | `anthropic` | `ANTHROPIC_API_KEY` or `LLM_API_KEY` | **required** | |
 | `local` | none | **required** | OpenAI-compatible server, e.g. Ollama at `http://localhost:11434/v1` |
+
+### Which model is used
+
+The model is chosen in this order:
+
+1. A model passed explicitly to `LLMClient(model=...)`, which code and tests can do.
+2. `LLM_MODEL` from `.env`, unless it is empty or the placeholder `mock-v1`.
+3. The provider default, which only Gemini has: `gemini-3.8-flash`. It is
+   defined once as `DEFAULT_GEMINI_MODEL` in `app/core/llm_client.py` and
+   comes from Google's [Gemini models list](https://ai.google.dev/gemini-api/docs/models),
+   where it is marked stable. OpenAI, Anthropic and local have no default.
+   Without `LLM_MODEL` they report "has no LLM_MODEL configured" and fall back.
+
+To use another Gemini model, set it in `.env`, for example
+`LLM_MODEL=gemini-3.6-flash`, and restart. The model in use is part of
+`extractor_version` and is shown as "Extracted by LLM: gemini / <model>".
 
 Other settings:
 
@@ -65,7 +81,7 @@ Other settings:
 2. Edit your local `.env`. Never commit it.
    ```
    LLM_PROVIDER=gemini
-   LLM_MODEL=gemini-2.5-flash
+   LLM_MODEL=gemini-3.8-flash
    GEMINI_API_KEY=<your key>
    EXTRACTOR=llm
    LLM_TIMEOUT_SECONDS=60
@@ -84,7 +100,7 @@ Use a **new** meeting. Don't reprocess existing meetings.
 1. Record or upload a short meeting that contains one explicit decision, one
    task with a stated owner and deadline, and some small talk.
 2. Process it. Then open the Summary step and check that:
-   * the page shows **"Extracted by LLM: gemini / gemini-2.5-flash"**;
+   * the page shows **"Extracted by LLM: gemini / gemini-3.8-flash"**;
    * the decision and the task are present, and each cites utterances you can
      play back;
    * the owner is the speaker who committed, and the deadline is the words

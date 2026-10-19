@@ -154,12 +154,58 @@ def test_other_providers_require_an_explicit_model(monkeypatch):
     assert llm_unavailable_reason() == "LLM_PROVIDER=openai has no LLM_MODEL configured"
 
 
-def test_gemini_honours_llm_model_and_defaults_otherwise(monkeypatch):
+def test_gemini_default_model_is_the_documented_one():
+    assert llm_module.DEFAULT_GEMINI_MODEL == "gemini-3.8-flash"
+
+
+def test_explicit_gemini_model_beats_llm_model(monkeypatch):
     monkeypatch.setattr(config, "LLM_PROVIDER", "gemini")
-    monkeypatch.setattr(config, "LLM_MODEL", "gemini-2.5-pro")
-    assert LLMClient().model == "gemini-2.5-pro"
-    monkeypatch.setattr(config, "LLM_MODEL", "mock-v1")
+    monkeypatch.setattr(config, "LLM_MODEL", "gemini-3.6-flash")
+    assert LLMClient(model="gemini-3.5-flash-lite").model == "gemini-3.5-flash-lite"
+
+
+def test_configured_llm_model_overrides_the_gemini_default(monkeypatch):
+    monkeypatch.setattr(config, "LLM_PROVIDER", "gemini")
+    monkeypatch.setattr(config, "LLM_MODEL", "  gemini-3.6-flash  ")
+    assert LLMClient().model == "gemini-3.6-flash"
+
+
+@pytest.mark.parametrize("configured", ["mock-v1", "", "   ", None])
+def test_placeholder_or_missing_model_uses_the_gemini_default(monkeypatch, configured):
+    monkeypatch.setattr(config, "LLM_PROVIDER", "gemini")
+    monkeypatch.setattr(config, "LLM_MODEL", configured)
     assert LLMClient().model == llm_module.DEFAULT_GEMINI_MODEL
+
+
+@pytest.mark.parametrize("provider", ["openai", "anthropic", "local"])
+def test_other_providers_use_llm_model_and_never_the_gemini_default(monkeypatch, provider):
+    monkeypatch.setattr(config, "LLM_PROVIDER", provider)
+    monkeypatch.setattr(config, "LLM_API_KEY", "k-123")
+    monkeypatch.setattr(config, "LLM_MODEL", "my-model")
+    assert LLMClient().model == "my-model"
+    assert LLMClient(model="other-model").model == "other-model"
+    monkeypatch.setattr(config, "LLM_MODEL", "mock-v1")
+    assert LLMClient().model is None
+    assert llm_unavailable_reason() == f"LLM_PROVIDER={provider} has no LLM_MODEL configured"
+
+
+def test_stub_keeps_its_fixture_model(monkeypatch):
+    monkeypatch.setattr(config, "LLM_PROVIDER", "stub")
+    monkeypatch.setattr(config, "LLM_MODEL", "mock-v1")
+    assert LLMClient().model == "mock-v1"
+    assert LLMClient(model="m").model == "m"
+
+
+@pytest.mark.parametrize("explicit, configured, expected", [
+    (None, "mock-v1", "gemini-3.8-flash"),
+    (None, "gemini-3.6-flash", "gemini-3.6-flash"),
+    ("gemini-3.5-flash-lite", "gemini-3.6-flash", "gemini-3.5-flash-lite"),
+])
+def test_selected_gemini_model_is_the_one_requested(gemini, monkeypatch, explicit, configured, expected):
+    provider = gemini(gemini_body({"decisions": [], "actions": []}))
+    monkeypatch.setattr(config, "LLM_MODEL", configured)
+    LLMClient(model=explicit).complete_json(system="s", user="u")
+    assert provider.requests[0]["url"].endswith(f"/models/{expected}:generateContent")
 
 
 def test_unsupported_provider_is_reported(monkeypatch):

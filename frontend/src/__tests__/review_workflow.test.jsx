@@ -629,7 +629,7 @@ describe("Summary Page — Phase 3 exports", () => {
         ...base,
         extraction: {
           status: "completed", mode_used: "llm", fallback_reason: null,
-          llm_used: true, llm_provider: "gemini", llm_model: "gemini-2.5-flash",
+          llm_used: true, llm_provider: "gemini", llm_model: "gemini-3.8-flash",
         },
         llm_discussion_summary: {
           status: "cited_not_verified",
@@ -640,7 +640,7 @@ describe("Summary Page — Phase 3 exports", () => {
     }));
     const { unmount } = render(<Summary />);
     expect(screen.getByTestId("extraction-source").textContent).toContain(
-      "Extracted by LLM: gemini / gemini-2.5-flash"
+      "Extracted by LLM: gemini / gemini-3.8-flash"
     );
     expect(screen.getByText("Discussion Summary (LLM, cited, not verified)")).toBeTruthy();
     expect(screen.getByText("u00000, u00001")).toBeTruthy();

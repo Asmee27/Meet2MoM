@@ -33,7 +33,9 @@ from app.core import config
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"
+# Gemini default when LLM_MODEL is unset or a placeholder. Override with
+# LLM_MODEL (see docs/phase-4/LLM_EXTRACTION.md); never hardcode it elsewhere.
+DEFAULT_GEMINI_MODEL = "gemini-3.8-flash"
 # LLM_MODEL values that mean "not configured" (the .env.example placeholder).
 PLACEHOLDER_MODELS = {"", "mock-v1"}
 REAL_PROVIDERS = ("gemini", "openai", "anthropic", "local")
