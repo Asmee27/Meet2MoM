@@ -333,6 +333,34 @@ export default function Summary() {
                     </p>
                   )}
 
+                {momData.extraction &&
+                  !momData.extraction.fallback_reason &&
+                  ["completed", "no_claims"].includes(momData.extraction.status) && (
+                    <p className="empty-state-text minutes-extraction-note" data-testid="extraction-source">
+                      {momData.extraction.llm_used
+                        ? `Extracted by LLM: ${momData.extraction.llm_provider} / ${momData.extraction.llm_model}. Every item cites transcript utterances and was verified independently.`
+                        : `Extracted by the local ${momData.extraction.mode_used || "rules"} extractor (no LLM).`}
+                    </p>
+                  )}
+
+                {momData.llm_discussion_summary?.points?.length > 0 && (
+                  <div className="minutes-block">
+                    <h3>Discussion Summary (LLM, cited, not verified)</h3>
+                    <p className="empty-state-text">{momData.llm_discussion_summary.note}</p>
+                    {momData.llm_discussion_summary.points.map((point, index) => (
+                      <div className="minutes-decision" key={`${index}-${point.evidence?.[0]}`}>
+                        <span>{index + 1}</span>
+                        <p>
+                          {point.text}
+                          <span className="minutes-warning">
+                            {(point.evidence || []).join(", ")}
+                          </span>
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
                 {/* FOLLOW UPS */}
 
                 <div className="minutes-block">

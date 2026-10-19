@@ -22,6 +22,10 @@ LLM_MODEL = os.getenv("LLM_MODEL", "mock-v1")
 LLM_API_KEY = os.getenv("LLM_API_KEY", None)
 LLM_BASE_URL = os.getenv("LLM_BASE_URL", None)
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", None)
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", None)
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", None)
+# Seconds to wait for one LLM request before treating it as timed out.
+LLM_TIMEOUT_SECONDS = float(os.getenv("LLM_TIMEOUT_SECONDS", "60") or 60)
 EXTRACTOR = os.getenv("EXTRACTOR", "llm").strip().lower()
 
 

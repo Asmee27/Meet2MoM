@@ -34,6 +34,47 @@ from app.core import config
 logger = logging.getLogger(__name__)
 
 DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"
+# LLM_MODEL values that mean "not configured" (the .env.example placeholder).
+PLACEHOLDER_MODELS = {"", "mock-v1"}
+REAL_PROVIDERS = ("gemini", "openai", "anthropic", "local")
+PROVIDERS_NEEDING_KEY = ("gemini", "openai", "anthropic")
+
+
+def resolve_api_key(provider: str) -> Optional[str]:
+    """LLM_API_KEY wins; otherwise the provider's own variable."""
+    provider_key = {
+        "gemini": config.GEMINI_API_KEY,
+        "openai": getattr(config, "OPENAI_API_KEY", None),
+        "anthropic": getattr(config, "ANTHROPIC_API_KEY", None),
+    }.get(provider)
+    return (config.LLM_API_KEY or provider_key or None) or None
+
+
+def resolve_model(provider: str) -> Optional[str]:
+    """
+    The configured LLM_MODEL, unless it is a placeholder. Only Gemini has a
+    default (the roadmap's development provider); other providers must name
+    their model explicitly rather than have one guessed for them.
+    """
+    configured = (config.LLM_MODEL or "").strip()
+    if configured and configured not in PLACEHOLDER_MODELS:
+        return configured
+    if provider == "gemini":
+        return DEFAULT_GEMINI_MODEL
+    if provider == "stub":
+        return configured or "mock-v1"
+    return None
+
+
+def configuration_problem(provider: str, api_key: Optional[str], model: Optional[str]) -> Optional[str]:
+    """Why this provider configuration cannot make a real call, or None."""
+    if provider not in REAL_PROVIDERS:
+        return f"LLM_PROVIDER={provider} is not a supported provider ({', '.join(REAL_PROVIDERS)})"
+    if provider in PROVIDERS_NEEDING_KEY and not api_key:
+        return f"LLM_PROVIDER={provider} has no API key configured"
+    if not model:
+        return f"LLM_PROVIDER={provider} has no LLM_MODEL configured"
+    return None
 
 
 def list_gemini_models(api_key: str) -> list[str]:
@@ -84,6 +125,22 @@ def _strip_fences(raw_text: str) -> str:
     return text.strip()
 
 
+def _gemini_text(data: Any) -> str:
+    """Text of the first Gemini candidate, or a clear error when there is none."""
+    candidates = data.get("candidates") if isinstance(data, dict) else None
+    if not candidates:
+        block = ((data or {}).get("promptFeedback") or {}).get("blockReason") if isinstance(data, dict) else None
+        reason = f" (blocked: {block})" if block else ""
+        raise LLMOutputError(f"gemini returned no candidates{reason}")
+    candidate = candidates[0] or {}
+    parts = ((candidate.get("content") or {}).get("parts")) or []
+    text = "".join(p.get("text", "") for p in parts if isinstance(p, dict))
+    if not text.strip():
+        finish = candidate.get("finishReason") or "unknown"
+        raise LLMOutputError(f"gemini returned no text (finishReason: {finish})")
+    return text
+
+
 class LLMClient:
     """
     Provider-agnostic thin wrapper for structured LLM completions.
@@ -97,17 +154,15 @@ class LLMClient:
         base_url: Optional[str] = None,
         temperature: float = 0.0,
         backoff_delays: Optional[List[float]] = None,
+        timeout: Optional[float] = None,
     ):
         self.provider = (provider or config.LLM_PROVIDER or "stub").lower().strip()
-        self.model = model or (
-            DEFAULT_GEMINI_MODEL
-            if self.provider == "gemini"
-            else config.LLM_MODEL or "mock-v1"
-        )
-        self.api_key = api_key or config.LLM_API_KEY or config.GEMINI_API_KEY
+        self.model = model or resolve_model(self.provider)
+        self.api_key = api_key or resolve_api_key(self.provider)
         self.base_url = base_url or config.LLM_BASE_URL
         self.temperature = temperature  # always sent as 0.0 for structured JSON
         self.backoff_delays = backoff_delays if backoff_delays is not None else [1.0, 2.0, 4.0]
+        self.timeout = float(timeout or getattr(config, "LLM_TIMEOUT_SECONDS", 60) or 60)
 
         # For "stub" provider in tests
         self.stub_responses: List[Any] = []
@@ -133,6 +188,10 @@ class LLMClient:
                 return json.dumps(resp)
             return json.dumps({"decisions": [], "actions": []})
 
+        problem = configuration_problem(self.provider, self.api_key, self.model)
+        if problem:
+            raise LLMClientError(problem)
+
         if self.provider in ("openai", "local"):
             default_base = "https://api.openai.com/v1" if self.provider == "openai" else "http://localhost:11434/v1"
             endpoint = f"{(self.base_url or default_base).rstrip('/')}/chat/completions"
@@ -154,9 +213,12 @@ class LLMClient:
             req_data = json.dumps(payload).encode("utf-8")
             req = urllib.request.Request(endpoint, data=req_data, headers=headers, method="POST")
 
-            with urllib.request.urlopen(req, timeout=60) as resp:
+            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
+            try:
                 return data["choices"][0]["message"]["content"]
+            except (KeyError, IndexError, TypeError) as exc:
+                raise LLMOutputError(f"{self.provider} response had no message content") from exc
 
         if self.provider == "anthropic":
             endpoint = f"{(self.base_url or 'https://api.anthropic.com/v1').rstrip('/')}/messages"
@@ -179,11 +241,13 @@ class LLMClient:
             req_data = json.dumps(payload).encode("utf-8")
             req = urllib.request.Request(endpoint, data=req_data, headers=headers, method="POST")
 
-            with urllib.request.urlopen(req, timeout=60) as resp:
+            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
-                blocks = data.get("content", [])
-                text_parts = [b.get("text", "") for b in blocks if b.get("type") == "text"]
-                return "".join(text_parts)
+            blocks = data.get("content", []) if isinstance(data, dict) else []
+            text_parts = [b.get("text", "") for b in blocks if b.get("type") == "text"]
+            if not "".join(text_parts).strip():
+                raise LLMOutputError("anthropic response had no text content")
+            return "".join(text_parts)
 
         if self.provider == "gemini":
             if not self.api_key:
@@ -217,9 +281,9 @@ class LLMClient:
                 headers=headers,
                 method="POST",
             )
-            with urllib.request.urlopen(req, timeout=60) as resp:
+            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
-                return data["candidates"][0]["content"]["parts"][0]["text"]
+            return _gemini_text(data)
 
         raise LLMClientError(f"Unsupported LLM provider: '{self.provider}'")
 
@@ -244,9 +308,22 @@ class LLMClient:
                     body_msg = e.read().decode("utf-8", "replace")
                 except Exception:
                     pass
+                # Provider error bodies explain the problem (bad model, quota);
+                # keep them short. They never contain the request's API key.
+                body_msg = " ".join(body_msg.split())[:300]
                 raise LLMClientError(f"LLM provider HTTP {e.code} error: {body_msg}") from e
+            except TimeoutError as e:
+                last_error = e
+                if attempt < len(self.backoff_delays):
+                    delay = self.backoff_delays[attempt]
+                    logger.warning("LLM call timed out on attempt %d. Retrying in %ss...", attempt + 1, delay)
+                    time.sleep(delay)
+                    continue
+                raise LLMClientError(f"LLM request timed out after {self.timeout:g}s") from e
             except urllib.error.URLError as e:
                 last_error = e
+                if isinstance(e.reason, TimeoutError) and attempt >= len(self.backoff_delays):
+                    raise LLMClientError(f"LLM request timed out after {self.timeout:g}s") from e
                 if attempt < len(self.backoff_delays):
                     delay = self.backoff_delays[attempt]
                     logger.warning("LLM call network error on attempt %d. Retrying in %ss...", attempt + 1, delay)

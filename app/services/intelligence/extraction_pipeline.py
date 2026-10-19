@@ -18,7 +18,13 @@ from typing import Any, Dict, Optional
 
 from app.core import config
 from app.core import db as _db
-from app.core.llm_client import LLMClient, LLMClientError
+from app.core.llm_client import (
+    LLMClient,
+    LLMClientError,
+    configuration_problem,
+    resolve_api_key,
+    resolve_model,
+)
 from app.core.storage import MeetingStorage
 from app.services.intelligence.claim_writer import persist_extraction
 from app.services.intelligence.context_builder import build_windows
@@ -73,7 +79,30 @@ def _run_local(meeting_id: str, windows, mode: str):
     rules = extract_with_rules(meeting_id, windows)
     return (dialogue_model.merge_candidates(rules, learned), "hybrid",
             f"{RULES_EXTRACTOR_VERSION}+{version}", None)
-_PROVIDERS_NEEDING_KEY = {"openai", "anthropic", "gemini"}
+
+
+DISCUSSION_POINTS_FILE = "llm_discussion_points.json"
+
+
+def _write_discussion_points(meeting_id: str, extractor_version: str, points) -> None:
+    """
+    Persist the LLM's cited discussion points for this extraction, or remove a
+    stale file when this run did not use a real LLM, so a summary is never
+    shown for a run that did not produce it.
+    """
+    try:
+        path = MeetingStorage(meeting_id).path_for("intelligence", DISCUSSION_POINTS_FILE)
+        if points is None:
+            path.unlink(missing_ok=True)
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({
+            "extractor_version": extractor_version,
+            "status": "cited_not_verified",
+            "points": points,
+        }, indent=2, ensure_ascii=False), encoding="utf-8")
+    except Exception as exc:
+        logger.warning("Failed to write discussion points for %s: %s", meeting_id, exc)
 
 
 def llm_unavailable_reason(client: Optional[LLMClient] = None) -> Optional[str]:
@@ -90,9 +119,7 @@ def llm_unavailable_reason(client: Optional[LLMClient] = None) -> Optional[str]:
     provider = (config.LLM_PROVIDER or "stub").strip().lower()
     if provider == "stub":
         return "LLM_PROVIDER=stub is a test fixture, not a real extractor"
-    if provider in _PROVIDERS_NEEDING_KEY and not (config.LLM_API_KEY or config.GEMINI_API_KEY):
-        return f"LLM_PROVIDER={provider} has no API key configured"
-    return None
+    return configuration_problem(provider, resolve_api_key(provider), resolve_model(provider))
 
 
 def run_extraction(
@@ -154,6 +181,7 @@ def run_extraction(
     fallback_reason: Optional[str] = None
     extractor_version = RULES_EXTRACTOR_VERSION
     candidates = []
+    llm_report: Dict[str, Any] = {}
 
     try:
         if requested_mode == "llm":
@@ -187,9 +215,10 @@ def run_extraction(
             else:
                 try:
                     llm_client = client or LLMClient()
-                    candidates = extract_meeting(meeting_id, windows, llm_client)
+                    candidates = extract_meeting(meeting_id, windows, llm_client, report=llm_report)
                     extractor_version = f"llm:{llm_client.provider}:{llm_client.model}:{PROMPT_VERSION}"
                 except LLMClientError as e:
+                    llm_report = {}
                     logger.error(
                         "LLM extraction failed for meeting %s (%s). Falling back to rules baseline.",
                         meeting_id,
@@ -237,6 +266,17 @@ def run_extraction(
         stats["fallback_reason"] = fallback_reason
     if error_msg:
         stats["error"] = error_msg
+    if mode_used == "llm":
+        stats["llm_grounding"] = {
+            "ungrounded_fields_removed": llm_report.get("ungrounded_fields_removed", []),
+            "discussion_points": len(llm_report.get("discussion_points", [])),
+            "discussion_points_dropped": llm_report.get("discussion_points_dropped", 0),
+        }
+    _write_discussion_points(
+        meeting_id,
+        extractor_version,
+        llm_report.get("discussion_points", []) if mode_used == "llm" else None,
+    )
 
     # Also update mirror claims.json with mode_used and error
     try:
@@ -245,8 +285,11 @@ def run_extraction(
         if claims_mirror.exists():
             data = json.loads(claims_mirror.read_text(encoding="utf-8"))
             data["stats"]["mode_used"] = mode_used
+            data["stats"]["extractor_version"] = extractor_version
             if error_msg:
                 data["stats"]["error"] = error_msg
+            if "llm_grounding" in stats:
+                data["stats"]["llm_grounding"] = stats["llm_grounding"]
             claims_mirror.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
     except Exception as exc:
         logger.warning("Failed to update claims.json stats mirror: %s", exc)
