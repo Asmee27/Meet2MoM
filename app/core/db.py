@@ -2322,3 +2322,53 @@ def requeue_failed_job(
             (_now_iso(), meeting_id),
         )
         return cursor.rowcount == 1
+
+
+def set_meeting_status(
+    meeting_id: str,
+    status: str,
+    db_path: Optional[Path | str] = None,
+) -> None:
+    """Update only the status of an existing meetings row."""
+    with get_conn(db_path) as conn:
+        conn.execute(
+            "UPDATE meetings SET status = ? WHERE meeting_id = ?",
+            (status, meeting_id),
+        )
+
+
+INTERRUPTED_JOB_ERROR = (
+    "Processing was interrupted by a server restart. Retry to process the recording again."
+)
+
+
+def fail_interrupted_inline_jobs(
+    db_path: Optional[Path | str] = None,
+) -> List[str]:
+    """
+    Inline jobs (JOB_RUNNER=inline) run inside the API process, so any job
+    still queued or running when that process starts can never finish. Mark
+    them failed so their status is truthful and they can be retried. Never
+    call this in worker mode: there the worker owns and recovers its jobs.
+    """
+    with get_conn(db_path) as conn:
+        ids = [
+            r["meeting_id"]
+            for r in conn.execute(
+                "SELECT meeting_id FROM jobs WHERE state IN ('queued', 'running')"
+            ).fetchall()
+        ]
+        if ids:
+            conn.execute(
+                """
+                UPDATE jobs
+                SET state = 'failed', error = ?, claim_token = NULL, updated_at = ?
+                WHERE state IN ('queued', 'running')
+                """,
+                (INTERRUPTED_JOB_ERROR, _now_iso()),
+            )
+            conn.executemany(
+                "UPDATE meetings SET status = 'failed' WHERE meeting_id = ?",
+                [(mid,) for mid in ids],
+            )
+    return ids

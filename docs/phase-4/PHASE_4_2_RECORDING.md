@@ -120,6 +120,29 @@ Existing Phase 4.1 routes are kept. `/token` and `/rooms` now also return
 * Processing follows `JOB_RUNNER` exactly as uploads do. With `inline`, the job
   runs in the API process. With `worker`, it's queued for `scripts/worker.py`.
 
+## Processing integration (Phase 4.3)
+
+Verified call path: **Process Meeting** (`LiveMeeting.jsx`) → `processLiveRecording` →
+`POST /api/live/meetings/{id}/recording/process` (host only; rejects active segments and
+missing, empty or unreadable `recording.wav`) → `db.enqueue_job_once` (one `jobs` row per
+meeting) → `run_pipeline` via `BackgroundTasks` (`JOB_RUNNER=inline`) or `scripts/worker.py`
+(`JOB_RUNNER=worker`, atomic claim, heartbeat, stale-job recovery) →
+`run_recorded_pipeline(..., run_post_transcript=False)` (ASR + diarization, once) →
+`run_post_transcript_stages` (index, topics, extraction, once) → `ensure_verification` →
+job `done`. The ended view polls `GET .../recording` every 2 s, so it shows stage,
+progress, completion and errors without a reload. On completion it opens the existing
+transcript → verification → review → approval → JSON/PDF export flow.
+
+* `meetings.status` now follows the job's terminal state (`completed` / `failed`).
+* Retry: a failed job is re-run only with `?retry=true`, on the same `jobs` row. Repeated
+  or concurrent requests never start a second run.
+* Interrupted jobs: in `inline` mode, jobs still `queued`/`running` when the API starts
+  died with the previous process. They're marked `failed` with a clear message and can be
+  retried. This also applies to orphaned upload jobs, which used to stay `running`
+  forever. In `worker` mode the API leaves them alone, and the worker recovers them.
+* Exports are JSON (`/export/json`, with `evidence_appendix`) and PDF (`/download-mom`).
+  The codebase has no Markdown export.
+
 ## Manual two-browser acceptance test
 
 1. Start the backend (`python -m uvicorn app.api.main:app --port 8000`) and the

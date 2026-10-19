@@ -517,4 +517,40 @@ describe("Phase 4.2: server-side recording UI", () => {
     await waitFor(() => expect(getTranscript).toHaveBeenCalledWith("mtg-live-1"), { timeout: 4000 });
   });
 
+  it("shows live processing progress, then a failure with a working retry, without reloading", async () => {
+    await joinRoom();
+    const ended = {
+      meeting_status: "ended",
+      artifact: { frames: 160000, duration_seconds: 10, segments: 1, participants: ["Alex Morgan"] },
+      segments: [{ segment_id: "s1", seq: 1, state: "finalized", duration_seconds: 10 }],
+    };
+    api.getLiveRecording.mockResolvedValue(
+      recordingState({
+        ...ended,
+        status: "processing",
+        processing: { state: "running", stage: "asr", progress: 0.3636, error: null },
+      })
+    );
+    fireEvent.click(screen.getAllByRole("button", { name: /End Meeting/i })[0]);
+    fireEvent.click(screen.getByRole("button", { name: /End for Everyone/i }));
+
+    await waitFor(() => expect(screen.getByText(/Processing… \(asr\)/)).toBeTruthy());
+    expect(screen.getByText(/36% · running/)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Retry Processing/i })).toBeNull();
+
+    // The next poll reports the failure; no reload is needed to see it.
+    api.getLiveRecording.mockResolvedValue(
+      recordingState({
+        ...ended,
+        status: "failed",
+        processing: { state: "failed", stage: "merge", progress: 0.4545, error: "asr crashed" },
+      })
+    );
+    const retryBtn = await screen.findByRole("button", { name: /Retry Processing/i }, { timeout: 4000 });
+    expect(screen.getByText("asr crashed")).toBeTruthy();
+    fireEvent.click(retryBtn);
+    await waitFor(() =>
+      expect(api.processLiveRecording).toHaveBeenCalledWith("mtg-live-1", "mock-valid-jwt-token", { retry: true })
+    );
+  });
 });
