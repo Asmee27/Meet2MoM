@@ -423,6 +423,174 @@ class MeetingTranscriber:
         )
 
     # ======================================================
+    # FIRST PASS + SELECTIVE RETRY (one audio file)
+    # ======================================================
+
+    def transcribe_with_retry(
+        self,
+        audio_path,
+        chunk,
+        final_transcript
+    ):
+        """
+        Transcribe one audio file. Timestamps are shifted by
+        chunk["start_time"]; a high low-confidence ratio triggers one
+        retry with a wider beam, kept only if it is more confident.
+        Returns (results, low_count, info, retry_used).
+        """
+
+        # FIRST PASS
+        segments, info = (
+            self.run_whisper(
+                audio_path,
+                BEAM_SIZE
+            )
+        )
+
+        (
+            chunk_results,
+            low_count
+        ) = (
+            self.build_chunk_results(
+                segments,
+                info,
+                chunk,
+                final_transcript
+            )
+        )
+
+        segment_count = len(
+            chunk_results
+        )
+
+        low_ratio = (
+            low_count / segment_count
+            if segment_count > 0
+            else 0
+        )
+
+        retry_used = False
+
+        # ==========================================
+        # SELECTIVE RETRY
+        # ==========================================
+
+        if (
+            segment_count > 0
+            and
+            low_ratio
+            >
+            LOW_CONFIDENCE_RETRY_RATIO
+        ):
+
+            print(
+                "  ⚠ High low-confidence ratio. "
+                "Retrying..."
+            )
+
+            (
+                retry_segments,
+                retry_info
+            ) = (
+                self.run_whisper(
+                    audio_path,
+                    RETRY_BEAM_SIZE
+                )
+            )
+
+            (
+                retry_results,
+                retry_low_count
+            ) = (
+                self.build_chunk_results(
+                    retry_segments,
+                    retry_info,
+                    chunk,
+                    final_transcript
+                )
+            )
+
+            retry_total = len(
+                retry_results
+            )
+
+            retry_ratio = (
+                retry_low_count
+                / retry_total
+                if retry_total > 0
+                else 1
+            )
+
+            if (
+                retry_total > 0
+                and
+                retry_ratio
+                < low_ratio
+            ):
+
+                chunk_results = (
+                    retry_results
+                )
+
+                low_count = (
+                    retry_low_count
+                )
+
+                info = (
+                    retry_info
+                )
+
+                retry_used = True
+
+        return (
+            chunk_results,
+            low_count,
+            info,
+            retry_used
+        )
+
+    # ======================================================
+    # PARTICIPANT TRACK (LiveKit)
+    # ======================================================
+
+    def transcribe_track(
+        self,
+        audio_path,
+        offset_seconds,
+        track_index
+    ):
+        """
+        Transcribe one participant's own track. offset_seconds is the
+        track's position in the meeting recording and is applied once,
+        by build_chunk_results, so results carry meeting-global times.
+        """
+
+        (
+            results,
+            low_count,
+            info,
+            retry_used
+        ) = self.transcribe_with_retry(
+            audio_path,
+            {
+                "chunk_id": track_index,
+                "start_time": float(offset_seconds),
+            },
+            []
+        )
+
+        return {
+            "segments": results,
+            "detected_language": info.language,
+            "language_probability": round(
+                info.language_probability,
+                4
+            ),
+            "low_confidence_segments": low_count,
+            "retry_used": retry_used,
+        }
+
+    # ======================================================
     # MAIN TRANSCRIPTION
     # ======================================================
 
@@ -552,108 +720,16 @@ class MeetingTranscriber:
 
             try:
 
-                # FIRST PASS
-                segments, info = (
-                    self.run_whisper(
-                        chunk_path,
-                        BEAM_SIZE
-                    )
-                )
-
                 (
                     chunk_results,
-                    low_count
-                ) = (
-                    self.build_chunk_results(
-                        segments,
-                        info,
-                        chunk,
-                        final_transcript
-                    )
+                    low_count,
+                    info,
+                    retry_used
+                ) = self.transcribe_with_retry(
+                    chunk_path,
+                    chunk,
+                    final_transcript
                 )
-
-                segment_count = len(
-                    chunk_results
-                )
-
-                low_ratio = (
-                    low_count / segment_count
-                    if segment_count > 0
-                    else 0
-                )
-
-                retry_used = False
-
-                # ==========================================
-                # SELECTIVE RETRY
-                # ==========================================
-
-                if (
-                    segment_count > 0
-                    and
-                    low_ratio
-                    >
-                    LOW_CONFIDENCE_RETRY_RATIO
-                ):
-
-                    print(
-                        "  ⚠ High low-confidence ratio. "
-                        "Retrying..."
-                    )
-
-                    (
-                        retry_segments,
-                        retry_info
-                    ) = (
-                        self.run_whisper(
-                            chunk_path,
-                            RETRY_BEAM_SIZE
-                        )
-                    )
-
-                    (
-                        retry_results,
-                        retry_low_count
-                    ) = (
-                        self.build_chunk_results(
-                            retry_segments,
-                            retry_info,
-                            chunk,
-                            final_transcript
-                        )
-                    )
-
-                    retry_total = len(
-                        retry_results
-                    )
-
-                    retry_ratio = (
-                        retry_low_count
-                        / retry_total
-                        if retry_total > 0
-                        else 1
-                    )
-
-                    if (
-                        retry_total > 0
-                        and
-                        retry_ratio
-                        < low_ratio
-                    ):
-
-                        chunk_results = (
-                            retry_results
-                        )
-
-                        low_count = (
-                            retry_low_count
-                        )
-
-                        info = (
-                            retry_info
-                        )
-
-                        retry_used = True
 
                 # ==========================================
                 # SAVE CHUNK

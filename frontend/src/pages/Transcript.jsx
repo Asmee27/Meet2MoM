@@ -60,7 +60,8 @@ export default function Transcript() {
   const filteredUtterances = displayUtterances
     ? displayUtterances.filter((u) =>
         (u.text || "").toLowerCase().includes(searchQuery.toLowerCase()) ||
-        (u.speaker_id || "").toLowerCase().includes(searchQuery.toLowerCase())
+        (u.speaker_id || "").toLowerCase().includes(searchQuery.toLowerCase()) ||
+        (u.speaker_name || "").toLowerCase().includes(searchQuery.toLowerCase())
       )
     : null;
 
