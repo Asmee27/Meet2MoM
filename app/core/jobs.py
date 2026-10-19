@@ -19,7 +19,7 @@ import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
-from app.core.db import get_job_status, init_db, upsert_job_status
+from app.core.db import get_job_status, init_db, set_meeting_status, upsert_job_status
 from app.schemas.job import JobStatus
 
 logger = logging.getLogger(__name__)
@@ -106,8 +106,10 @@ def run_pipeline(meeting_id: str, file_path: Path) -> None:
 
     try:
         _run_all_stages(meeting_id, file_path)
+        _set_meeting_status(meeting_id, "completed")
     except _StageError as exc:
         _emit(meeting_id, exc.stage, "failed", str(exc.cause))
+        _set_meeting_status(meeting_id, "failed")
         logger.error(
             "Pipeline failed for meeting %s at stage '%s': %s",
             meeting_id,
@@ -119,9 +121,18 @@ def run_pipeline(meeting_id: str, file_path: Path) -> None:
         # otherwise the status row stays "running" forever.
         stage = _last_stage(meeting_id)
         _emit(meeting_id, stage, "failed", f"{type(exc).__name__}: {exc}")
+        _set_meeting_status(meeting_id, "failed")
         logger.exception(
             "Pipeline failed for meeting %s at stage '%s'", meeting_id, stage
         )
+
+
+def _set_meeting_status(meeting_id: str, status: str) -> None:
+    """Keep meetings.status in step with the job's terminal state."""
+    try:
+        set_meeting_status(meeting_id, status)
+    except Exception as exc:
+        logger.error("Failed to persist meeting status for %s: %s", meeting_id, exc)
 
 
 def _last_stage(meeting_id: str) -> str:

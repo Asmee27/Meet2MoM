@@ -15,14 +15,17 @@ from app.api.live_routes import router as live_router  # noqa: E402
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     """Recover recordings a previous process left unfinished; finalize active ones on shutdown."""
-    from app.core import db
+    from app.core import config, db
     from app.services.live.recorder import get_recording_manager, recover_interrupted_segments
 
     try:
         db.init_db()
         recover_interrupted_segments(get_recording_manager())
+        # Inline jobs died with the previous process; the worker recovers its own.
+        if (getattr(config, "JOB_RUNNER", "inline") or "inline").strip().lower() != "worker":
+            db.fail_interrupted_inline_jobs()
     except Exception:
-        logging.getLogger("main").exception("Recording recovery failed at startup")
+        logging.getLogger("main").exception("Recording/job recovery failed at startup")
     yield
     await get_recording_manager().shutdown()
 
