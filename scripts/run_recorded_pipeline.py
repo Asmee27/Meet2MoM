@@ -43,6 +43,11 @@ from app.services.ingestion.audio_quality import AudioQualityAnalyzer
 from app.services.transcription.transcriber import MeetingTranscriber
 from app.services.diarization.diarizer import SpeakerDiarizer
 from app.services.diarization.speaker_merger import SpeakerTranscriptMerger
+from app.services.live.track_transcription import (
+    load_track_plan,
+    speaker_turns as track_speaker_turns,
+    transcribe_tracks,
+)
 from app.services.reporting.processing_report import ProcessingReportGenerator
 
 
@@ -163,136 +168,239 @@ def main():
         )
 
         # ==================================================
-        # 6 — MULTILINGUAL ASR
+        # LIVEKIT PARTICIPANT TRACKS (speaker identity)
         # ==================================================
+        # A LiveKit recording's per-participant tracks say who spoke.
+        # Without usable tracks (uploads, legacy or damaged recordings)
+        # the mixed-recording ASR + diarization path below is used.
 
-        print(
-            "\n[6/9] Running multilingual ASR..."
-        )
+        track_plan = None
+        if input_file == (storage.recording / "recording.wav").resolve():
+            track_plan = load_track_plan(storage.recording)
+            if not track_plan.usable and track_plan.reason != "no_manifest":
+                print(
+                    f"\n⚠ LiveKit tracks unusable ({track_plan.reason}); "
+                    "using mixed-recording diarization"
+                )
+                for problem in track_plan.problems:
+                    print(f"  - {problem['track']}: {problem['problem']}")
 
-        transcript_cached = (
-            same_recording
-            and
-            CACHE_TRANSCRIPTION
-            and
-            cache_manager.is_stage_cached(
-                "transcription",
-                transcript_file
-            )
-        )
-
-        if transcript_cached:
-
-            print(
-                "⚡ Cached transcript found"
-            )
+        if track_plan is not None and track_plan.usable:
 
             print(
-                "  Skipping Whisper transcription"
+                f"\n[6/9] Running ASR on "
+                f"{len(track_plan.tracks)} participant tracks..."
             )
-
-        else:
 
             asr_start = time.perf_counter()
 
+            # Track-mode files must never be reused as mixed-recording
+            # stage results by a later run.
+            cache_manager.invalidate_stage("transcription")
+            cache_manager.invalidate_stage("diarization")
+
             transcriber = MeetingTranscriber()
 
-            transcript_file = (
-                transcriber.transcribe(
-                    metadata_file
-                )
+            track_segments, attribution = transcribe_tracks(
+                track_plan,
+                transcriber.transcribe_track
             )
 
-            cache_manager.mark_stage_complete(
-                "transcription",
-                transcript_file
-            )
-
-            asr_time = (
-                time.perf_counter()
-                - asr_start
+            transcriber.save_json(
+                transcript_file,
+                [
+                    {
+                        key: value
+                        for key, value in segment.items()
+                        if key not in (
+                            "requires_review",
+                            "review_reasons",
+                        )
+                    }
+                    for segment in track_segments
+                ]
             )
 
             print(
                 f"✓ ASR processing time: "
-                f"{asr_time:.2f} seconds"
-            )
-
-        # ==================================================
-        # 7 — SPEAKER DIARIZATION
-        # ==================================================
-
-        print(
-            "\n[7/9] Detecting speakers..."
-        )
-
-        diarization_cached = (
-            same_recording
-            and
-            CACHE_DIARIZATION
-            and
-            cache_manager.is_stage_cached(
-                "diarization",
-                diarization_file
-            )
-        )
-
-        if diarization_cached:
-
-            print(
-                "⚡ Cached diarization found"
+                f"{time.perf_counter() - asr_start:.2f} seconds"
             )
 
             print(
-                "  Skipping pyannote diarization"
+                "\n[7/9] Speakers from LiveKit participant tracks "
+                "(mixed-audio diarization not needed)"
+            )
+
+            transcriber.save_json(
+                diarization_file,
+                track_speaker_turns(track_segments)
+            )
+
+            transcriber.save_json(
+                storage.path_for(
+                    "metadata",
+                    "speaker_attribution.json"
+                ),
+                attribution
+            )
+
+            for item in attribution["per_track"]:
+                print(
+                    f"  {item['identity']}: "
+                    f"{item['segments']} segments"
+                )
+
+            print(
+                "\n[8/9] Writing participant-attributed transcript..."
+            )
+
+            speaker_transcript = (
+                SpeakerTranscriptMerger().write_outputs(
+                    track_segments
+                )
             )
 
         else:
 
-            diarization_start = (
-                time.perf_counter()
+            # A stale track-mode report must not describe this run.
+            stale_attribution = storage.path_for(
+                "metadata",
+                "speaker_attribution.json"
+            )
+            if stale_attribution.exists():
+                stale_attribution.unlink()
+
+            # ==================================================
+            # 6 — MULTILINGUAL ASR
+            # ==================================================
+
+            print(
+                "\n[6/9] Running multilingual ASR..."
             )
 
-            diarizer = SpeakerDiarizer()
-
-            diarization_file = (
-                diarizer.diarize(
-                    normalized_audio
+            transcript_cached = (
+                same_recording
+                and
+                CACHE_TRANSCRIPTION
+                and
+                cache_manager.is_stage_cached(
+                    "transcription",
+                    transcript_file
                 )
             )
 
-            cache_manager.mark_stage_complete(
-                "diarization",
-                diarization_file
-            )
+            if transcript_cached:
 
-            diarization_time = (
-                time.perf_counter()
-                - diarization_start
-            )
+                print(
+                    "⚡ Cached transcript found"
+                )
+
+                print(
+                    "  Skipping Whisper transcription"
+                )
+
+            else:
+
+                asr_start = time.perf_counter()
+
+                transcriber = MeetingTranscriber()
+
+                transcript_file = (
+                    transcriber.transcribe(
+                        metadata_file
+                    )
+                )
+
+                cache_manager.mark_stage_complete(
+                    "transcription",
+                    transcript_file
+                )
+
+                asr_time = (
+                    time.perf_counter()
+                    - asr_start
+                )
+
+                print(
+                    f"✓ ASR processing time: "
+                    f"{asr_time:.2f} seconds"
+                )
+
+            # ==================================================
+            # 7 — SPEAKER DIARIZATION
+            # ==================================================
 
             print(
-                f"✓ Diarization processing time: "
-                f"{diarization_time:.2f} seconds"
+                "\n[7/9] Detecting speakers..."
             )
 
-        # ==================================================
-        # 8 — RELIABILITY-AWARE SPEAKER ATTRIBUTION
-        # ==================================================
-
-        print(
-            "\n[8/9] Running reliability-aware "
-            "speaker attribution..."
-        )
-
-        merger = SpeakerTranscriptMerger()
-
-        speaker_transcript = (
-            merger.merge(
-                transcript_file,
-                diarization_file
+            diarization_cached = (
+                same_recording
+                and
+                CACHE_DIARIZATION
+                and
+                cache_manager.is_stage_cached(
+                    "diarization",
+                    diarization_file
+                )
             )
-        )
+
+            if diarization_cached:
+
+                print(
+                    "⚡ Cached diarization found"
+                )
+
+                print(
+                    "  Skipping pyannote diarization"
+                )
+
+            else:
+
+                diarization_start = (
+                    time.perf_counter()
+                )
+
+                diarizer = SpeakerDiarizer()
+
+                diarization_file = (
+                    diarizer.diarize(
+                        normalized_audio
+                    )
+                )
+
+                cache_manager.mark_stage_complete(
+                    "diarization",
+                    diarization_file
+                )
+
+                diarization_time = (
+                    time.perf_counter()
+                    - diarization_start
+                )
+
+                print(
+                    f"✓ Diarization processing time: "
+                    f"{diarization_time:.2f} seconds"
+                )
+
+            # ==================================================
+            # 8 — RELIABILITY-AWARE SPEAKER ATTRIBUTION
+            # ==================================================
+
+            print(
+                "\n[8/9] Running reliability-aware "
+                "speaker attribution..."
+            )
+
+            merger = SpeakerTranscriptMerger()
+
+            speaker_transcript = (
+                merger.merge(
+                    transcript_file,
+                    diarization_file
+                )
+            )
 
         # ==================================================
         # 9 — PROCESSING REPORT

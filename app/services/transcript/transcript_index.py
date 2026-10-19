@@ -192,6 +192,8 @@ def build_transcript_index(
         speaker_id = (
             str(seg.get("speaker") or seg.get("speaker_id") or "SPEAKER_UNKNOWN")
         )
+        # Display name, present when identity came from a LiveKit participant track.
+        speaker_name = str(seg["speaker_name"]).strip() if seg.get("speaker_name") else None
 
         # --- ASR confidence & source ---
         asr_conf, conf_source = _resolve_asr_conf(seg, utt_id)
@@ -217,7 +219,7 @@ def build_transcript_index(
                 start=start,
                 end=end,
                 speaker_id=speaker_id,
-                speaker_name=None,
+                speaker_name=speaker_name or None,
                 text=text,
                 lang_tags=lang_tags,
                 script=script,
