@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Room,
   RoomEvent,
@@ -9,10 +9,98 @@ import {
   createLiveRoom,
   endLiveRoom,
   getLiveConfig,
+  getLiveRecording,
   getLiveToken,
+  processLiveRecording,
+  startLiveRecording,
+  stopLiveRecording,
   updateLiveConsent,
 } from "../services/api";
 import "./LiveMeeting.css";
+
+// ============================================================================
+// Server-side recording helpers (Phase 4.2)
+// ============================================================================
+
+const RECORDING_POLL_MS = 2000;
+
+const STOP_REASON_LABELS = {
+  host_stopped: "stopped by the host",
+  consent_revoked: "a participant revoked consent",
+  consent_missing: "not every participant had consented",
+  unconsented_participant_joined: "a participant without consent joined",
+  unconsented_audio: "audio arrived from a participant without consent",
+  no_participants: "everyone left the room",
+  meeting_ended: "the meeting ended",
+  recorder_disconnected: "the recorder lost its connection",
+  recorder_error: "the recorder failed",
+  server_shutdown: "the server shut down",
+  interrupted: "the server restarted while recording",
+};
+
+const CONSENT_STOP_REASONS = [
+  "consent_revoked",
+  "consent_missing",
+  "unconsented_participant_joined",
+  "unconsented_audio",
+];
+
+function stopReasonLabel(reason) {
+  return STOP_REASON_LABELS[reason] || reason || "unknown reason";
+}
+
+// One stable identity per browser tab and room, so a rejoin keeps the same
+// server-side consent record and host binding.
+function stableIdentity(room) {
+  const key = `m2m-live-identity:${room}`;
+  try {
+    const existing = window.sessionStorage.getItem(key);
+    if (existing) return existing;
+    const created = `user_${Math.random().toString(36).slice(2, 10)}`;
+    window.sessionStorage.setItem(key, created);
+    return created;
+  } catch {
+    return undefined;
+  }
+}
+
+function formatClock(totalSeconds) {
+  const seconds = Math.max(0, Math.floor(totalSeconds || 0));
+  const mins = Math.floor(seconds / 60);
+  const secs = seconds % 60;
+  return `${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
+}
+
+// REC is shown only when the backend reports that audio frames are being written.
+function RecordingBadge({ recState }) {
+  const status = recState?.status;
+  if (status === "recording") {
+    const frames = recState?.live?.frames_captured ?? 0;
+    return (
+      <div
+        className="lm-rec-indicator"
+        title={`Server is capturing audio (${frames} frames written)`}
+        data-testid="rec-badge"
+      >
+        <span className="lm-rec-dot" />
+        <span>REC {formatClock(recState?.live?.elapsed_seconds)}</span>
+      </div>
+    );
+  }
+  let label = "Not recording";
+  if (status === "starting") label = "Starting capture…";
+  else if (status === "stopping") label = "Finalizing audio…";
+  else if (status === "processing") label = "Processing";
+  else if (status === "completed") label = "Processed";
+  else if (status === "failed") label = "Recording failed";
+  else if (recState?.consent?.consent_blocked) label = "Consent required";
+  else if (status === "recorded") label = "Recorded · paused";
+  return (
+    <div className="lm-rec-indicator lm-rec-idle" data-testid="rec-status">
+      <span>{label}</span>
+    </div>
+  );
+}
 
 // ============================================================================
 // Remote Participant Video & Audio Tile Component
@@ -334,7 +422,6 @@ function LocalParticipantTile({ room, name, isHost, consented, isSpeaking, micEn
 export default function LiveMeeting() {
   const {
     setMeetingMode,
-    connectLiveMeetingToMoM,
     loadExistingMeeting,
   } = useMeetingFlow();
 
@@ -363,7 +450,8 @@ export default function LiveMeeting() {
   );
   const [isHost, setIsHost] = useState(!initialRoomParam);
   const [language, setLanguage] = useState("en");
-  const [hasConsented, setHasConsented] = useState(true);
+  // Consent is opt-in: nothing is pre-ticked on the participant's behalf.
+  const [hasConsented, setHasConsented] = useState(false);
   const [previewMic, setPreviewMic] = useState(true);
   const [previewCam, setPreviewCam] = useState(true);
 
@@ -378,6 +466,29 @@ export default function LiveMeeting() {
   const [permissionError, setPermissionError] = useState("");
   const [isConnecting, setIsConnecting] = useState(false);
   const [liveConfigNotice, setLiveConfigNotice] = useState("");
+
+  // Server-side recording state (Phase 4.2). The backend is the only source
+  // of truth for consent and capture; the UI never infers recording.
+  const tokenRef = useRef("");
+  const liveRoomRef = useRef("");
+  const processRequestedRef = useRef(false);
+  const [meetingId, setMeetingId] = useState("");
+  const [recState, setRecState] = useState(null);
+  const [recError, setRecError] = useState("");
+  const [recBusy, setRecBusy] = useState(false);
+
+  const refreshRecording = useCallback(async () => {
+    if (!meetingId || !tokenRef.current) return;
+    try {
+      const state = await getLiveRecording(meetingId, tokenRef.current);
+      setRecState(state);
+      const selfIdentity = roomRef.current?.localParticipant?.identity;
+      const self = state?.participants?.find((p) => p.identity === selfIdentity);
+      if (self) setHasConsented(self.consented === true);
+    } catch (err) {
+      setRecError(err?.message || "Unable to read recording state from the server.");
+    }
+  }, [meetingId]);
 
   // Probe LiveKit backend configuration on component mount
   useEffect(() => {
@@ -427,11 +538,28 @@ export default function LiveMeeting() {
     };
   }, [viewState, connectionState]);
 
-  const formatTime = (seconds) => {
-    const mins = Math.floor(seconds / 60);
-    const secs = seconds % 60;
-    return `${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
-  };
+  const formatTime = formatClock;
+
+  // Poll the authoritative recording state while in the room and after it ends.
+  useEffect(() => {
+    if (!meetingId || viewState === "create") return undefined;
+    refreshRecording();
+    const timer = setInterval(refreshRecording, RECORDING_POLL_MS);
+    return () => clearInterval(timer);
+  }, [meetingId, viewState, refreshRecording]);
+
+  // Hand off to the existing review workflow once processing has completed.
+  useEffect(() => {
+    if (
+      viewState === "ended" &&
+      processRequestedRef.current &&
+      recState?.status === "completed" &&
+      meetingId
+    ) {
+      processRequestedRef.current = false;
+      loadExistingMeeting(meetingId);
+    }
+  }, [viewState, recState?.status, meetingId, loadExistingMeeting]);
 
   const handleCopyInvite = () => {
     const inviteUrl = `${window.location.origin}/?room=${encodeURIComponent(roomCode)}`;
@@ -466,9 +594,11 @@ export default function LiveMeeting() {
       }
 
       // 2. Request authenticated JWT access token from FastAPI backend
+      // The join-form consent tick is recorded server-side as an explicit grant.
       const tokenResponse = await getLiveToken({
         room_name: roomCode,
         participant_name: displayName,
+        participant_identity: stableIdentity(roomCode),
         is_host: isHost,
         metadata: {
           consented: hasConsented,
@@ -481,6 +611,12 @@ export default function LiveMeeting() {
 
       if (!token || !serverUrl) {
         throw new Error("Backend did not return a valid LiveKit token or server URL.");
+      }
+      tokenRef.current = token;
+      liveRoomRef.current = tokenResponse.room_name || roomCode;
+      setMeetingId(tokenResponse.meeting_id || "");
+      if (typeof tokenResponse.consented === "boolean") {
+        setHasConsented(tokenResponse.consented);
       }
 
       // 3. Instantiate LiveKit Room client
@@ -520,6 +656,8 @@ export default function LiveMeeting() {
 
       room.on(RoomEvent.ParticipantConnected, updateRemotes);
       room.on(RoomEvent.ParticipantDisconnected, updateRemotes);
+      // Consent badges come from server-written metadata.
+      room.on(RoomEvent.ParticipantMetadataChanged, updateRemotes);
 
       // Event: Active Speakers
       room.on(RoomEvent.ActiveSpeakersChanged, (speakers) => {
@@ -603,24 +741,52 @@ export default function LiveMeeting() {
   // --------------------------------------------------------------------------
   // Update Participant Consent
   // --------------------------------------------------------------------------
+  // The server records the decision (and halts capture on revocation); the
+  // toggle only reflects what the server confirmed.
   const toggleConsentInRoom = async () => {
+    const identity = roomRef.current?.localParticipant?.identity;
+    if (!identity) return;
     const next = !hasConsented;
-    setHasConsented(next);
-    if (roomRef.current?.localParticipant) {
-      const identity = roomRef.current.localParticipant.identity;
-      const meta = {
-        is_host: isHost,
-        name: displayName,
-        consented: next,
-        consentTime: next ? new Date().toLocaleTimeString() : null,
-      };
-      await roomRef.current.localParticipant.setMetadata(JSON.stringify(meta));
-      try {
-        await updateLiveConsent(roomCode, identity, next);
-      } catch (err) {
-        console.warn("updateLiveConsent warning:", err);
-      }
+    setRecError("");
+    try {
+      const res = await updateLiveConsent(
+        liveRoomRef.current || roomCode,
+        identity,
+        next,
+        tokenRef.current
+      );
+      setHasConsented(res?.consented === true);
+      if (res?.recording) setRecState(res.recording);
+    } catch (err) {
+      setRecError(err?.message || "Could not update your consent on the server.");
     }
+  };
+
+  // --------------------------------------------------------------------------
+  // Server-side Recording Controls (host)
+  // --------------------------------------------------------------------------
+  const runRecordingAction = async (action) => {
+    if (!meetingId) return;
+    setRecBusy(true);
+    setRecError("");
+    try {
+      const state = await action(meetingId, tokenRef.current);
+      setRecState(state);
+    } catch (err) {
+      const blocked = err?.detail?.blocked;
+      const names = Array.isArray(blocked) ? blocked.map((p) => p.name || p.identity).join(", ") : "";
+      setRecError(names ? `${err.message} Waiting for: ${names}.` : err?.message || "Recording request failed.");
+      refreshRecording();
+    } finally {
+      setRecBusy(false);
+    }
+  };
+
+  const handleStartRecording = () => runRecordingAction(startLiveRecording);
+  const handleStopRecording = () => runRecordingAction(stopLiveRecording);
+  const handleProcessRecording = (retry = false) => {
+    processRequestedRef.current = true;
+    return runRecordingAction((id, token) => processLiveRecording(id, token, { retry }));
   };
 
   // --------------------------------------------------------------------------
@@ -630,10 +796,12 @@ export default function LiveMeeting() {
     setShowEndModal(false);
     if (roomRef.current) {
       if (isHost) {
+        // The server stops and finalizes any recording before closing the room.
         try {
-          await endLiveRoom(roomCode);
+          await endLiveRoom(liveRoomRef.current || roomCode, tokenRef.current);
         } catch (err) {
           console.warn("endLiveRoom backend warning:", err);
+          setRecError(err?.message || "The server could not end the meeting.");
         }
       }
       roomRef.current.disconnect();
@@ -641,19 +809,31 @@ export default function LiveMeeting() {
     setViewState("ended");
   };
 
-  // Compute Consent Statistics
-  const totalCount = 1 + remoteParticipants.length;
-  const consentedCount =
-    (hasConsented ? 1 : 0) +
-    remoteParticipants.filter((p) => {
-      try {
-        const m = p.metadata ? JSON.parse(p.metadata) : {};
-        return m.consented === true;
-      } catch {
-        return false;
-      }
-    }).length;
+  // Consent statistics: prefer the server's roster, fall back to metadata
+  // (which only the server writes) before the first state poll arrives.
+  const serverRoster = (recState?.participants || []).filter((p) => p.connected);
+  const totalCount = serverRoster.length || 1 + remoteParticipants.length;
+  const consentedCount = serverRoster.length
+    ? serverRoster.filter((p) => p.consented).length
+    : (hasConsented ? 1 : 0) +
+      remoteParticipants.filter((p) => {
+        try {
+          const m = p.metadata ? JSON.parse(p.metadata) : {};
+          return m.consented === true;
+        } catch {
+          return false;
+        }
+      }).length;
   const consentPercentage = Math.round((consentedCount / totalCount) * 100);
+
+  const recStatus = recState?.status || "idle";
+  const captureLive = recStatus === "recording" || recStatus === "starting";
+  const lastStopReason = recState?.last_stop_reason;
+  const consentStopNotice =
+    !captureLive && CONSENT_STOP_REASONS.includes(lastStopReason)
+      ? `Recording stopped because ${stopReasonLabel(lastStopReason)}. It will not resume automatically — the host must start a new segment once everyone has consented.`
+      : "";
+  const blockedNames = (recState?.consent?.blocked || []).map((p) => p.name || p.identity);
 
   // ==========================================================================
   // VIEW 1: CREATE OR JOIN LIVE MEETING
@@ -910,14 +1090,13 @@ export default function LiveMeeting() {
         {/* Top Header Bar */}
         <header className="lm-room-topbar">
           <div className="lm-topbar-left">
-            <div className="lm-rec-indicator">
-              <span className="lm-rec-dot" />
-              <span>REC {formatTime(elapsedSeconds)}</span>
-            </div>
+            <RecordingBadge recState={recState} />
 
             <div className="lm-topbar-title-block">
               <h3>{topic}</h3>
-              <span className="lm-topbar-code">Room: {roomCode}</span>
+              <span className="lm-topbar-code">
+                Room: {roomCode} · ⏱ {formatTime(elapsedSeconds)}
+              </span>
             </div>
           </div>
 
@@ -937,6 +1116,37 @@ export default function LiveMeeting() {
           </div>
 
           <div className="lm-topbar-right">
+            {isHost && meetingId && (
+              captureLive ? (
+                <button
+                  type="button"
+                  className="lm-topbar-btn lm-rec-stop-btn"
+                  onClick={handleStopRecording}
+                  disabled={recBusy}
+                >
+                  {recBusy ? "Stopping…" : "■ Stop Recording"}
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  className="lm-topbar-btn lm-rec-start-btn"
+                  onClick={handleStartRecording}
+                  disabled={recBusy || !recState?.can_start}
+                  title={
+                    recState?.can_start
+                      ? "Start a server-side recording segment"
+                      : "Every connected participant must consent before recording"
+                  }
+                >
+                  {recBusy
+                    ? "Starting…"
+                    : (recState?.segments?.length || 0) > 0
+                      ? "● Start New Segment"
+                      : "● Start Recording"}
+                </button>
+              )
+            )}
+
             <button
               type="button"
               className="lm-topbar-btn"
@@ -965,6 +1175,19 @@ export default function LiveMeeting() {
             </button>
           </div>
         </header>
+
+        {/* Authoritative recording / consent notices from the server */}
+        {(recError || consentStopNotice || (!captureLive && blockedNames.length > 0)) && (
+          <div className="lm-rec-notices" role="status" aria-live="polite">
+            {consentStopNotice && <div className="lm-rec-notice warn">{consentStopNotice}</div>}
+            {!captureLive && blockedNames.length > 0 && (
+              <div className="lm-rec-notice warn">
+                Recording is blocked until these participants consent: {blockedNames.join(", ")}.
+              </div>
+            )}
+            {recError && <div className="lm-rec-notice error">{recError}</div>}
+          </div>
+        )}
 
         {/* Room Body: Real WebRTC Participant Tiles Grid + Drawer */}
         <div className="lm-room-body">
@@ -1230,23 +1453,43 @@ export default function LiveMeeting() {
   }
 
   // ==========================================================================
-  // VIEW 3: MEETING-ENDED & REVIEW WORKFLOW HANDOFF
+  // VIEW 3: MEETING-ENDED, RECORDING FINALIZATION & PROCESSING HAND-OFF
   // ==========================================================================
+  const artifact = recState?.artifact;
+  const processing = recState?.processing;
+  const segments = recState?.segments || [];
+  const statusLabels = {
+    idle: "No recording",
+    starting: "Starting",
+    recording: "Recording",
+    stopping: "Finalizing audio…",
+    recorded: "Recorded",
+    processing: "Processing",
+    completed: "Processed",
+    failed: "Failed",
+  };
+  const endedSubtitle = (() => {
+    if (!recState) return "Checking the recording status on the server…";
+    if (recStatus === "stopping") return "The server is finalizing the recorded audio.";
+    if (recStatus === "processing") return "The recording is being transcribed, analysed and verified.";
+    if (recStatus === "completed") return "Processing finished. The meeting is ready for review.";
+    if (recStatus === "failed") return "Processing or recording failed. See the details below.";
+    if (artifact) return "The server-side recording is finalized and ready to process.";
+    return "No consented audio was recorded in this meeting, so there is nothing to process.";
+  })();
+
   return (
     <div className="lm-ended-view">
       <div className="lm-ended-header">
-        <div className="lm-ended-icon">🎉</div>
+        <div className="lm-ended-icon">⏹</div>
         <span className="lm-badge lm-badge-phase" style={{ marginBottom: "10px" }}>
-          Phase 4.1 · LiveKit Session Concluded
+          Phase 4.2 · LiveKit Session Concluded
         </span>
         <h2 className="lm-ended-title">Live Meeting Ended</h2>
-        <p className="lm-ended-subtitle">
-          WebRTC connection disconnected. The session is ready for Minutes of Meeting review,
-          claim verification, and PDF export.
-        </p>
+        <p className="lm-ended-subtitle">{endedSubtitle}</p>
       </div>
 
-      {/* Session Metadata Card */}
+      {/* Session Metadata Card (server-reported) */}
       <div className="lm-session-card">
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
           <div>
@@ -1256,81 +1499,110 @@ export default function LiveMeeting() {
             </span>
           </div>
           <span className="lm-badge lm-badge-consent">
-            ✓ {consentPercentage}% Consent Verified
+            {segments.length} recording segment{segments.length === 1 ? "" : "s"}
           </span>
         </div>
 
         <div className="lm-session-metrics">
           <div className="lm-metric-box">
-            <div className="lm-metric-label">Duration</div>
-            <div className="lm-metric-value">{formatTime(elapsedSeconds || 120)}</div>
+            <div className="lm-metric-label">Meeting Duration</div>
+            <div className="lm-metric-value">{formatTime(elapsedSeconds)}</div>
           </div>
           <div className="lm-metric-box">
-            <div className="lm-metric-label">Attendees</div>
-            <div className="lm-metric-value">{1 + remoteParticipants.length} Connected</div>
+            <div className="lm-metric-label">Recorded Audio</div>
+            <div className="lm-metric-value">
+              {artifact ? formatTime(artifact.duration_seconds) : "None"}
+            </div>
           </div>
           <div className="lm-metric-box">
-            <div className="lm-metric-label">LiveKit Room</div>
-            <div className="lm-metric-value" style={{ fontSize: "13px" }}>Finalized</div>
+            <div className="lm-metric-label">Captured Speakers</div>
+            <div className="lm-metric-value" style={{ fontSize: "13px" }}>
+              {artifact?.participants?.length ? artifact.participants.join(", ") : "—"}
+            </div>
           </div>
           <div className="lm-metric-box">
-            <div className="lm-metric-label">Review Status</div>
-            <div className="lm-metric-value" style={{ color: "#16a34a" }}>Ready</div>
+            <div className="lm-metric-label">Recording Status</div>
+            <div className="lm-metric-value" data-testid="ended-rec-status">
+              {statusLabels[recStatus] || recStatus}
+            </div>
           </div>
         </div>
+
+        {segments.length > 0 && (
+          <ul className="lm-segment-list">
+            {segments.map((seg) => (
+              <li key={seg.segment_id}>
+                <strong>Segment {seg.seq}</strong> · {seg.state}
+                {seg.duration_seconds ? ` · ${formatTime(seg.duration_seconds)}` : ""}
+                {seg.stop_reason ? ` · ${stopReasonLabel(seg.stop_reason)}` : ""}
+                {seg.error ? ` · ${seg.error}` : ""}
+              </li>
+            ))}
+          </ul>
+        )}
       </div>
 
-      {/* Pipeline Progress Stepper */}
-      <div className="lm-stepper-card">
-        <h3>Pipeline Verification Progress</h3>
-        <div className="lm-pipeline-chain">
-          <div className="lm-pipeline-step">
-            <div className="lm-step-bubble">✓</div>
-            <span className="lm-step-name">LiveKit Ingestion</span>
-            <span className="lm-step-status">Finalized</span>
+      {processing && (
+        <div className="lm-stepper-card">
+          <h3>Pipeline Processing</h3>
+          <p style={{ margin: "0 0 8px", color: "#475569", fontSize: "14px" }}>
+            Stage: <strong>{processing.stage}</strong> · {Math.round((processing.progress || 0) * 100)}% · {processing.state}
+          </p>
+          <div className="lm-progress-track">
+            <div className="lm-progress-fill" style={{ width: `${Math.round((processing.progress || 0) * 100)}%` }} />
           </div>
-
-          <div className="lm-pipeline-step">
-            <div className="lm-step-bubble">✓</div>
-            <span className="lm-step-name">ASR &amp; Diarization</span>
-            <span className="lm-step-status">Merged</span>
-          </div>
-
-          <div className="lm-pipeline-step">
-            <div className="lm-step-bubble">✓</div>
-            <span className="lm-step-name">Claim Extraction</span>
-            <span className="lm-step-status">Extracted</span>
-          </div>
-
-          <div className="lm-pipeline-step">
-            <div className="lm-step-bubble active-pulse">🔍</div>
-            <span className="lm-step-name">MoM Verification</span>
-            <span className="lm-step-status" style={{ color: "#202858" }}>Ready for Review</span>
-          </div>
+          {processing.error && (
+            <div className="lm-rec-notice error" style={{ marginTop: "10px" }}>{processing.error}</div>
+          )}
         </div>
-      </div>
+      )}
 
-      {/* Actions to enter Phase 2/3 Review Workbench */}
+      {recError && <div className="lm-rec-notice error">{recError}</div>}
+
       <div className="lm-ended-actions">
-        <button
-          type="button"
-          className="lm-proceed-btn"
-          onClick={() => connectLiveMeetingToMoM("demo_01", 4)}
-        >
-          🔍 Proceed to MoM Review &amp; Verification →
-        </button>
-
-        <div className="lm-secondary-actions">
+        {isHost && recState?.can_process && (
           <button
             type="button"
-            className="lm-secondary-btn"
-            onClick={() => {
-              loadExistingMeeting("demo_01");
-            }}
+            className="lm-proceed-btn"
+            onClick={() => handleProcessRecording(false)}
+            disabled={recBusy}
           >
-            📜 Inspect Transcript First
+            {recBusy ? "Submitting…" : "⚙️ Process Meeting"}
           </button>
+        )}
 
+        {recStatus === "processing" && (
+          <button type="button" className="lm-proceed-btn" disabled>
+            Processing… ({processing?.stage || "queued"})
+          </button>
+        )}
+
+        {recStatus === "completed" && (
+          <button
+            type="button"
+            className="lm-proceed-btn"
+            onClick={() => loadExistingMeeting(meetingId)}
+          >
+            🔍 Open Meeting Review →
+          </button>
+        )}
+
+        {isHost && processing?.state === "failed" && (
+          <button
+            type="button"
+            className="lm-proceed-btn"
+            onClick={() => handleProcessRecording(true)}
+            disabled={recBusy}
+          >
+            ↻ Retry Processing
+          </button>
+        )}
+
+        {!isHost && recState?.can_process && (
+          <p className="lm-ended-subtitle">The host can now process the recording.</p>
+        )}
+
+        <div className="lm-secondary-actions">
           <button
             type="button"
             className="lm-secondary-btn"

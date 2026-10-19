@@ -163,7 +163,7 @@ def init_db(db_path: Optional[Path | str] = None) -> None:
 # Migrations only ADD tables/indexes; they never rewrite or drop existing
 # data. Each step is idempotent (IF NOT EXISTS) and bumps user_version.
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 _MIGRATION_V1 = """
 CREATE TABLE IF NOT EXISTS extraction_runs (
@@ -294,6 +294,74 @@ CREATE TABLE IF NOT EXISTS approved_snapshots (
 CREATE INDEX IF NOT EXISTS idx_approved_snapshots_meeting ON approved_snapshots(meeting_id, version);
 """
 
+# Phase 4.2: live meetings, server-side consent and LiveKit audio recording.
+_MIGRATION_V3 = """
+CREATE TABLE IF NOT EXISTS live_meetings (
+    meeting_id      TEXT PRIMARY KEY,
+    room_name       TEXT NOT NULL,
+    room_sid        TEXT,
+    title           TEXT,
+    host_identity   TEXT,
+    status          TEXT NOT NULL DEFAULT 'active',
+    created_at      TEXT NOT NULL,
+    ended_at        TEXT,
+    FOREIGN KEY (meeting_id) REFERENCES meetings(meeting_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_live_meetings_room ON live_meetings(room_name, created_at);
+
+CREATE TABLE IF NOT EXISTS live_participants (
+    meeting_id          TEXT NOT NULL,
+    identity            TEXT NOT NULL,
+    name                TEXT,
+    is_host             INTEGER NOT NULL DEFAULT 0,
+    consented           INTEGER NOT NULL DEFAULT 0,
+    consent_updated_at  TEXT,
+    connected           INTEGER NOT NULL DEFAULT 0,
+    first_seen_at       TEXT,
+    last_seen_at        TEXT,
+    PRIMARY KEY (meeting_id, identity),
+    FOREIGN KEY (meeting_id) REFERENCES live_meetings(meeting_id)
+);
+
+CREATE TABLE IF NOT EXISTS live_events (
+    event_id    INTEGER PRIMARY KEY AUTOINCREMENT,
+    meeting_id  TEXT NOT NULL,
+    event_type  TEXT NOT NULL,
+    identity    TEXT,
+    segment_id  TEXT,
+    detail      TEXT,
+    created_at  TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_live_events_meeting ON live_events(meeting_id, event_id);
+
+CREATE TABLE IF NOT EXISTS recording_segments (
+    segment_id          TEXT PRIMARY KEY,
+    meeting_id          TEXT NOT NULL,
+    seq                 INTEGER NOT NULL,
+    state               TEXT NOT NULL,
+    started_by          TEXT,
+    started_at          TEXT NOT NULL,
+    capture_started_at  TEXT,
+    stopped_at          TEXT,
+    stop_reason         TEXT,
+    participants        TEXT,
+    tracks              TEXT,
+    artifact_path       TEXT,
+    duration_seconds    REAL,
+    error               TEXT,
+    updated_at          TEXT NOT NULL,
+    UNIQUE (meeting_id, seq),
+    FOREIGN KEY (meeting_id) REFERENCES live_meetings(meeting_id)
+);
+
+-- At most one non-terminal segment per meeting, enforced by the database.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_recording_one_active
+    ON recording_segments(meeting_id)
+    WHERE state IN ('starting', 'recording', 'stopping');
+"""
+
 
 def _migrate(conn: sqlite3.Connection) -> None:
     current = conn.execute("PRAGMA user_version").fetchone()[0]
@@ -304,6 +372,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
     if current < 2:
         conn.executescript(_MIGRATION_V2)
         conn.execute("PRAGMA user_version = 2")
+        current = 2
+    if current < 3:
+        conn.executescript(_MIGRATION_V3)
+        conn.execute("PRAGMA user_version = 3")
 
 
 def get_schema_version(db_path: Optional[Path | str] = None) -> int:
@@ -1754,3 +1826,499 @@ def get_all_approved_snapshots(
         ).fetchall()
         return [dict(r) for r in rows]
 
+
+
+
+# ---------------------------------------------------------------------------
+# Phase 4.2: live meetings, server-side consent and recording segments
+# ---------------------------------------------------------------------------
+# Consent is only ever granted by an explicit, recorded action. A missing
+# participant row, a NULL or a 0 all mean "not consented".
+
+ACTIVE_SEGMENT_STATES = ("starting", "recording", "stopping")
+_SEGMENT_JSON_COLUMNS = ("participants", "tracks")
+
+
+def _segment_row(row: sqlite3.Row) -> Dict[str, Any]:
+    data = dict(row)
+    for col in _SEGMENT_JSON_COLUMNS:
+        raw = data.get(col)
+        data[col] = json.loads(raw) if raw else []
+    return data
+
+
+def record_live_event(
+    meeting_id: str,
+    event_type: str,
+    identity: Optional[str] = None,
+    segment_id: Optional[str] = None,
+    detail: Optional[Dict[str, Any]] = None,
+    db_path: Optional[Path | str] = None,
+) -> None:
+    """Append an audit event (consent, roster or recording change)."""
+    with get_conn(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO live_events (meeting_id, event_type, identity, segment_id, detail, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                meeting_id,
+                event_type,
+                identity,
+                segment_id,
+                json.dumps(detail) if detail else None,
+                _now_iso(),
+            ),
+        )
+
+
+def get_live_events(
+    meeting_id: str,
+    limit: int = 200,
+    db_path: Optional[Path | str] = None,
+) -> List[Dict[str, Any]]:
+    with get_conn(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT event_id, meeting_id, event_type, identity, segment_id, detail, created_at
+            FROM live_events
+            WHERE meeting_id = ?
+            ORDER BY event_id ASC
+            LIMIT ?
+            """,
+            (meeting_id, limit),
+        ).fetchall()
+    events = []
+    for row in rows:
+        item = dict(row)
+        item["detail"] = json.loads(item["detail"]) if item["detail"] else None
+        events.append(item)
+    return events
+
+
+def create_live_meeting(
+    room_name: str,
+    title: Optional[str] = None,
+    room_sid: Optional[str] = None,
+    db_path: Optional[Path | str] = None,
+) -> Dict[str, Any]:
+    """Create a new live meeting (and its parent meetings row) for a room."""
+    meeting_id = uuid4().hex
+    now = _now_iso()
+    with get_conn(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO meetings (meeting_id, filename, duration, created_at, status)
+            VALUES (?, ?, NULL, ?, 'live')
+            ON CONFLICT(meeting_id) DO NOTHING
+            """,
+            (meeting_id, f"live-{room_name}.wav", now),
+        )
+        conn.execute(
+            """
+            INSERT INTO live_meetings (meeting_id, room_name, room_sid, title, status, created_at)
+            VALUES (?, ?, ?, ?, 'active', ?)
+            """,
+            (meeting_id, room_name, room_sid, title, now),
+        )
+    record_live_event(meeting_id, "meeting_created", detail={"room_name": room_name}, db_path=db_path)
+    return get_live_meeting(meeting_id, db_path=db_path)
+
+
+def get_live_meeting(
+    meeting_id: str,
+    db_path: Optional[Path | str] = None,
+) -> Optional[Dict[str, Any]]:
+    with get_conn(db_path) as conn:
+        row = conn.execute(
+            "SELECT * FROM live_meetings WHERE meeting_id = ?",
+            (meeting_id,),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def get_active_live_meeting(
+    room_name: str,
+    db_path: Optional[Path | str] = None,
+) -> Optional[Dict[str, Any]]:
+    with get_conn(db_path) as conn:
+        row = conn.execute(
+            """
+            SELECT * FROM live_meetings
+            WHERE room_name = ? AND status = 'active'
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            (room_name,),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def get_or_create_live_meeting(
+    room_name: str,
+    title: Optional[str] = None,
+    room_sid: Optional[str] = None,
+    db_path: Optional[Path | str] = None,
+) -> Dict[str, Any]:
+    existing = get_active_live_meeting(room_name, db_path=db_path)
+    if existing:
+        return existing
+    return create_live_meeting(room_name, title=title, room_sid=room_sid, db_path=db_path)
+
+
+def claim_live_meeting_host(
+    meeting_id: str,
+    identity: str,
+    db_path: Optional[Path | str] = None,
+) -> bool:
+    """Bind the host identity once. Returns True if identity is (now) the host."""
+    with get_conn(db_path) as conn:
+        conn.execute(
+            """
+            UPDATE live_meetings SET host_identity = ?
+            WHERE meeting_id = ? AND host_identity IS NULL
+            """,
+            (identity, meeting_id),
+        )
+        row = conn.execute(
+            "SELECT host_identity FROM live_meetings WHERE meeting_id = ?",
+            (meeting_id,),
+        ).fetchone()
+    return bool(row) and row["host_identity"] == identity
+
+
+def end_live_meeting(
+    meeting_id: str,
+    db_path: Optional[Path | str] = None,
+) -> None:
+    now = _now_iso()
+    with get_conn(db_path) as conn:
+        conn.execute(
+            """
+            UPDATE live_meetings SET status = 'ended', ended_at = COALESCE(ended_at, ?)
+            WHERE meeting_id = ?
+            """,
+            (now, meeting_id),
+        )
+        conn.execute(
+            "UPDATE live_participants SET connected = 0 WHERE meeting_id = ?",
+            (meeting_id,),
+        )
+    record_live_event(meeting_id, "meeting_ended", db_path=db_path)
+
+
+def upsert_live_participant(
+    meeting_id: str,
+    identity: str,
+    name: Optional[str] = None,
+    is_host: Optional[bool] = None,
+    db_path: Optional[Path | str] = None,
+) -> None:
+    """Ensure a participant row exists. Never touches consent."""
+    now = _now_iso()
+    with get_conn(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO live_participants (meeting_id, identity, name, is_host, consented, first_seen_at, last_seen_at)
+            VALUES (?, ?, ?, ?, 0, ?, ?)
+            ON CONFLICT(meeting_id, identity) DO UPDATE SET
+                name = COALESCE(excluded.name, live_participants.name),
+                is_host = CASE WHEN ? IS NULL THEN live_participants.is_host ELSE excluded.is_host END
+            """,
+            (meeting_id, identity, name, 1 if is_host else 0, now, now, is_host),
+        )
+
+
+def set_participant_consent(
+    meeting_id: str,
+    identity: str,
+    consented: bool,
+    source: str,
+    name: Optional[str] = None,
+    db_path: Optional[Path | str] = None,
+) -> Dict[str, Any]:
+    """Persist an explicit consent decision and its audit event."""
+    upsert_live_participant(meeting_id, identity, name=name, db_path=db_path)
+    now = _now_iso()
+    with get_conn(db_path) as conn:
+        conn.execute(
+            """
+            UPDATE live_participants SET consented = ?, consent_updated_at = ?
+            WHERE meeting_id = ? AND identity = ?
+            """,
+            (1 if consented else 0, now, meeting_id, identity),
+        )
+    record_live_event(
+        meeting_id,
+        "consent_granted" if consented else "consent_revoked",
+        identity=identity,
+        detail={"source": source},
+        db_path=db_path,
+    )
+    return {"meeting_id": meeting_id, "identity": identity, "consented": consented, "updated_at": now}
+
+
+def is_participant_consented(
+    meeting_id: str,
+    identity: str,
+    db_path: Optional[Path | str] = None,
+) -> bool:
+    with get_conn(db_path) as conn:
+        row = conn.execute(
+            "SELECT consented FROM live_participants WHERE meeting_id = ? AND identity = ?",
+            (meeting_id, identity),
+        ).fetchone()
+    return bool(row) and row["consented"] == 1
+
+
+def get_live_participants(
+    meeting_id: str,
+    db_path: Optional[Path | str] = None,
+) -> List[Dict[str, Any]]:
+    with get_conn(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT identity, name, is_host, consented, consent_updated_at, connected,
+                   first_seen_at, last_seen_at
+            FROM live_participants
+            WHERE meeting_id = ?
+            ORDER BY first_seen_at ASC
+            """,
+            (meeting_id,),
+        ).fetchall()
+    return [
+        {
+            **dict(r),
+            "is_host": bool(r["is_host"]),
+            "consented": r["consented"] == 1,
+            "connected": bool(r["connected"]),
+        }
+        for r in rows
+    ]
+
+
+def sync_live_roster(
+    meeting_id: str,
+    present: List[Dict[str, Any]],
+    db_path: Optional[Path | str] = None,
+) -> Dict[str, List[str]]:
+    """
+    Reconcile the connected flags with the roster LiveKit reports, recording
+    participant_joined / participant_left audit events for every change.
+    """
+    present_ids = {p["identity"]: p for p in present}
+    for identity, p in present_ids.items():
+        upsert_live_participant(meeting_id, identity, name=p.get("name"), db_path=db_path)
+
+    now = _now_iso()
+    joined: List[str] = []
+    left: List[str] = []
+    with get_conn(db_path) as conn:
+        rows = conn.execute(
+            "SELECT identity, connected FROM live_participants WHERE meeting_id = ?",
+            (meeting_id,),
+        ).fetchall()
+        for row in rows:
+            identity = row["identity"]
+            is_present = identity in present_ids
+            if is_present and not row["connected"]:
+                joined.append(identity)
+                conn.execute(
+                    "UPDATE live_participants SET connected = 1, last_seen_at = ? WHERE meeting_id = ? AND identity = ?",
+                    (now, meeting_id, identity),
+                )
+            elif is_present:
+                conn.execute(
+                    "UPDATE live_participants SET last_seen_at = ? WHERE meeting_id = ? AND identity = ?",
+                    (now, meeting_id, identity),
+                )
+            elif row["connected"]:
+                left.append(identity)
+                conn.execute(
+                    "UPDATE live_participants SET connected = 0 WHERE meeting_id = ? AND identity = ?",
+                    (meeting_id, identity),
+                )
+    for identity in joined:
+        record_live_event(meeting_id, "participant_joined", identity=identity, db_path=db_path)
+    for identity in left:
+        record_live_event(meeting_id, "participant_left", identity=identity, db_path=db_path)
+    return {"joined": joined, "left": left}
+
+
+def set_participant_connected(
+    meeting_id: str,
+    identity: str,
+    connected: bool,
+    name: Optional[str] = None,
+    segment_id: Optional[str] = None,
+    db_path: Optional[Path | str] = None,
+) -> None:
+    """Record a single roster change observed by the recorder."""
+    upsert_live_participant(meeting_id, identity, name=name, db_path=db_path)
+    with get_conn(db_path) as conn:
+        conn.execute(
+            "UPDATE live_participants SET connected = ?, last_seen_at = ? WHERE meeting_id = ? AND identity = ?",
+            (1 if connected else 0, _now_iso(), meeting_id, identity),
+        )
+    record_live_event(
+        meeting_id,
+        "participant_joined" if connected else "participant_left",
+        identity=identity,
+        segment_id=segment_id,
+        detail={"observed_by": "recorder"},
+        db_path=db_path,
+    )
+
+
+class ActiveSegmentExists(Exception):
+    """Raised when a meeting already has a non-terminal recording segment."""
+
+
+def create_recording_segment(
+    meeting_id: str,
+    started_by: str,
+    participants: List[Dict[str, Any]],
+    db_path: Optional[Path | str] = None,
+) -> Dict[str, Any]:
+    segment_id = uuid4().hex
+    now = _now_iso()
+    try:
+        with get_conn(db_path) as conn:
+            seq_row = conn.execute(
+                "SELECT COALESCE(MAX(seq), 0) + 1 AS next_seq FROM recording_segments WHERE meeting_id = ?",
+                (meeting_id,),
+            ).fetchone()
+            conn.execute(
+                """
+                INSERT INTO recording_segments (
+                    segment_id, meeting_id, seq, state, started_by, started_at,
+                    participants, tracks, updated_at
+                )
+                VALUES (?, ?, ?, 'starting', ?, ?, ?, '[]', ?)
+                """,
+                (
+                    segment_id,
+                    meeting_id,
+                    seq_row["next_seq"],
+                    started_by,
+                    now,
+                    json.dumps(participants),
+                    now,
+                ),
+            )
+    except sqlite3.IntegrityError as exc:
+        raise ActiveSegmentExists(meeting_id) from exc
+    record_live_event(
+        meeting_id,
+        "recording_requested",
+        identity=started_by,
+        segment_id=segment_id,
+        detail={"participants": [p.get("identity") for p in participants]},
+        db_path=db_path,
+    )
+    return get_recording_segment(segment_id, db_path=db_path)
+
+
+def update_recording_segment(
+    segment_id: str,
+    db_path: Optional[Path | str] = None,
+    **fields: Any,
+) -> None:
+    allowed = {
+        "state", "capture_started_at", "stopped_at", "stop_reason", "participants",
+        "tracks", "artifact_path", "duration_seconds", "error",
+    }
+    unknown = set(fields) - allowed
+    if unknown:
+        raise ValueError(f"Unknown recording segment fields: {sorted(unknown)}")
+    if not fields:
+        return
+    values = []
+    for key, value in fields.items():
+        values.append(json.dumps(value) if key in _SEGMENT_JSON_COLUMNS else value)
+    assignments = ", ".join(f"{key} = ?" for key in fields)
+    with get_conn(db_path) as conn:
+        conn.execute(
+            f"UPDATE recording_segments SET {assignments}, updated_at = ? WHERE segment_id = ?",
+            (*values, _now_iso(), segment_id),
+        )
+
+
+def get_recording_segment(
+    segment_id: str,
+    db_path: Optional[Path | str] = None,
+) -> Optional[Dict[str, Any]]:
+    with get_conn(db_path) as conn:
+        row = conn.execute(
+            "SELECT * FROM recording_segments WHERE segment_id = ?",
+            (segment_id,),
+        ).fetchone()
+    return _segment_row(row) if row else None
+
+
+def get_recording_segments(
+    meeting_id: str,
+    db_path: Optional[Path | str] = None,
+) -> List[Dict[str, Any]]:
+    with get_conn(db_path) as conn:
+        rows = conn.execute(
+            "SELECT * FROM recording_segments WHERE meeting_id = ? ORDER BY seq ASC",
+            (meeting_id,),
+        ).fetchall()
+    return [_segment_row(r) for r in rows]
+
+
+def get_unfinished_recording_segments(
+    db_path: Optional[Path | str] = None,
+) -> List[Dict[str, Any]]:
+    """Segments left non-terminal by a crashed or killed server process."""
+    placeholders = ", ".join("?" for _ in ACTIVE_SEGMENT_STATES)
+    with get_conn(db_path) as conn:
+        rows = conn.execute(
+            f"SELECT * FROM recording_segments WHERE state IN ({placeholders}) ORDER BY started_at ASC",
+            ACTIVE_SEGMENT_STATES,
+        ).fetchall()
+    return [_segment_row(r) for r in rows]
+
+
+def enqueue_job_once(
+    meeting_id: str,
+    file_path: str,
+    db_path: Optional[Path | str] = None,
+) -> bool:
+    """
+    Queue a pipeline job only if this meeting has never had one.
+    Returns True when this call created the job, False if one already existed,
+    so concurrent or repeated requests can never process a recording twice.
+    """
+    now = _now_iso()
+    with get_conn(db_path) as conn:
+        cursor = conn.execute(
+            """
+            INSERT INTO jobs (meeting_id, stage, progress, state, error, updated_at,
+                              heartbeat_at, retry_count, file_path, claim_token)
+            VALUES (?, 'uploaded', 0.0, 'queued', NULL, ?, NULL, 0, ?, NULL)
+            ON CONFLICT(meeting_id) DO NOTHING
+            """,
+            (meeting_id, now, file_path),
+        )
+        return cursor.rowcount == 1
+
+
+def requeue_failed_job(
+    meeting_id: str,
+    db_path: Optional[Path | str] = None,
+) -> bool:
+    """Move a failed job back to queued. Returns False unless it was failed."""
+    with get_conn(db_path) as conn:
+        cursor = conn.execute(
+            """
+            UPDATE jobs
+            SET state = 'queued', stage = 'uploaded', progress = 0.0, error = NULL,
+                heartbeat_at = NULL, claim_token = NULL, updated_at = ?
+            WHERE meeting_id = ? AND state = 'failed'
+            """,
+            (_now_iso(), meeting_id),
+        )
+        return cursor.rowcount == 1

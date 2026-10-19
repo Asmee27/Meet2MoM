@@ -1080,3 +1080,69 @@
     flex-direction: column;
   }
 }
+
+/* ===================== Phase 4.2: server-side recording ===================== */
+.lm-rec-indicator.lm-rec-idle {
+  background: rgba(148, 163, 184, 0.15);
+  border-color: rgba(148, 163, 184, 0.35);
+  color: #cbd5e1;
+  animation: none;
+}
+
+.lm-rec-start-btn:disabled,
+.lm-rec-stop-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.lm-rec-stop-btn {
+  border-color: rgba(239, 68, 68, 0.6);
+  color: #fca5a5;
+}
+
+.lm-rec-notices {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 20px 0;
+}
+
+.lm-rec-notice {
+  border-radius: 8px;
+  padding: 8px 12px;
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.lm-rec-notice.warn {
+  background: rgba(234, 179, 8, 0.15);
+  border: 1px solid rgba(234, 179, 8, 0.4);
+  color: #facc15;
+}
+
+.lm-rec-notice.error {
+  background: rgba(239, 68, 68, 0.12);
+  border: 1px solid rgba(239, 68, 68, 0.4);
+  color: #b91c1c;
+}
+
+.lm-segment-list {
+  margin: 16px 0 0;
+  padding-left: 18px;
+  font-size: 13px;
+  color: #475569;
+  line-height: 1.6;
+}
+
+.lm-progress-track {
+  height: 8px;
+  border-radius: 999px;
+  background: #e2e8f0;
+  overflow: hidden;
+}
+
+.lm-progress-fill {
+  height: 100%;
+  background: #202858;
+  transition: width 0.4s ease;
+}

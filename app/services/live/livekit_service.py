@@ -118,6 +118,86 @@ def generate_livekit_token(
     return jwt.encode(jwt_claims, secret, algorithm="HS256")
 
 
+def generate_recorder_token(room_name: str, identity: str, ttl_hours: int = 6) -> str:
+    """
+    Token for the server-side recorder: hidden from other participants,
+    subscribe-only, and unable to publish media or data.
+    """
+    valid, err_msg = is_livekit_configured()
+    if not valid:
+        raise ValueError(err_msg)
+
+    key = getattr(config, "LIVEKIT_API_KEY", "") or os.getenv("LIVEKIT_API_KEY", "")
+    secret = getattr(config, "LIVEKIT_API_SECRET", "") or os.getenv("LIVEKIT_API_SECRET", "")
+
+    grants = api.VideoGrants(
+        room_join=True,
+        room=room_name,
+        can_publish=False,
+        can_subscribe=True,
+        can_publish_data=False,
+        hidden=True,
+        recorder=True,
+    )
+    tok = (
+        api.AccessToken(key, secret)
+        .with_identity(identity)
+        .with_name("Meet2MoM Recorder")
+        .with_grants(grants)
+    )
+    now = datetime.now(timezone.utc)
+    jwt_claims = tok.claims.asdict()
+    jwt_claims.update(
+        {
+            "sub": identity,
+            "iss": key,
+            "nbf": calendar.timegm((now - timedelta(minutes=2)).utctimetuple()),
+            "exp": calendar.timegm((now + timedelta(hours=ttl_hours)).utctimetuple()),
+        }
+    )
+    return jwt.encode(jwt_claims, secret, algorithm="HS256")
+
+
+class TokenVerificationError(Exception):
+    """The caller did not present a valid participant token for this room."""
+
+
+def verify_participant_token(token: str, room_name: str) -> Dict[str, Any]:
+    """
+    Verify a LiveKit access token this server issued and return the caller's
+    identity and role. Used to authenticate consent and recording actions.
+    """
+    valid, err_msg = is_livekit_configured()
+    if not valid:
+        raise ValueError(err_msg)
+    if not token:
+        raise TokenVerificationError("Missing participant token.")
+
+    secret = getattr(config, "LIVEKIT_API_SECRET", "") or os.getenv("LIVEKIT_API_SECRET", "")
+    key = getattr(config, "LIVEKIT_API_KEY", "") or os.getenv("LIVEKIT_API_KEY", "")
+    try:
+        claims = jwt.decode(
+            token,
+            secret,
+            algorithms=["HS256"],
+            leeway=120,
+            options={"verify_aud": False},
+        )
+    except jwt.PyJWTError as exc:
+        raise TokenVerificationError("Invalid or expired participant token.") from exc
+
+    video = claims.get("video") or {}
+    if claims.get("iss") != key or video.get("room") != room_name or not video.get("roomJoin"):
+        raise TokenVerificationError("Participant token is not valid for this room.")
+    if video.get("hidden") or video.get("recorder"):
+        raise TokenVerificationError("Recorder tokens cannot perform participant actions.")
+    return {
+        "identity": claims.get("sub", ""),
+        "name": claims.get("name") or claims.get("sub", ""),
+        "room_admin": bool(video.get("roomAdmin")),
+    }
+
+
 async def get_livekit_api() -> api.LiveKitAPI:
     """Return an authenticated LiveKitAPI instance."""
     valid, err_msg = is_livekit_configured()
@@ -256,7 +336,18 @@ async def update_live_participant_consent(
 
     lk = await get_livekit_api()
     try:
+        # Merge into the existing metadata so is_host/name/role survive.
+        existing: Dict[str, Any] = {}
+        try:
+            current = await lk.room.get_participant(
+                api.RoomParticipantIdentity(room=room_name, identity=identity)
+            )
+            if current.metadata:
+                existing = json.loads(current.metadata)
+        except Exception:
+            existing = {}
         meta_update = {
+            **existing,
             "consented": consented,
             "consent_time": datetime.now(timezone.utc).isoformat() if consented else None,
         }

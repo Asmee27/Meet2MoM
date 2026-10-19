@@ -40,6 +40,12 @@ pydub==0.25.1
 # Environment Configuration
 python-dotenv==1.0.0
 
+# Live meetings (Phase 4): LiveKit server API, participant tokens and the
+# RTC SDK used by the server-side audio recorder.
+livekit==1.1.21
+livekit-api==1.2.1
+PyJWT==2.10.1
+
 # Intelligence & Resolution
 python-dateutil==2.9.0.post0
 rapidfuzz==3.14.6

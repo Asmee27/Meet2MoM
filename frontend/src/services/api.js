@@ -300,23 +300,91 @@ export async function getLiveRoomStatus(roomName) {
   return data;
 }
 
-export async function endLiveRoom(roomName) {
-  const res = await fetch(`${API_BASE_URL}/api/live/rooms/${encodeURIComponent(roomName)}/end`, {
-    method: "POST",
-    headers: { Accept: "application/json" },
-  });
-  const data = await res.json();
-  if (!res.ok) throw new Error(data?.detail || "Failed to end LiveKit room.");
+// Live-meeting mutations authenticate with the participant's own LiveKit token,
+// so the server can verify who is changing consent or controlling recording.
+function liveAuthHeaders(token, extra = {}) {
+  return {
+    Accept: "application/json",
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    ...extra,
+  };
+}
+
+function liveErrorMessage(data, fallback) {
+  const detail = data?.detail;
+  if (typeof detail === "string") return detail;
+  if (detail?.message) return detail.message;
+  return fallback;
+}
+
+async function liveRequest(path, { method = "GET", token, body, fallback }) {
+  let res;
+  try {
+    res = await fetch(`${API_BASE_URL}${path}`, {
+      method,
+      headers: liveAuthHeaders(token, body ? { "Content-Type": "application/json" } : {}),
+      body: body ? JSON.stringify(body) : undefined,
+    });
+  } catch {
+    throw new Error(`Cannot connect to backend server at ${API_BASE_URL}. Please ensure the FastAPI backend is running.`);
+  }
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const error = new Error(liveErrorMessage(data, fallback));
+    error.status = res.status;
+    error.detail = data?.detail;
+    throw error;
+  }
   return data;
 }
 
-export async function updateLiveConsent(roomName, identity, consented) {
-  const res = await fetch(`${API_BASE_URL}/api/live/rooms/${encodeURIComponent(roomName)}/consent`, {
+export async function endLiveRoom(roomName, token) {
+  return liveRequest(`/api/live/rooms/${encodeURIComponent(roomName)}/end`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", Accept: "application/json" },
-    body: JSON.stringify({ identity, consented }),
+    token,
+    fallback: "Failed to end LiveKit room.",
   });
-  const data = await res.json();
-  if (!res.ok) throw new Error(data?.detail || "Failed to update participant consent.");
-  return data;
+}
+
+export async function updateLiveConsent(roomName, identity, consented, token) {
+  return liveRequest(`/api/live/rooms/${encodeURIComponent(roomName)}/consent`, {
+    method: "POST",
+    token,
+    body: { identity, consented },
+    fallback: "Failed to update participant consent.",
+  });
+}
+
+// Phase 4.2: server-side recording state and controls
+
+export async function getLiveRecording(meetingId, token) {
+  return liveRequest(`/api/live/meetings/${encodeURIComponent(meetingId)}/recording`, {
+    token,
+    fallback: "Failed to fetch recording state.",
+  });
+}
+
+export async function startLiveRecording(meetingId, token) {
+  return liveRequest(`/api/live/meetings/${encodeURIComponent(meetingId)}/recording/start`, {
+    method: "POST",
+    token,
+    fallback: "Failed to start recording.",
+  });
+}
+
+export async function stopLiveRecording(meetingId, token) {
+  return liveRequest(`/api/live/meetings/${encodeURIComponent(meetingId)}/recording/stop`, {
+    method: "POST",
+    token,
+    fallback: "Failed to stop recording.",
+  });
+}
+
+export async function processLiveRecording(meetingId, token, { retry = false } = {}) {
+  const query = retry ? "?retry=true" : "";
+  return liveRequest(`/api/live/meetings/${encodeURIComponent(meetingId)}/recording/process${query}`, {
+    method: "POST",
+    token,
+    fallback: "Failed to start processing.",
+  });
 }

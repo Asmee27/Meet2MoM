@@ -338,7 +338,7 @@ def test_database_migration_v1_to_v2_and_restart(tmp_path):
 
     # 2. Run init_db which triggers _migrate
     db.init_db(test_db)
-    assert db.get_schema_version(test_db) == 2
+    assert db.get_schema_version(test_db) == db.SCHEMA_VERSION
 
     # 3. Verify legacy data is preserved intact
     with db.get_conn(test_db) as conn:

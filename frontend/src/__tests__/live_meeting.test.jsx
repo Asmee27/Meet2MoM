@@ -142,13 +142,16 @@ beforeEach(() => {
     title: "Engineering Sync",
     status: "active",
   });
-  vi.spyOn(api, "getLiveToken").mockResolvedValue({
+  vi.spyOn(api, "getLiveToken").mockImplementation(async (payload) => ({
     token: "mock-valid-jwt-token",
     livekit_url: "wss://mock.livekit.cloud",
     room_name: "livekit-m2m-test",
     identity: "alex-morgan-id",
     expires_in_seconds: 3600,
-  });
+    meeting_id: "mtg-live-1",
+    // The server echoes back only consent it actually recorded.
+    consented: payload?.metadata?.consented === true,
+  }));
   vi.spyOn(api, "endLiveRoom").mockResolvedValue({
     room_name: "livekit-m2m-test",
     status: "ended",
@@ -156,7 +159,32 @@ beforeEach(() => {
   vi.spyOn(api, "updateLiveConsent").mockResolvedValue({
     status: "updated",
   });
+  vi.spyOn(api, "getLiveRecording").mockResolvedValue(recordingState());
+  vi.spyOn(api, "startLiveRecording").mockResolvedValue(recordingState({ status: "starting" }));
+  vi.spyOn(api, "stopLiveRecording").mockResolvedValue(recordingState({ status: "recorded" }));
+  vi.spyOn(api, "processLiveRecording").mockResolvedValue(recordingState({ status: "processing" }));
 });
+
+// Shape of GET /api/live/meetings/{id}/recording
+function recordingState(overrides = {}) {
+  return {
+    meeting_id: "mtg-live-1",
+    room_name: "livekit-m2m-test",
+    meeting_status: "active",
+    status: "idle",
+    capture_active: false,
+    live: null,
+    consent: { all_connected_consented: true, blocked: [], consent_blocked: false },
+    participants: [],
+    last_stop_reason: null,
+    segments: [],
+    artifact: null,
+    processing: null,
+    can_start: true,
+    can_process: false,
+    ...overrides,
+  };
+}
 
 describe("Phase 4.1: Real LiveKit Meeting UI & WebRTC Lifecycle", () => {
   it("renders 'Start Live Meeting' alongside 'Upload Recorded Meeting' on initial source selection", () => {
@@ -211,7 +239,8 @@ describe("Phase 4.1: Real LiveKit Meeting UI & WebRTC Lifecycle", () => {
 
     // Consent policy checkbox
     const consentCheckbox = screen.getByLabelText(/Explicit Recording & MoM Transcription Consent/i);
-    expect(consentCheckbox.checked).toBe(true);
+    // Phase 4.2: consent is opt-in, never pre-ticked.
+    expect(consentCheckbox.checked).toBe(false);
 
     // Pre-join hardware controls
     const micToggle = screen.getByRole("button", { name: /Mic On/i });
@@ -235,13 +264,18 @@ describe("Phase 4.1: Real LiveKit Meeting UI & WebRTC Lifecycle", () => {
       </MeetingFlowProvider>
     );
 
+    fireEvent.click(screen.getByLabelText(/Explicit Recording & MoM Transcription Consent/i));
     const startBtn = screen.getByRole("button", { name: /Create & Start Live Meeting Room/i });
     fireEvent.click(startBtn);
 
-    // Wait for Room connection
+    // Wait for Room connection. Connecting alone never shows REC.
     await waitFor(() => {
-      expect(screen.getByText(/REC 00:/i)).toBeTruthy();
+      expect(screen.getByText("Not recording")).toBeTruthy();
     });
+    expect(screen.queryByText(/^REC/)).toBeNull();
+    expect(api.getLiveToken).toHaveBeenCalledWith(
+      expect.objectContaining({ metadata: expect.objectContaining({ consented: true }) })
+    );
 
     // Consent pill & top bar controls
     expect(screen.getByText(/Consent: 3\/3 Consented/i)).toBeTruthy();
@@ -315,7 +349,7 @@ describe("Phase 4.1: Real LiveKit Meeting UI & WebRTC Lifecycle", () => {
     expect(screen.queryByText("End Live Meeting for All?")).toBeNull();
   });
 
-  it("transitions to Meeting-Ended state and connects to MoM Review workflow", async () => {
+  it("transitions to Meeting-Ended state without inventing a recording", async () => {
     render(
       <MeetingFlowProvider>
         <LiveMeeting />
@@ -333,18 +367,154 @@ describe("Phase 4.1: Real LiveKit Meeting UI & WebRTC Lifecycle", () => {
     fireEvent.click(screen.getAllByRole("button", { name: /End Meeting/i })[0]);
     fireEvent.click(screen.getByRole("button", { name: /End for Everyone/i }));
 
-    // Meeting-Ended screen
+    // Meeting-Ended screen reflects the server: nothing was recorded.
     await waitFor(() => {
       expect(screen.getByText("Live Meeting Ended")).toBeTruthy();
     });
-    expect(screen.getByText(/100% Consent Verified/i)).toBeTruthy();
-    expect(screen.getByText("Pipeline Verification Progress")).toBeTruthy();
-
-    // Visual connection button to MoM review workflow
-    const proceedBtn = screen.getByRole("button", { name: /Proceed to MoM Review & Verification/i });
-    expect(proceedBtn).toBeTruthy();
-
-    // Inspect transcript button
-    expect(screen.getByRole("button", { name: /Inspect Transcript First/i })).toBeTruthy();
+    expect(api.endLiveRoom).toHaveBeenCalledWith("livekit-m2m-test", "mock-valid-jwt-token");
+    await waitFor(() => {
+      expect(screen.getByText(/No consented audio was recorded/i)).toBeTruthy();
+    });
+    expect(screen.queryByText(/Consent Verified/i)).toBeNull();
+    expect(screen.queryByRole("button", { name: /Process Meeting/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Proceed to MoM Review/i })).toBeNull();
   });
+});
+
+describe("Phase 4.2: server-side recording UI", () => {
+  async function joinRoom() {
+    render(
+      <MeetingFlowProvider>
+        <LiveMeeting />
+      </MeetingFlowProvider>
+    );
+    fireEvent.click(screen.getByLabelText(/Explicit Recording & MoM Transcription Consent/i));
+    fireEvent.click(screen.getByRole("button", { name: /Create & Start Live Meeting Room/i }));
+    await waitFor(() => {
+      expect(screen.getAllByRole("button", { name: /End Meeting/i }).length).toBeGreaterThan(0);
+    });
+  }
+
+  it("shows REC only after the backend confirms audio capture", async () => {
+    api.getLiveRecording.mockResolvedValue(recordingState({ status: "starting", live: { frames_captured: 0 } }));
+    await joinRoom();
+    await waitFor(() => expect(screen.getByText(/Starting capture/i)).toBeTruthy());
+    expect(screen.queryByTestId("rec-badge")).toBeNull();
+
+    api.getLiveRecording.mockResolvedValue(
+      recordingState({
+        status: "recording",
+        capture_active: true,
+        live: { frames_captured: 4200, elapsed_seconds: 42, tracks: [] },
+      })
+    );
+    await waitFor(() => expect(screen.getByTestId("rec-badge").textContent).toContain("REC 00:42"), {
+      timeout: 4000,
+    });
+  });
+
+  it("lets the host start and stop recording through the server", async () => {
+    await joinRoom();
+    const startBtn = await screen.findByRole("button", { name: /Start Recording/i });
+    await waitFor(() => expect(startBtn.disabled).toBe(false));
+
+    api.startLiveRecording.mockResolvedValue(
+      recordingState({ status: "recording", capture_active: true, live: { frames_captured: 10, elapsed_seconds: 1 } })
+    );
+    fireEvent.click(startBtn);
+    await waitFor(() =>
+      expect(api.startLiveRecording).toHaveBeenCalledWith("mtg-live-1", "mock-valid-jwt-token")
+    );
+    const stopBtn = await screen.findByRole("button", { name: /Stop Recording/i });
+    fireEvent.click(stopBtn);
+    await waitFor(() =>
+      expect(api.stopLiveRecording).toHaveBeenCalledWith("mtg-live-1", "mock-valid-jwt-token")
+    );
+  });
+
+  it("blocks recording and names participants who have not consented", async () => {
+    api.getLiveRecording.mockResolvedValue(
+      recordingState({
+        can_start: false,
+        consent: {
+          all_connected_consented: false,
+          blocked: [{ identity: "priya-sharma-id", name: "Priya Sharma" }],
+          consent_blocked: true,
+        },
+      })
+    );
+    await joinRoom();
+    await waitFor(() =>
+      expect(screen.getByText(/Recording is blocked until these participants consent: Priya Sharma/i)).toBeTruthy()
+    );
+    expect(screen.getByRole("button", { name: /Start Recording/i }).disabled).toBe(true);
+    expect(screen.getByText("Consent required")).toBeTruthy();
+  });
+
+  it("explains that a consent revocation stopped capture and will not auto-resume", async () => {
+    api.getLiveRecording.mockResolvedValue(
+      recordingState({
+        status: "recorded",
+        last_stop_reason: "consent_revoked",
+        segments: [{ segment_id: "s1", seq: 1, state: "finalized", stop_reason: "consent_revoked" }],
+        consent: { all_connected_consented: true, blocked: [], consent_blocked: true },
+      })
+    );
+    await joinRoom();
+    await waitFor(() => expect(screen.getByText(/will not resume automatically/i)).toBeTruthy());
+    expect(screen.queryByTestId("rec-badge")).toBeNull();
+    expect(screen.getByRole("button", { name: /Start New Segment/i })).toBeTruthy();
+  });
+
+  it("sends consent changes to the server with the participant token", async () => {
+    api.updateLiveConsent.mockResolvedValue({
+      status: "updated",
+      consented: false,
+      recording: recordingState({ status: "stopping" }),
+    });
+    await joinRoom();
+    fireEvent.click(screen.getByRole("button", { name: /Revoke Consent/i }));
+    await waitFor(() =>
+      expect(api.updateLiveConsent).toHaveBeenCalledWith(
+        "livekit-m2m-test",
+        "alex-morgan-id",
+        false,
+        "mock-valid-jwt-token"
+      )
+    );
+    await waitFor(() => expect(screen.getByRole("button", { name: /Grant Consent/i })).toBeTruthy());
+  });
+
+  it("processes a finalized recording and opens the existing review workflow", async () => {
+    const getTranscript = vi.spyOn(api, "getTranscript").mockResolvedValue([]);
+    await joinRoom();
+    api.getLiveRecording.mockResolvedValue(
+      recordingState({
+        status: "recorded",
+        meeting_status: "ended",
+        can_process: true,
+        artifact: { frames: 160000, duration_seconds: 10, segments: 1, participants: ["Alex Morgan", "Priya Sharma"] },
+        segments: [{ segment_id: "s1", seq: 1, state: "finalized", duration_seconds: 10, stop_reason: "meeting_ended" }],
+      })
+    );
+    fireEvent.click(screen.getAllByRole("button", { name: /End Meeting/i })[0]);
+    fireEvent.click(screen.getByRole("button", { name: /End for Everyone/i }));
+
+    const processBtn = await screen.findByRole("button", { name: /Process Meeting/i });
+    expect(screen.getByText("Alex Morgan, Priya Sharma")).toBeTruthy();
+    fireEvent.click(processBtn);
+    await waitFor(() =>
+      expect(api.processLiveRecording).toHaveBeenCalledWith("mtg-live-1", "mock-valid-jwt-token", { retry: false })
+    );
+
+    api.getLiveRecording.mockResolvedValue(
+      recordingState({
+        status: "completed",
+        meeting_status: "ended",
+        processing: { state: "done", stage: "done", progress: 1, error: null },
+      })
+    );
+    await waitFor(() => expect(getTranscript).toHaveBeenCalledWith("mtg-live-1"), { timeout: 4000 });
+  });
+
 });
