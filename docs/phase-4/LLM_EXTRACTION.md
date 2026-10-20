@@ -30,7 +30,7 @@ transcript index → windows (≤ 60 utterances, 10 overlap) → LLM per window
 |---|---|---|
 | Real provider configured and working | `mode_used = llm`, `extractor_version = llm:<provider>:<model>:v2` | MoM, PDF and Summary page: "Extracted by LLM: gemini / gemini-3.8-flash" |
 | `LLM_PROVIDER=stub`, missing key, missing model, unsupported provider | No network call. The local fallback runs | "Extraction status … (extractor used: hybrid/rules) · LLM_PROVIDER=… has no API key configured" |
-| HTTP error, timeout, blocked response, non-JSON or wrong-schema output | Retries where sensible: 429/5xx and timeouts, up to 3 times; one JSON repair attempt. Then the local fallback runs | "LLM extraction failed: LLM request timed out after 60s" (or the provider message) |
+| HTTP error, timeout, blocked response, non-JSON or wrong-schema output | Retries where sensible: 429/5xx/network errors up to 3 times; timeouts only `LLM_TIMEOUT_RETRIES` times (default 1); one JSON repair attempt. Then the local fallback runs | "LLM extraction failed: LLM request timed out after 180s (2 attempts). Raise LLM_TIMEOUT_SECONDS or choose a faster LLM_MODEL." (or the provider message) |
 | An LLM detail is not in its own citations | The detail is removed and the claim is kept. Logged in `claims.json` → `stats.llm_grounding` | The claim is shown without the invented date or proposer |
 | An LLM cites a non-existent or out-of-window utterance | The claim is dropped (`unresolvable_utt_id` / `out_of_window`) | Dropped-claims counts |
 
@@ -68,7 +68,23 @@ To use another Gemini model, set it in `.env`, for example
 
 Other settings:
 
-* `LLM_TIMEOUT_SECONDS` (default 60): the timeout for each request.
+* `LLM_TIMEOUT_SECONDS` (default 180): the timeout for each request.
+* `LLM_TIMEOUT_RETRIES` (default 1): extra attempts after a timeout. These
+  are fewer than the 3 retries for HTTP 429/5xx because a model slower than
+  the timeout usually times out again, and each attempt is a full billed
+  request.
+
+### Latency (measured 20 October 2026, standard tier)
+
+| Request | `gemini-3.8-flash` | `gemini-3.6-flash` |
+|---|---|---|
+| Tiny synthetic prompt (57 tokens) | 67.3 s, 68.5 s; 51.1 s with `thinkingLevel: low` | 3.6 s |
+| Synthetic 60-utterance window, real prompt | 59.1 s | HTTP 503 "high demand" (transient) |
+
+Network setup took under 1 s (DNS 0.03 s, TCP 0.02 s, model metadata 0.6 s).
+The time is spent generating the response, mostly before thinking starts.
+With `gemini-3.8-flash`, a 60 s timeout fails roughly at random, which is why
+the default is 180 s. A faster model can use a shorter timeout.
 * `EXTRACTOR=llm`: use the LLM, with automatic fallback.
 * `FALLBACK_EXTRACTOR` (default `hybrid`): the local extractor to use when the
   LLM can't be used.
@@ -84,7 +100,8 @@ Other settings:
    LLM_MODEL=gemini-3.8-flash
    GEMINI_API_KEY=<your key>
    EXTRACTOR=llm
-   LLM_TIMEOUT_SECONDS=60
+   LLM_TIMEOUT_SECONDS=180
+   LLM_TIMEOUT_RETRIES=1
    ```
 3. Restart the API (and `scripts/worker.py` if `JOB_RUNNER=worker`). The
    settings are read at startup.

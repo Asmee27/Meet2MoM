@@ -164,7 +164,8 @@ class LLMClient:
         self.base_url = base_url or config.LLM_BASE_URL
         self.temperature = temperature  # always sent as 0.0 for structured JSON
         self.backoff_delays = backoff_delays if backoff_delays is not None else [1.0, 2.0, 4.0]
-        self.timeout = float(timeout or getattr(config, "LLM_TIMEOUT_SECONDS", 60) or 60)
+        self.timeout = float(timeout or getattr(config, "LLM_TIMEOUT_SECONDS", 180) or 180)
+        self.timeout_retries = max(0, int(getattr(config, "LLM_TIMEOUT_RETRIES", 1) or 0))
 
         # For "stub" provider in tests
         self.stub_responses: List[Any] = []
@@ -290,9 +291,28 @@ class LLMClient:
         raise LLMClientError(f"Unsupported LLM provider: '{self.provider}'")
 
     def _call_with_retries(self, system: str, user: str, max_tokens: int) -> str:
-        """Retry up to 3 times on network / 5xx / 429 errors."""
+        """
+        Retry up to 3 times on network / 5xx / 429 errors. Timeouts are retried
+        only LLM_TIMEOUT_RETRIES times: a model slower than the timeout usually
+        times out again, and every attempt is a full (billed) request.
+        """
         max_attempts = len(self.backoff_delays) + 1
         last_error = None
+        timeouts = 0
+
+        def timed_out(attempt: int, error: Exception) -> None:
+            nonlocal timeouts
+            timeouts += 1
+            if timeouts <= self.timeout_retries and attempt < len(self.backoff_delays):
+                delay = self.backoff_delays[attempt]
+                logger.warning("LLM call timed out after %gs on attempt %d. Retrying in %ss...",
+                               self.timeout, attempt + 1, delay)
+                time.sleep(delay)
+                return
+            raise LLMClientError(
+                f"LLM request timed out after {self.timeout:g}s ({attempt + 1} attempt"
+                f"{'s' if attempt else ''}). Raise LLM_TIMEOUT_SECONDS or choose a faster LLM_MODEL."
+            ) from error
 
         for attempt in range(max_attempts):
             try:
@@ -316,16 +336,13 @@ class LLMClient:
                 raise LLMClientError(f"LLM provider HTTP {e.code} error: {body_msg}") from e
             except TimeoutError as e:
                 last_error = e
-                if attempt < len(self.backoff_delays):
-                    delay = self.backoff_delays[attempt]
-                    logger.warning("LLM call timed out on attempt %d. Retrying in %ss...", attempt + 1, delay)
-                    time.sleep(delay)
-                    continue
-                raise LLMClientError(f"LLM request timed out after {self.timeout:g}s") from e
+                timed_out(attempt, e)
+                continue
             except urllib.error.URLError as e:
                 last_error = e
-                if isinstance(e.reason, TimeoutError) and attempt >= len(self.backoff_delays):
-                    raise LLMClientError(f"LLM request timed out after {self.timeout:g}s") from e
+                if isinstance(e.reason, TimeoutError):
+                    timed_out(attempt, e)
+                    continue
                 if attempt < len(self.backoff_delays):
                     delay = self.backoff_delays[attempt]
                     logger.warning("LLM call network error on attempt %d. Retrying in %ss...", attempt + 1, delay)

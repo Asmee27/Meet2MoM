@@ -104,6 +104,7 @@ def gemini(monkeypatch):
     monkeypatch.setattr(config, "LLM_API_KEY", None)
     monkeypatch.setattr(config, "GEMINI_API_KEY", FAKE_KEY)
     monkeypatch.setattr(config, "LLM_TIMEOUT_SECONDS", 12.0)
+    monkeypatch.setattr(config, "LLM_TIMEOUT_RETRIES", 1)
     monkeypatch.setattr(llm_module.time, "sleep", lambda _s: None)
 
     def install(*outcomes):
@@ -396,12 +397,57 @@ def test_rate_limit_is_retried_then_succeeds(gemini):
     assert len(provider.requests) == 2
 
 
-def test_timeout_is_retried_then_falls_back(gemini):
+def test_timeout_is_retried_once_then_falls_back(gemini):
     provider = gemini(TimeoutError("timed out"))
     mid = make_meeting(LINES)
     stats = extract(mid)
-    _assert_fell_back(stats, mid, "timed out after 12s")
-    assert len(provider.requests) == 4                        # 1 + 3 retries
+    _assert_fell_back(stats, mid, "timed out after 12s (2 attempts)")
+    assert "Raise LLM_TIMEOUT_SECONDS or choose a faster LLM_MODEL" in stats["fallback_reason"]
+    assert len(provider.requests) == 2                        # 1 + LLM_TIMEOUT_RETRIES (1)
+    assert discussion_file(mid).exists() is False             # never presented as an LLM run
+
+
+@pytest.mark.parametrize("retries, expected_requests", [(0, 1), (2, 3), (9, 4)])
+def test_timeout_retries_are_configurable_and_capped(gemini, monkeypatch, retries, expected_requests):
+    provider = gemini(TimeoutError("timed out"))
+    monkeypatch.setattr(config, "LLM_TIMEOUT_RETRIES", retries)
+    with pytest.raises(LLMClientError, match=r"timed out after 12s"):
+        LLMClient().complete_json(system="s", user="u")
+    # Never more than the general retry budget (1 + 3), whatever is configured.
+    assert len(provider.requests) == expected_requests
+
+
+def test_connect_timeout_wrapped_in_urlerror_counts_as_a_timeout(gemini):
+    provider = gemini(urllib.error.URLError(TimeoutError("timed out")))
+    with pytest.raises(LLMClientError, match=r"timed out after 12s \(2 attempts\)"):
+        LLMClient().complete_json(system="s", user="u")
+    assert len(provider.requests) == 2
+
+
+def test_slow_first_attempt_then_success_uses_the_llm(gemini, monkeypatch):
+    install_semantic_fakes(monkeypatch)
+    provider = gemini(TimeoutError("timed out"), gemini_body(GOOD_PAYLOAD))
+    stats = extract(make_meeting(LINES))
+    assert stats["mode_used"] == "llm" and "fallback_reason" not in stats
+    assert len(provider.requests) == 2
+    assert all(r["timeout"] == 12.0 for r in provider.requests)
+
+
+def test_server_errors_keep_their_full_retry_budget(gemini, monkeypatch):
+    monkeypatch.setattr(config, "LLM_TIMEOUT_RETRIES", 0)
+    error = urllib.error.HTTPError("u", 503, "unavailable", {}, io.BytesIO(b"busy"))
+    provider = gemini(error)
+    with pytest.raises(LLMClientError, match="HTTP 503"):
+        LLMClient().complete_json(system="s", user="u")
+    assert len(provider.requests) == 4                        # unchanged: 1 + 3 retries
+
+
+def test_timeout_settings_come_from_config(monkeypatch):
+    monkeypatch.setattr(config, "LLM_TIMEOUT_SECONDS", 150.0)
+    monkeypatch.setattr(config, "LLM_TIMEOUT_RETRIES", 0)
+    client = LLMClient(provider="gemini", api_key="k")
+    assert (client.timeout, client.timeout_retries) == (150.0, 0)
+    assert LLMClient(provider="gemini", api_key="k", timeout=5).timeout == 5.0
 
 
 def test_blocked_gemini_response_has_a_clear_reason(gemini):

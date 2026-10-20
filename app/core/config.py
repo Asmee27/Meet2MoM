@@ -25,7 +25,11 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", None)
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", None)
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", None)
 # Seconds to wait for one LLM request before treating it as timed out.
-LLM_TIMEOUT_SECONDS = float(os.getenv("LLM_TIMEOUT_SECONDS", "60") or 60)
+# gemini-3.8-flash measured 51-68 s per request (Oct 2026), so 60 s is too short.
+LLM_TIMEOUT_SECONDS = float(os.getenv("LLM_TIMEOUT_SECONDS", "180") or 180)
+# Extra attempts after a timed-out LLM request. A slow model usually times
+# out again on the same input, so this is lower than the 429/5xx retries.
+LLM_TIMEOUT_RETRIES = int(os.getenv("LLM_TIMEOUT_RETRIES", "1") or 0)
 EXTRACTOR = os.getenv("EXTRACTOR", "llm").strip().lower()
 
 
