@@ -31,8 +31,14 @@ def get_hf_pipeline(task: str, model_name: str, **kw):
     with _lock:
         if key not in _models:
             import time
+            import torch
             from transformers import pipeline as hf_pipeline
 
+            # transformers 5 keeps a checkpoint's stored precision ("auto"). The
+            # NLI checkpoint is float16, which CPUs without fp16 units run ~17x
+            # slower than float32 (measured 8.8 s vs 0.5 s per pair) with the
+            # same labels. Load float32 unless a caller asks otherwise.
+            kw.setdefault("dtype", torch.float32)
             started = time.perf_counter()
             _models[key] = hf_pipeline(task, model=model_name, **kw)
             logger.info(
