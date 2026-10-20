@@ -1,0 +1,77 @@
+{
+ "schema": "meet2mom-gold-v1",
+ "meeting_id": "syn_hospital_shifts",
+ "version": 1,
+ "synthetic": true,
+ "domain": "healthcare scheduling",
+ "split": "synthetic-test",
+ "seen_during_development": false,
+ "transcript": "evaluation/datasets/synthetic/hospital_shifts.transcript.json",
+ "annotator": "Claude (author-written synthetic meeting and labels). Created 2026-10-16.",
+ "items": [
+  {
+   "id": "syn_hospital_shifts.d1",
+   "type": "decision",
+   "text": "Bring in agency staff for Saturday night",
+   "confirmed": true,
+   "evidence": [
+    "u00004",
+    "u00005",
+    "u00006"
+   ],
+   "state": "accepted"
+  },
+  {
+   "id": "syn_hospital_shifts.d2",
+   "type": "decision",
+   "text": "Pull a nurse from the day ward",
+   "confirmed": false,
+   "evidence": [
+    "u00002",
+    "u00003"
+   ],
+   "state": "rejected"
+  },
+  {
+   "id": "syn_hospital_shifts.a3",
+   "type": "action",
+   "text": "Call the agency and book two nurses",
+   "confirmed": true,
+   "evidence": [
+    "u00007",
+    "u00008"
+   ],
+   "commitment": "firm",
+   "owner": "Admin Ravi",
+   "owner_aliases": [
+    "Admin Ravi",
+    "Ravi",
+    "SPEAKER_Admin Ravi"
+   ],
+   "owner_type": "explicit_first_person",
+   "deadline": "by Thursday"
+  },
+  {
+   "id": "syn_hospital_shifts.a4",
+   "type": "action",
+   "text": "Update the on-call rota on the intranet",
+   "confirmed": false,
+   "evidence": [
+    "u00009"
+   ],
+   "commitment": "tentative",
+   "owner": null,
+   "owner_aliases": [],
+   "owner_type": "unassigned",
+   "deadline": null
+  }
+ ],
+ "negatives": [
+  {
+   "evidence": [
+    "u00010"
+   ],
+   "reason": "Deferred ('We'll figure that out later')"
+  }
+ ]
+}

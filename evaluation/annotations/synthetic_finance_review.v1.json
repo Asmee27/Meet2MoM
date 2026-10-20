@@ -1,0 +1,51 @@
+{
+ "schema": "meet2mom-gold-v1",
+ "meeting_id": "syn_finance_review",
+ "version": 1,
+ "synthetic": true,
+ "domain": "quarterly finance review",
+ "split": "synthetic-test",
+ "seen_during_development": false,
+ "transcript": "evaluation/datasets/synthetic/finance_review.transcript.json",
+ "annotator": "Claude (author-written synthetic meeting and labels). Created 2026-10-16.",
+ "items": [
+  {
+   "id": "syn_finance_review.d1",
+   "type": "decision",
+   "text": "Spend above ten thousand requires CFO sign-off from next month",
+   "confirmed": true,
+   "evidence": [
+    "u00002",
+    "u00003",
+    "u00004"
+   ],
+   "state": "accepted"
+  },
+  {
+   "id": "syn_finance_review.a2",
+   "type": "action",
+   "text": "Send a revised Q4 forecast",
+   "confirmed": true,
+   "evidence": [
+    "u00005",
+    "u00006"
+   ],
+   "commitment": "firm",
+   "owner": "Head of Marketing Leo",
+   "owner_aliases": [
+    "Head of Marketing Leo",
+    "Leo"
+   ],
+   "owner_type": "explicit_third_person",
+   "deadline": "by the end of next week"
+  }
+ ],
+ "negatives": [
+  {
+   "evidence": [
+    "u00007"
+   ],
+   "reason": "Hiring freeze explicitly not decided"
+  }
+ ]
+}

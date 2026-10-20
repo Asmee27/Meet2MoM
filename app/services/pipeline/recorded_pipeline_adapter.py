@@ -884,6 +884,18 @@ def run_recorded_pipeline(
         input_file
     )
 
+    # A LiveKit recording with usable participant tracks is attributed from
+    # those tracks, so its cache entry must differ from a mixed-recording
+    # result for the same recording.wav (and change if the tracks change).
+    if Path(input_file).resolve() == (storage.recording / "recording.wav").resolve():
+        from app.services.live.track_transcription import track_cache_key
+
+        track_key = track_cache_key(storage.recording)
+        if track_key:
+            content_hash = hashlib.sha256(
+                f"{content_hash}|{track_key}".encode("utf-8")
+            ).hexdigest()
+
     hash_seconds = round(
         time.time()
         - hash_started,
@@ -1045,6 +1057,9 @@ def run_recorded_pipeline(
         ),
         "--meeting-id",
         meeting_id,
+        # Post-transcript stages run once, in this process, after the
+        # subprocess (run_post_transcript below or the job runner).
+        "--skip-post-transcript",
     ]
 
     print(

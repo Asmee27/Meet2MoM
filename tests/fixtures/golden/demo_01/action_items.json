@@ -1,0 +1,16 @@
+{
+    "metadata": {
+        "total_action_items": 0,
+        "assigned_action_items": 0,
+        "group_owned_action_items": 0,
+        "requires_review": 0,
+        "processing_strategy": "context_aware_transcript_level",
+        "proposal_filtering": true,
+        "question_filtering": true,
+        "past_event_filtering": true,
+        "future_fact_filtering": true,
+        "speaker_reliability_used": true,
+        "topic_context_used": true
+    },
+    "action_items": []
+}

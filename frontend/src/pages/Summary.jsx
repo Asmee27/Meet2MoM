@@ -1,4 +1,5 @@
 import { useMeetingFlow } from "../context/MeetingFlowContext";
+import "../components/ClaimVerification.css";
 
 export default function Summary() {
   const {
@@ -79,7 +80,12 @@ export default function Summary() {
     downloadTextFile,
     downloadMeetingPdf,
     exportWordDocument,
-    sendMeetingEmail
+    sendMeetingEmail,
+    // Phase 3
+    reviewData,
+    downloadApprovedJson,
+    isDownloadingJson,
+    jsonExportError,
   } = useMeetingFlow();
 
   return (
@@ -236,12 +242,17 @@ export default function Summary() {
                           {typeof decision === "string"
                             ? decision
                             : decision?.text || "Decision text unavailable"}
+                          {(decision?.warnings || []).map((warning) => (
+                            <span className="minutes-warning" key={warning}>
+                              ⚠ {warning}
+                            </span>
+                          ))}
                         </p>
                       </div>
                     ))
                   ) : (
                     <p className="empty-state-text">
-                      No explicit decisions recorded.
+                      No decisions could be confirmed from transcript evidence.
                     </p>
                   )}
                 </div>
@@ -262,8 +273,15 @@ export default function Summary() {
 
                       {momData.action_items.map((item, index) => (
                         <div className="table-row" key={index}>
-                          <span>{item.task || "Not specified"}</span>
-                          <span>{item.owner || "Not specified"}</span>
+                          <span>
+                            {item.task || "Not specified"}
+                            {(item.warnings || []).map((warning) => (
+                              <span className="minutes-warning" key={warning}>
+                                ⚠ {warning}
+                              </span>
+                            ))}
+                          </span>
+                          <span>{item.owner || "Not assigned"}</span>
                           <span>{item.dueDate || "Not specified"}</span>
                         </div>
                       ))}
@@ -274,6 +292,74 @@ export default function Summary() {
                     </p>
                   )}
                 </div>
+
+                {/* HELD FOR REVIEW: shown, never part of the confirmed minutes */}
+
+                {Array.isArray(momData.needs_review) && momData.needs_review.length > 0 && (
+                  <div className="minutes-block minutes-needs-review">
+                    <h3>Held for Review (not confirmed)</h3>
+                    <p className="empty-state-text">
+                      These items could not be confirmed from transcript evidence and are
+                      not decisions or tasks of record.
+                    </p>
+                    {momData.needs_review.map((item) => (
+                      <div className="minutes-decision" key={item.claim_id}>
+                        <span>{item.claim_type === "decision" ? "D" : "A"}</span>
+                        <p>
+                          {item.text}
+                          {(item.reasons || []).map((reason) => (
+                            <span className="minutes-warning" key={reason}>
+                              {reason}
+                            </span>
+                          ))}
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {momData.extraction &&
+                  (momData.extraction.fallback_reason ||
+                    !["completed", "no_claims"].includes(momData.extraction.status)) && (
+                    <p className="empty-state-text minutes-extraction-note">
+                      Extraction status: {momData.extraction.status}
+                      {momData.extraction.mode_used
+                        ? ` (extractor used: ${momData.extraction.mode_used})`
+                        : ""}
+                      {momData.extraction.fallback_reason
+                        ? ` · ${momData.extraction.fallback_reason}`
+                        : ""}
+                      {momData.extraction.reason ? ` · ${momData.extraction.reason}` : ""}
+                    </p>
+                  )}
+
+                {momData.extraction &&
+                  !momData.extraction.fallback_reason &&
+                  ["completed", "no_claims"].includes(momData.extraction.status) && (
+                    <p className="empty-state-text minutes-extraction-note" data-testid="extraction-source">
+                      {momData.extraction.llm_used
+                        ? `Extracted by LLM: ${momData.extraction.llm_provider} / ${momData.extraction.llm_model}. Every item cites transcript utterances and was verified independently.`
+                        : `Extracted by the local ${momData.extraction.mode_used || "rules"} extractor (no LLM).`}
+                    </p>
+                  )}
+
+                {momData.llm_discussion_summary?.points?.length > 0 && (
+                  <div className="minutes-block">
+                    <h3>Discussion Summary (LLM, cited, not verified)</h3>
+                    <p className="empty-state-text">{momData.llm_discussion_summary.note}</p>
+                    {momData.llm_discussion_summary.points.map((point, index) => (
+                      <div className="minutes-decision" key={`${index}-${point.evidence?.[0]}`}>
+                        <span>{index + 1}</span>
+                        <p>
+                          {point.text}
+                          <span className="minutes-warning">
+                            {(point.evidence || []).join(", ")}
+                          </span>
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                )}
 
                 {/* FOLLOW UPS */}
 
@@ -309,16 +395,46 @@ export default function Summary() {
                   <h2>Download your meeting minutes</h2>
                   <p>
                     Export the server-generated Minutes of Meeting as a
-                    professional PDF.
+                    professional PDF or approved JSON snapshot.
                   </p>
                 </div>
+
+                {/* Phase 3: approved snapshot metadata */}
+                {(() => {
+                  const snap = reviewData?.latest_approved_snapshot;
+                  const isApproved = reviewData?.draft_status === "approved";
+                  if (isApproved && snap) {
+                    return (
+                      <div className="approved-snapshot-strip" data-testid="snapshot-strip">
+                        <strong>✓ Approved</strong>
+                        <span>{snap.version || "v1"}</span>
+                        <span>by {snap.approved_by || "reviewer"}</span>
+                        {snap.approved_at && (
+                          <span>
+                            on {new Date(snap.approved_at).toLocaleString()}
+                          </span>
+                        )}
+                        {snap.notes && <span>· "{snap.notes}"</span>}
+                      </div>
+                    );
+                  }
+                  if (!isApproved) {
+                    return (
+                      <div className="unapproved-warning" data-testid="unapproved-warning">
+                        ⚠ These minutes have not been approved. Go to Step 4 · Review to
+                        approve before exporting the final version.
+                      </div>
+                    );
+                  }
+                  return null;
+                })()}
 
                 <div className="export-buttons">
 
                   <button
                     type="button"
                     className={`export-button ${
-                      exportStatus.pdf ? "completed" : "primary"
+                      exportStatus?.pdf ? "completed" : "primary"
                     }`}
                     onClick={downloadMeetingPdf}
                     disabled={isDownloadingPdf}
@@ -331,24 +447,59 @@ export default function Summary() {
                       <strong>
                         {isDownloadingPdf
                           ? "Preparing PDF..."
-                          : exportStatus.pdf
+                          : exportStatus?.pdf
                           ? "PDF ✓ Downloaded"
                           : "Download PDF"}
                       </strong>
 
                       <small>
-                        {exportStatus.pdf
+                        {exportStatus?.pdf
                           ? "Meeting minutes PDF downloaded"
+                          : reviewData?.draft_status === "approved"
+                          ? "Download the approved snapshot PDF"
                           : "Download the generated Meet2MoM PDF"}
                       </small>
                     </span>
                   </button>
+
+                  {/* Phase 3: JSON export (only shown when approved) */}
+                  {reviewData?.draft_status === "approved" && (
+                    <>
+                      <button
+                        type="button"
+                        className="export-button-json"
+                        onClick={downloadApprovedJson}
+                        disabled={isDownloadingJson}
+                        data-testid="download-json-button"
+                      >
+                        <span className="export-button-icon">
+                          {isDownloadingJson ? "…" : "{ }"}
+                        </span>
+                        <span>
+                          <strong>
+                            {isDownloadingJson ? "Exporting…" : "Download Approved JSON"}
+                          </strong>
+                          <small>Machine-readable approved snapshot</small>
+                        </span>
+                      </button>
+                      {jsonExportError && (
+                        <p
+                          className="edit-form-error"
+                          role="alert"
+                          data-testid="json-export-error"
+                        >
+                          {jsonExportError}
+                        </p>
+                      )}
+                    </>
+                  )}
 
                 </div>
 
               </div>
             </>
           )}
+
 
           {!isGeneratingMom && !momData && !momError && (
             <div className="processing-card">

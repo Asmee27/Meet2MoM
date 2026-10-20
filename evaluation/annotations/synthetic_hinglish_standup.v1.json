@@ -1,0 +1,57 @@
+{
+ "schema": "meet2mom-gold-v1",
+ "meeting_id": "syn_hinglish_standup",
+ "version": 1,
+ "synthetic": true,
+ "domain": "team stand-up (synthetic Hindi-English code-switching)",
+ "split": "synthetic-test",
+ "seen_during_development": false,
+ "transcript": "evaluation/datasets/synthetic/hinglish_standup.transcript.json",
+ "annotator": "Claude (author-written synthetic meeting and labels). Created 2026-10-16.",
+ "items": [
+  {
+   "id": "syn_hinglish_standup.d1",
+   "type": "decision",
+   "text": "Set token expiry to twenty four hours",
+   "confirmed": true,
+   "evidence": [
+    "u00002",
+    "u00003",
+    "u00004"
+   ],
+   "state": "accepted"
+  },
+  {
+   "id": "syn_hinglish_standup.a2",
+   "type": "action",
+   "text": "Deploy the token expiry fix",
+   "confirmed": true,
+   "evidence": [
+    "u00005"
+   ],
+   "commitment": "firm",
+   "owner": "Sneha",
+   "owner_aliases": [
+    "Sneha"
+   ],
+   "owner_type": "explicit_first_person",
+   "deadline": "kal tak"
+  },
+  {
+   "id": "syn_hinglish_standup.a3",
+   "type": "action",
+   "text": "Update the documentation",
+   "confirmed": false,
+   "evidence": [
+    "u00006",
+    "u00007"
+   ],
+   "commitment": "tentative",
+   "owner": null,
+   "owner_aliases": [],
+   "owner_type": "unassigned",
+   "deadline": null
+  }
+ ],
+ "negatives": []
+}

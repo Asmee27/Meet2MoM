@@ -1,0 +1,77 @@
+{
+  "schema": "meet2mom-gold-v1",
+  "meeting_id": "q4_release",
+  "version": 1,
+  "transcript": "evaluation/datasets/q4_release.transcript.json",
+  "transcript_note": "15 ASR utterances from gemini_generated_video_3ec34c2c.mp4 (31 s). SPEAKER_01 = Sarah (addressed by name in u00001), SPEAKER_00 = Marcus (addressed in u00003). u00014 'I like...' is cut off (ASR conf 0.30).",
+  "annotator": "Claude (single annotator; needs human review). Created 2026-10-16.",
+  "split": "real-dev",
+  "seen_during_development": true,
+  "items": [
+    {
+      "id": "q4.d1",
+      "type": "decision",
+      "text": "Stagger the rollout / do a phased release",
+      "state": "proposed",
+      "confirmed": false,
+      "evidence": ["u00009", "u00010"],
+      "notes": "Raised as a question (u00006) and proposed twice by Sarah (u00009, u00010). No agreement: the only response is the cut-off 'I like...' (u00014)."
+    },
+    {
+      "id": "q4.a1",
+      "type": "action",
+      "text": "Fix the (integration) pipeline",
+      "commitment": "obligation",
+      "confirmed": false,
+      "owner": null,
+      "owner_aliases": [],
+      "owner_type": "unassigned",
+      "deadline": null,
+      "evidence": ["u00008"],
+      "notes": "'We must fix the pipeline.' Stated need with no owner or deadline."
+    },
+    {
+      "id": "q4.a2",
+      "type": "action",
+      "text": "Deploy a webhook workaround",
+      "commitment": "tentative",
+      "confirmed": false,
+      "owner": "Marcus",
+      "owner_aliases": ["Marcus", "SPEAKER_00"],
+      "owner_type": "explicit_first_person",
+      "deadline": null,
+      "evidence": ["u00012"],
+      "notes": "Offer ('I can deploy...'), never accepted or assigned."
+    },
+    {
+      "id": "q4.a3",
+      "type": "action",
+      "text": "Prepare quickstart videos",
+      "commitment": "tentative",
+      "confirmed": false,
+      "owner": "group",
+      "owner_aliases": ["group", "SPEAKER_00", "Marcus"],
+      "owner_type": "group",
+      "deadline": null,
+      "evidence": ["u00013"],
+      "notes": "Group offer ('We can prep...'), not confirmed."
+    },
+    {
+      "id": "q4.a4",
+      "type": "action",
+      "text": "Marketing to highlight security",
+      "commitment": "tentative",
+      "confirmed": false,
+      "owner": "Marketing",
+      "owner_aliases": ["Marketing"],
+      "owner_type": "explicit_third_person",
+      "deadline": null,
+      "evidence": ["u00011"],
+      "notes": "Suggestion that Marketing could do this; Marketing is not present and nothing is agreed."
+    }
+  ],
+  "negatives": [
+    {"text": "Release in six weeks", "evidence": ["u00000"], "reason": "Context (time until the Q4 release), not a task deadline or a decision taken here."},
+    {"text": "Is that a technical bug? / Do we need to stagger the rollout?", "evidence": ["u00002", "u00006"], "reason": "Questions."}
+  ]
+}

@@ -11,9 +11,39 @@ import {
   uploadMeeting,
   getStatus,
   getTranscript,
+  reviewEvidenceSuggestion,
+  getReview,
+  updateReviewItem,
+  addReviewItem,
+  approveReview,
+  reopenReview,
+  getAuditLog,
+  exportApprovedJson,
 } from "../services/api";
 
 const MeetingFlowContext = createContext(null);
+
+// Confirmed (exportable) claims from a /api/verify or /claims payload, in the
+// shape the existing Step 3/4 views use.
+export function confirmedFromClaims(data) {
+  const claims = Array.isArray(data?.claims) ? data.claims : [];
+  const exportable = claims.filter((claim) => claim.exportable);
+  return {
+    decisions: exportable
+      .filter((claim) => claim.claim_type === "decision")
+      .map((claim) => claim.text),
+    actionItems: exportable
+      .filter((claim) => claim.claim_type === "action")
+      .map((claim) => ({
+        task: claim.text,
+        owner: claim.owner || "Not assigned",
+        dueDate: claim.deadline_resolved || claim.deadline_text || "Not specified",
+        sourceStart: claim.evidence?.[0]?.start,
+        sourceEnd: claim.evidence?.[claim.evidence.length - 1]?.end,
+        sourceText: (claim.evidence || []).map((u) => u.text).join(" "),
+      })),
+  };
+}
 
 export function MeetingFlowProvider({ children }) {
   const [selectedFile, setSelectedFile] = useState(null);
@@ -23,6 +53,9 @@ export function MeetingFlowProvider({ children }) {
   const [uploadProgress, setUploadProgress] = useState(0);
   const [isUploading, setIsUploading] = useState(false);
   const fileInputRef = useRef(null);
+
+  // MEETING SOURCE MODE (recorded | live)
+  const [meetingMode, setMeetingMode] = useState(null);
 
   // REAL BACKEND FILE / TRANSCRIPT STATE
   const [backendFileId, setBackendFileId] = useState(null);
@@ -67,6 +100,9 @@ export function MeetingFlowProvider({ children }) {
   const [verificationData, setVerificationData] = useState(null);
   const [isVerifying, setIsVerifying] = useState(false);
   const [verificationError, setVerificationError] = useState("");
+  // Phase 1: reviewer accept/reject of suggested evidence spans.
+  const [suggestionBusy, setSuggestionBusy] = useState(false);
+  const [suggestionError, setSuggestionError] = useState("");
   const [exportStatus, setExportStatus] = useState({ pdf: false, word: false, email: false });
 
   // REAL BACKEND MOM / PDF STATE
@@ -74,6 +110,20 @@ export function MeetingFlowProvider({ children }) {
   const [isGeneratingMom, setIsGeneratingMom] = useState(false);
   const [momError, setMomError] = useState("");
   const [isDownloadingPdf, setIsDownloadingPdf] = useState(false);
+
+  // PHASE 3: REVIEW WORKFLOW STATE
+  const [reviewData, setReviewData] = useState(null);
+  const [isLoadingReview, setIsLoadingReview] = useState(false);
+  const [reviewError, setReviewError] = useState("");
+  const [reviewerName, setReviewerName] = useState("");
+  const [isApproving, setIsApproving] = useState(false);
+  const [approveError, setApproveError] = useState("");
+  const [isReopening, setIsReopening] = useState(false);
+  const [reopenError, setReopenError] = useState("");
+  const [auditLog, setAuditLog] = useState([]);
+  const [isLoadingAudit, setIsLoadingAudit] = useState(false);
+  const [isDownloadingJson, setIsDownloadingJson] = useState(false);
+  const [jsonExportError, setJsonExportError] = useState("");
 
   /* =========================
      STATUS POLLING
@@ -439,9 +489,15 @@ export function MeetingFlowProvider({ children }) {
       }
 
       setExtractedData({
+        // Extraction output is not verified yet; non-final states are labelled
+        // so a proposal is never presented as a decision that was made.
         decisions: Array.isArray(data.decisions)
           ? data.decisions.map((item) =>
-              typeof item === "string" ? item : item.text
+              typeof item === "string"
+                ? item
+                : item.state && item.state !== "accepted"
+                  ? `${item.text} (${item.state}, not a confirmed decision)`
+                  : item.text
             )
           : [],
         actionItems: Array.isArray(data.action_items)
@@ -498,38 +554,9 @@ export function MeetingFlowProvider({ children }) {
 
       setVerificationData(data);
 
-      // Replace the extraction-only display data with evidence-grounded data.
-      setExtractedData({
-        decisions: Array.isArray(data.verified_decisions)
-          ? data.verified_decisions
-              .filter((item) =>
-                ["verified", "verified_with_warning"].includes(
-                  item?.verification_status
-                )
-              )
-              .map((item) => item?.text || "")
-          : [],
-        actionItems: Array.isArray(data.verified_action_items)
-          ? data.verified_action_items
-              .filter((item) =>
-                ["verified", "verified_with_warning"].includes(
-                  item?.verification_status
-                )
-              )
-              .map((item) => ({
-                task: item?.task || "",
-                owner: item?.owner || "Not specified",
-                dueDate:
-                  item?.dueDate ||
-                  item?.due_date ||
-                  item?.deadline_text ||
-                  "Not specified",
-                sourceStart: item?.source_start,
-                sourceEnd: item?.source_end,
-                sourceText: item?.source_text || "",
-              }))
-          : [],
-      });
+      // Only claims the backend marked exportable (verified / verified with
+      // warning, and accepted for decisions) count as confirmed information.
+      setExtractedData(confirmedFromClaims(data));
 
       setVerificationProgress(100);
       setAutomaticCheckComplete(true);
@@ -543,6 +570,21 @@ export function MeetingFlowProvider({ children }) {
       );
     } finally {
       setIsVerifying(false);
+    }
+  };
+
+  const reviewSuggestion = async (claimId, action) => {
+    if (!backendFileId || suggestionBusy) return;
+    setSuggestionBusy(true);
+    setSuggestionError("");
+    try {
+      const data = await reviewEvidenceSuggestion(backendFileId, claimId, action);
+      setVerificationData(data);
+      setExtractedData(confirmedFromClaims(data));
+    } catch (error) {
+      setSuggestionError(error?.message || "Unable to save the evidence decision.");
+    } finally {
+      setSuggestionBusy(false);
     }
   };
 
@@ -880,8 +922,134 @@ Generated by Meet2MoM
     setExportStatus((previous) => ({ ...previous, email: true }));
   };
 
+  /* =========================
+     PHASE 3: REVIEW ACTIONS
+  ========================= */
+
+  const loadReviewData = useCallback(async (meetingId) => {
+    if (!meetingId) return;
+    setIsLoadingReview(true);
+    setReviewError("");
+    try {
+      const data = await getReview(meetingId);
+      setReviewData(data);
+    } catch (err) {
+      setReviewError(err?.message || "Unable to load review draft.");
+    } finally {
+      setIsLoadingReview(false);
+    }
+  }, []);
+
+  const editReviewItem = useCallback(async (itemId, updates, reason) => {
+    if (!backendFileId) return;
+    const data = await updateReviewItem(backendFileId, itemId, { ...updates, reason });
+    setReviewData(data?.review || data);
+    return data;
+  }, [backendFileId]);
+
+  const addNewReviewItem = useCallback(async (payload) => {
+    if (!backendFileId) return;
+    const data = await addReviewItem(backendFileId, payload);
+    setReviewData(data?.review || data);
+    return data;
+  }, [backendFileId]);
+
+  const approveMeeting = useCallback(async (reviewer, notes = "") => {
+    if (!backendFileId) return;
+    setIsApproving(true);
+    setApproveError("");
+    try {
+      const data = await approveReview(backendFileId, reviewer, notes);
+      try {
+        const fullReview = await getReview(backendFileId);
+        setReviewData(fullReview);
+      } catch {
+        setReviewData(data?.review || data);
+      }
+      if (data?.mom) {
+        setMomData(data.mom);
+      }
+      return data;
+    } catch (err) {
+      setApproveError(err?.message || "Approval failed.");
+      throw err;
+    } finally {
+      setIsApproving(false);
+    }
+  }, [backendFileId]);
+
+  const reopenMeetingReview = useCallback(async (reviewer, reason) => {
+    if (!backendFileId) return;
+    setIsReopening(true);
+    setReopenError("");
+    try {
+      const data = await reopenReview(backendFileId, reviewer, reason);
+      setReviewData(data?.review || data);
+      return data;
+    } catch (err) {
+      setReopenError(err?.message || "Reopening review failed.");
+      throw err;
+    } finally {
+      setIsReopening(false);
+    }
+  }, [backendFileId]);
+
+  const loadAuditLog = useCallback(async (meetingId) => {
+    if (!meetingId) return;
+    setIsLoadingAudit(true);
+    try {
+      const log = await getAuditLog(meetingId);
+      setAuditLog(log);
+    } catch {
+      // non-fatal: audit log is supplementary
+    } finally {
+      setIsLoadingAudit(false);
+    }
+  }, []);
+
+  const downloadApprovedJson = useCallback(async () => {
+    if (!backendFileId || isDownloadingJson) return;
+    setIsDownloadingJson(true);
+    setJsonExportError("");
+    try {
+      const data = await exportApprovedJson(backendFileId);
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `Meet2MoM-approved-${backendFileId}.json`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      setJsonExportError(err?.message || "Unable to export approved JSON.");
+    } finally {
+      setIsDownloadingJson(false);
+    }
+  }, [backendFileId, isDownloadingJson]);
+
+  const connectLiveMeetingToMoM = useCallback(async (liveMeetingId = "demo_01", targetStep = 4) => {
+    // Bridges Live Meeting conclusion to the existing verified review workflow
+    const targetId = liveMeetingId || "demo_01";
+    setBackendFileId(targetId);
+    setMeetingId(targetId);
+    setMeetingMode("live");
+    setJobStage("done");
+    setJobStatus({ state: "done", stage: "done", progress: 1.0, error: null });
+    setTranscriptionComplete(true);
+    setCurrentStep(targetStep);
+    try {
+      await loadReviewData(targetId);
+    } catch {
+      // non-blocking fallback
+    }
+  }, [loadReviewData]);
 
   const value = {
+    meetingMode,
+    setMeetingMode,
+    connectLiveMeetingToMoM,
     selectedFile,
     setSelectedFile,
     error,
@@ -943,6 +1111,9 @@ Generated by Meet2MoM
     setAutomaticCheckComplete,
     verificationData,
     setVerificationData,
+    reviewSuggestion,
+    suggestionBusy,
+    suggestionError,
     isVerifying,
     setIsVerifying,
     verificationError,
@@ -975,6 +1146,31 @@ Generated by Meet2MoM
     exportWordDocument,
     sendMeetingEmail,
     loadExistingMeeting,
+    // Phase 3: Review workflow
+    reviewData,
+    setReviewData,
+    isLoadingReview,
+    reviewError,
+    reviewerName,
+    setReviewerName,
+    isApproving,
+    approveError,
+    setApproveError,
+    isReopening,
+    reopenError,
+    setReopenError,
+    auditLog,
+    isLoadingAudit,
+    isDownloadingJson,
+    jsonExportError,
+    setJsonExportError,
+    loadReviewData,
+    editReviewItem,
+    addNewReviewItem,
+    approveMeeting,
+    reopenMeetingReview,
+    loadAuditLog,
+    downloadApprovedJson,
   };
 
   return (

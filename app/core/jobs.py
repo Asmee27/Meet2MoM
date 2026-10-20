@@ -16,10 +16,11 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from app.core.db import init_db, upsert_job_status
+from app.core.db import get_job_status, init_db, set_meeting_status, upsert_job_status
 from app.schemas.job import JobStatus
 
 logger = logging.getLogger(__name__)
@@ -62,13 +63,15 @@ def _now() -> datetime:
 
 def _emit(meeting_id: str, stage: str, state: str, error: str | None = None) -> None:
     """Write a JobStatus row to the DB."""
+    now = _now()
     job = JobStatus(
         meeting_id=meeting_id,
         stage=stage,
         progress=_STAGE_PROGRESS.get(stage, 0.0),
         state=state,
         error=error,
-        updated_at=_now(),
+        updated_at=now,
+        heartbeat_at=now if state == "running" else None,
     )
     try:
         upsert_job_status(job)
@@ -90,6 +93,10 @@ def run_pipeline(meeting_id: str, file_path: Path) -> None:
 
     Progress is emitted to the DB after every stage completes.
     """
+    # Stop console output from crashing the pipeline on non-UTF-8 streams (e.g. Windows cp1252)
+    from app.core.console import make_stdio_unicode_safe
+    make_stdio_unicode_safe()
+
     # Ensure the DB schema exists (idempotent)
     try:
         init_db()
@@ -100,14 +107,42 @@ def run_pipeline(meeting_id: str, file_path: Path) -> None:
 
     try:
         _run_all_stages(meeting_id, file_path)
+        _set_meeting_status(meeting_id, "completed")
     except _StageError as exc:
         _emit(meeting_id, exc.stage, "failed", str(exc.cause))
+        _set_meeting_status(meeting_id, "failed")
         logger.error(
             "Pipeline failed for meeting %s at stage '%s': %s",
             meeting_id,
             exc.stage,
             exc.cause,
         )
+    except Exception as exc:
+        # Anything raised outside a wrapped stage must still end the job,
+        # otherwise the status row stays "running" forever.
+        stage = _last_stage(meeting_id)
+        _emit(meeting_id, stage, "failed", f"{type(exc).__name__}: {exc}")
+        _set_meeting_status(meeting_id, "failed")
+        logger.exception(
+            "Pipeline failed for meeting %s at stage '%s'", meeting_id, stage
+        )
+
+
+def _set_meeting_status(meeting_id: str, status: str) -> None:
+    """Keep meetings.status in step with the job's terminal state."""
+    try:
+        set_meeting_status(meeting_id, status)
+    except Exception as exc:
+        logger.error("Failed to persist meeting status for %s: %s", meeting_id, exc)
+
+
+def _last_stage(meeting_id: str) -> str:
+    """Return the most recently emitted stage for a meeting."""
+    try:
+        job = get_job_status(meeting_id)
+    except Exception:
+        job = None
+    return job.stage if job is not None else "uploaded"
 
 
 class _StageError(Exception):
@@ -118,11 +153,15 @@ class _StageError(Exception):
 
 
 def _run_stage(stage: str, fn):
-    """Call fn(), wrapping any exception in _StageError."""
+    """Call fn(), wrapping any exception in _StageError. Logs how long it took."""
+    started = time.monotonic()
     try:
-        return fn()
+        result = fn()
     except Exception as exc:
+        logger.info("Stage %s failed after %.1fs", stage, time.monotonic() - started)
         raise _StageError(stage, exc) from exc
+    logger.info("Stage %s finished in %.1fs", stage, time.monotonic() - started)
+    return result
 
 
 def _run_all_stages(meeting_id: str, file_path: Path) -> None:
@@ -160,32 +199,41 @@ def _run_all_stages(meeting_id: str, file_path: Path) -> None:
         extraction_stats = run_post_transcript_stages(meeting_id)
     except PostTranscriptStageError as exc:
         raise _StageError(exc.stage, exc.cause) from exc
+    if extraction_stats.get("status") == "failed":
+        raise _StageError(
+            "extraction",
+            RuntimeError(extraction_stats.get("reason") or "Extraction failed"),
+        )
     logger.info(
-        "Extraction progress for %s: accepted=%d dropped=%d drop_rate=%.3f",
+        "Extraction for %s: status=%s mode_used=%s accepted=%d dropped=%d",
         meeting_id,
+        extraction_stats.get("status"),
+        extraction_stats.get("mode_used"),
         extraction_stats.get("accepted", 0),
         extraction_stats.get("dropped", 0),
-        extraction_stats.get("drop_rate", 0.0),
     )
     _emit(meeting_id, "extraction", "running")
 
     # ------------------------------------------------------------------ #
     # Stage 10: verification                                               #
+    # Deterministic + semantic (retrieval + NLI) + fusion, persisted per   #
+    # claim in verification_results.                                       #
     # ------------------------------------------------------------------ #
 
     _emit(meeting_id, "verification", "running")
 
     def _run_verification():
-        from app.services.verification.evidence_verifier import EvidenceVerifier
-        from app.core.storage import MeetingStorage
-        storage = MeetingStorage(meeting_id)
-        verifier = EvidenceVerifier(output_dir=str(storage.verification))
-        intelligence_path = storage.path_for("intelligence", "extraction.json")
-        if not intelligence_path.exists():
-            raise FileNotFoundError("extraction.json not found — run extraction first")
-        return verifier.verify(str(intelligence_path))
+        from app.services.pipeline.intelligence_service import ensure_verification
 
-    _run_stage("verification", _run_verification)
+        return ensure_verification(meeting_id, force=True)
+
+    verification = _run_stage("verification", _run_verification)
+    logger.info(
+        "Verification for %s: status=%s counts=%s",
+        meeting_id,
+        verification.get("status"),
+        verification.get("final_counts"),
+    )
     _emit(meeting_id, "verification", "running")
 
     # ------------------------------------------------------------------ #

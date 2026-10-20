@@ -57,6 +57,7 @@ export default function UploadMeeting() {
     goToTranscribe,
     loadExistingMeeting,
     currentStep,
+    setMeetingMode,
   } = useMeetingFlow();
 
   useEffect(() => {
@@ -86,13 +87,55 @@ export default function UploadMeeting() {
 
         <main className="main-content">
 
-          <div className="step-label">
-            STEP 1 · MEETING ACQUISITION
-          </div>
+          <div className="acquisition-header-row">
+            <div>
+              <div className="step-label">
+                STEP 1 · MEETING ACQUISITION
+              </div>
+              <h1>
+                Upload a meeting recording
+              </h1>
+              <p className="acquisition-subtitle" style={{ color: "#64748b", margin: "6px 0 0 0", fontSize: "14px" }}>
+                Upload an existing recording file or start a live multi-speaker session.
+              </p>
+            </div>
 
-          <h1>
-            Upload a meeting recording
-          </h1>
+            <div className="source-switcher-tabs" style={{ display: "flex", gap: "8px", background: "#f1f5f9", padding: "4px", borderRadius: "10px" }}>
+              <button
+                type="button"
+                className="source-tab-btn active"
+                style={{
+                  padding: "8px 16px",
+                  borderRadius: "8px",
+                  border: "none",
+                  background: "#202858",
+                  color: "#ffffff",
+                  fontWeight: 600,
+                  fontSize: "13px",
+                  cursor: "default",
+                }}
+              >
+                📁 Upload Recording
+              </button>
+              <button
+                type="button"
+                className="source-tab-btn"
+                onClick={() => setMeetingMode("live")}
+                style={{
+                  padding: "8px 16px",
+                  borderRadius: "8px",
+                  border: "none",
+                  background: "transparent",
+                  color: "#475569",
+                  fontWeight: 600,
+                  fontSize: "13px",
+                  cursor: "pointer",
+                }}
+              >
+                🎙️ Start Live Meeting
+              </button>
+            </div>
+          </div>
 
           <div
             className={`upload-card ${
@@ -146,6 +189,67 @@ export default function UploadMeeting() {
               onChange={handleFileChange}
               hidden
             />
+          </div>
+
+          <div
+            className="live-meeting-callout"
+            style={{
+              marginTop: "20px",
+              padding: "16px 20px",
+              borderRadius: "14px",
+              background: "linear-gradient(135deg, #f8faff 0%, #f0f4ff 100%)",
+              border: "1px solid #dce4f7",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              gap: "16px",
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "center", gap: "14px" }}>
+              <div
+                style={{
+                  width: "42px",
+                  height: "42px",
+                  borderRadius: "10px",
+                  background: "#202858",
+                  color: "#ffffff",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  fontSize: "20px",
+                  flexShrink: 0,
+                }}
+              >
+                🎙️
+              </div>
+              <div>
+                <strong style={{ color: "#202858", fontSize: "15px", display: "block" }}>
+                  Hosting a real-time conversation?
+                </strong>
+                <span style={{ color: "#64748b", fontSize: "13px" }}>
+                  Start a live meeting room with participant consent verification and streaming MoM capture.
+                </span>
+              </div>
+            </div>
+            <button
+              type="button"
+              className="start-live-callout-btn"
+              onClick={() => setMeetingMode("live")}
+              style={{
+                padding: "10px 18px",
+                borderRadius: "10px",
+                border: "none",
+                background: "#202858",
+                color: "#ffffff",
+                fontWeight: 600,
+                fontSize: "13px",
+                cursor: "pointer",
+                whiteSpace: "nowrap",
+                transition: "background 0.2s ease",
+              }}
+            >
+              Start Live Meeting →
+            </button>
           </div>
 
           {previousMeetings.length > 0 && (
@@ -292,12 +396,16 @@ export default function UploadMeeting() {
 
             <div className="continue-container">
 
+              {/* Wait for the background job: continuing earlier would start a
+                  second, concurrent pipeline run for the same recording. */}
               <button
                 type="button"
                 className="continue-button"
                 onClick={goToTranscribe}
+                disabled={isPipelineRunning}
+                title={isPipelineRunning ? "Processing is still running" : undefined}
               >
-                Continue to Transcribe →
+                {isPipelineRunning ? "Processing…" : "Continue to Transcribe →"}
               </button>
 
             </div>

@@ -1,0 +1,55 @@
+{
+ "schema": "meet2mom-gold-v1",
+ "meeting_id": "syn_housing_society",
+ "version": 1,
+ "synthetic": true,
+ "domain": "housing society board",
+ "split": "synthetic-test",
+ "seen_during_development": false,
+ "transcript": "evaluation/datasets/synthetic/housing_society.transcript.json",
+ "annotator": "Claude (author-written synthetic meeting and labels). Created 2026-10-16.",
+ "items": [
+  {
+   "id": "syn_housing_society.d1",
+   "type": "decision",
+   "text": "Repair the block B lift now and plan the replacement for next financial year",
+   "confirmed": true,
+   "evidence": [
+    "u00005",
+    "u00006",
+    "u00007"
+   ],
+   "state": "accepted"
+  },
+  {
+   "id": "syn_housing_society.d2",
+   "type": "decision",
+   "text": "Replace the lift now",
+   "confirmed": false,
+   "evidence": [
+    "u00003",
+    "u00004"
+   ],
+   "state": "rejected"
+  },
+  {
+   "id": "syn_housing_society.a3",
+   "type": "action",
+   "text": "Get three repair quotes",
+   "confirmed": true,
+   "evidence": [
+    "u00008",
+    "u00009"
+   ],
+   "commitment": "firm",
+   "owner": "Member Kiran",
+   "owner_aliases": [
+    "Member Kiran",
+    "Kiran"
+   ],
+   "owner_type": "explicit_third_person",
+   "deadline": "by next Monday"
+  }
+ ],
+ "negatives": []
+}

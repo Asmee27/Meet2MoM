@@ -22,6 +22,17 @@ LLM_MODEL = os.getenv("LLM_MODEL", "mock-v1")
 LLM_API_KEY = os.getenv("LLM_API_KEY", None)
 LLM_BASE_URL = os.getenv("LLM_BASE_URL", None)
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", None)
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", None)
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", None)
+# Seconds to wait for one LLM request before treating it as timed out.
+# gemini-3.8-flash measured 51-68 s per request (Oct 2026), so 60 s is too short.
+LLM_TIMEOUT_SECONDS = float(os.getenv("LLM_TIMEOUT_SECONDS", "180") or 180)
+# Extra attempts after a timed-out LLM request. A slow model usually times
+# out again on the same input, so this is lower than the 429/5xx retries.
+LLM_TIMEOUT_RETRIES = int(os.getenv("LLM_TIMEOUT_RETRIES", "1") or 0)
+# Hard cap on all LLM calls for one meeting (every window, retry and backoff).
+# When it runs out, extraction falls back to the local extractor and says so.
+LLM_EXTRACTION_BUDGET_SECONDS = float(os.getenv("LLM_EXTRACTION_BUDGET_SECONDS", "600") or 0)
 EXTRACTOR = os.getenv("EXTRACTOR", "llm").strip().lower()
 
 
@@ -282,3 +293,26 @@ CACHE_DIARIZATION = True
 PIPELINE_CACHE_FILE = (
     METADATA_DIR / "pipeline_cache.json"
 )
+
+# ==========================================================
+# ASYNC JOB RUNNER & WORKER SETTINGS
+# ==========================================================
+
+# Execution mode: "inline" (default, runs in FastAPI BackgroundTasks) or "worker" (standalone process)
+JOB_RUNNER = os.getenv("JOB_RUNNER", "inline").strip().lower()
+
+WORKER_POLL_INTERVAL_SECONDS = float(os.getenv("WORKER_POLL_INTERVAL_SECONDS", "1.0"))
+WORKER_STALE_TIMEOUT_SECONDS = float(os.getenv("WORKER_STALE_TIMEOUT_SECONDS", "300.0"))
+WORKER_MAX_RETRIES = int(os.getenv("WORKER_MAX_RETRIES", "3"))
+
+# Topic title generation mode: "extractive" (default) or "llm"
+TOPIC_TITLES = os.getenv("TOPIC_TITLES", "extractive").strip().lower()
+
+# ==========================================================
+# LIVEKIT SETTINGS (Phase 4 Real Live Meetings)
+# ==========================================================
+
+LIVEKIT_URL = os.getenv("LIVEKIT_URL", "").strip()
+LIVEKIT_API_KEY = os.getenv("LIVEKIT_API_KEY", "").strip()
+LIVEKIT_API_SECRET = os.getenv("LIVEKIT_API_SECRET", "").strip()
+

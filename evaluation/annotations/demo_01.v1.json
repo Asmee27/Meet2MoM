@@ -1,0 +1,71 @@
+{
+  "schema": "meet2mom-gold-v1",
+  "meeting_id": "demo_01",
+  "version": 1,
+  "transcript": "tests/fixtures/golden/demo_01/meeting_transcript_ready.json",
+  "transcript_note": "39 ASR utterances (u00000-u00038). Diarization merges several people into SPEAKER_01/SPEAKER_04; names come from the dialogue (Paul = manager, David = research, Anna = customer service, Maria = training).",
+  "annotator": "Claude (single annotator; needs human review). Created 2026-10-16.",
+  "split": "real-dev",
+  "seen_during_development": true,
+  "items": [
+    {
+      "id": "demo_01.d1",
+      "type": "decision",
+      "text": "Start with a review of the current training approach and what is needed to address the problems raised in the survey",
+      "state": "conditional",
+      "confirmed": false,
+      "condition": "Anna needs to look at the full report first",
+      "evidence": ["u00030", "u00031", "u00032", "u00033"],
+      "notes": "Proposal by Maria (u00030-u00032); Anna: 'Yes. We could do that. But I would need to look at the full report first' -> conditional, not final."
+    },
+    {
+      "id": "demo_01.d2",
+      "type": "decision",
+      "text": "Maria and Anna will look at the report together",
+      "state": "accepted",
+      "confirmed": true,
+      "evidence": ["u00034", "u00035"],
+      "notes": "Proposal 'So perhaps you and I could look at the report together?' answered 'Yes, OK.'"
+    },
+    {
+      "id": "demo_01.d3",
+      "type": "decision",
+      "text": "Start with the highlights of the report first",
+      "state": "proposed",
+      "confirmed": false,
+      "evidence": ["u00037", "u00038"],
+      "notes": "Proposal by Paul at the end of the recording; no response recorded."
+    },
+    {
+      "id": "demo_01.a1",
+      "type": "action",
+      "text": "Maria and Anna review the full report together",
+      "commitment": "firm",
+      "confirmed": true,
+      "owner": "Maria and Anna",
+      "owner_aliases": ["Maria", "Anna", "SPEAKER_01", "group"],
+      "owner_type": "group",
+      "deadline": null,
+      "evidence": ["u00034", "u00035"],
+      "notes": "Same exchange as demo_01.d2; agreed joint task."
+    },
+    {
+      "id": "demo_01.a2",
+      "type": "action",
+      "text": "Maria will develop and run the training programme",
+      "commitment": "firm",
+      "confirmed": true,
+      "owner": "Maria",
+      "owner_aliases": ["Maria"],
+      "owner_type": "explicit_third_person",
+      "deadline": null,
+      "evidence": ["u00006", "u00007"],
+      "notes": "Stated responsibility ('And Maria will be developing and running the training')."
+    }
+  ],
+  "negatives": [
+    {"text": "Give the staff a refresher course instead of starting from scratch", "evidence": ["u00021", "u00022", "u00023"], "reason": "Anna's position; Paul says it is not decided yet (u00024-u00028)."},
+    {"text": "Decide what needs addressing", "evidence": ["u00035", "u00036"], "reason": "Future step that depends on the report review; not a commitment."},
+    {"text": "David gives a short summary of the research findings", "evidence": ["u00004", "u00007", "u00008"], "reason": "Request fulfilled within the meeting, not a follow-up action."}
+  ]
+}

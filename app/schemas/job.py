@@ -12,3 +12,8 @@ class JobStatus(BaseModel):
     state: Literal["queued", "running", "done", "failed"]
     error: Optional[str] = None
     updated_at: datetime
+    heartbeat_at: Optional[datetime] = None
+    retry_count: int = 0
+    file_path: Optional[str] = None
+    claim_token: Optional[str] = None
+

@@ -320,11 +320,6 @@ class SpeakerTranscriptMerger:
 
         merged = []
 
-        unknown_count = 0
-        review_count = 0
-        overlap_count = 0
-        uncertain_count = 0
-
         for segment in transcript:
 
             speaker_data = (
@@ -351,6 +346,34 @@ class SpeakerTranscriptMerger:
             merged_segment.update(
                 review_data
             )
+
+            merged.append(
+                merged_segment
+            )
+
+        return self.write_outputs(
+            merged
+        )
+
+    # ======================================================
+    # OUTPUTS (shared by diarization and LiveKit tracks)
+    # ======================================================
+
+    def write_outputs(
+        self,
+        merged
+    ):
+        """
+        Write speaker_transcript.json and the downstream handoff for
+        already-attributed segments, whatever the attribution source.
+        """
+
+        unknown_count = 0
+        review_count = 0
+        overlap_count = 0
+        uncertain_count = 0
+
+        for merged_segment in merged:
 
             if (
                 merged_segment["speaker"]
@@ -379,10 +402,6 @@ class SpeakerTranscriptMerger:
             ]:
 
                 review_count += 1
-
-            merged.append(
-                merged_segment
-            )
 
         # ==================================================
         # DETAILED SPEAKER TRANSCRIPT
@@ -414,7 +433,7 @@ class SpeakerTranscriptMerger:
 
         for item in merged:
 
-            handoff.append({
+            handoff_item = {
 
                 "segment_id":
                     item.get(
@@ -494,7 +513,22 @@ class SpeakerTranscriptMerger:
                             "no_speech_prob"
                         )
                     )
-            })
+            }
+
+            # Participant-track attribution (LiveKit) adds who the
+            # speaker is; diarization output is left unchanged.
+            for key in (
+                "speaker_name",
+                "attribution_source",
+                "track_sid",
+                "overlapping_speakers",
+            ):
+                if item.get(key):
+                    handoff_item[key] = item[key]
+
+            handoff.append(
+                handoff_item
+            )
 
         with open(
             FINAL_HANDOFF_FILE,

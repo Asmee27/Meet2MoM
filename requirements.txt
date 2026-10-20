@@ -13,8 +13,11 @@ faster-whisper==1.2.1
 
 # Speaker Diarization
 pyannote.audio==4.0.7
-torch>=2.10.0
-torchaudio>=2.10.0
+# torch, torchaudio and torchcodec ship compiled extensions that must match
+# each other; pinned to the combination verified in docs/phase-0.
+torch==2.11.0
+torchaudio==2.11.0
+torchcodec==0.16.0
 
 # NLP / Topic Segmentation / NLI verification
 sentence-transformers==6.0.1
@@ -37,6 +40,12 @@ pydub==0.25.1
 # Environment Configuration
 python-dotenv==1.0.0
 
+# Live meetings (Phase 4): LiveKit server API, participant tokens and the
+# RTC SDK used by the server-side audio recorder.
+livekit==1.1.21
+livekit-api==1.2.1
+PyJWT==2.10.1
+
 # Intelligence & Resolution
 python-dateutil==2.9.0.post0
 rapidfuzz==3.14.6
@@ -44,3 +53,6 @@ rank-bm25==0.2.2
 
 # Testing
 pytest==9.0.2
+# fastapi.testclient on starlette 0.27 needs httpx < 0.28 (0.28 removed the
+# `app` argument starlette 0.27 passes); used by the API contract tests.
+httpx==0.27.2

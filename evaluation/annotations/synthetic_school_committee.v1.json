@@ -1,0 +1,52 @@
+{
+ "schema": "meet2mom-gold-v1",
+ "meeting_id": "syn_school_committee",
+ "version": 1,
+ "synthetic": true,
+ "domain": "school parent committee",
+ "split": "synthetic-test",
+ "seen_during_development": false,
+ "transcript": "evaluation/datasets/synthetic/school_committee.transcript.json",
+ "annotator": "Claude (author-written synthetic meeting and labels). Created 2026-10-16.",
+ "items": [
+  {
+   "id": "syn_school_committee.d1",
+   "type": "decision",
+   "text": "Move the annual day to Saturday the fourteenth if the auditorium is free",
+   "confirmed": false,
+   "evidence": [
+    "u00002",
+    "u00003",
+    "u00004"
+   ],
+   "state": "conditional"
+  },
+  {
+   "id": "syn_school_committee.a2",
+   "type": "action",
+   "text": "Check auditorium availability with the manager",
+   "confirmed": true,
+   "evidence": [
+    "u00005",
+    "u00006"
+   ],
+   "commitment": "firm",
+   "owner": "Mr. Das",
+   "owner_aliases": [
+    "Mr. Das",
+    "Das"
+   ],
+   "owner_type": "explicit_first_person",
+   "deadline": "tomorrow"
+  }
+ ],
+ "negatives": [
+  {
+   "evidence": [
+    "u00007",
+    "u00008"
+   ],
+   "reason": "Refreshments: question and uncertain reply, nothing decided"
+  }
+ ]
+}

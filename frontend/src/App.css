@@ -3055,3 +3055,141 @@ h1 {
   cursor: not-allowed;
   transform: none;
 }
+
+.meeting-mode-container {
+  max-width: 900px;
+  margin: 60px auto;
+  padding: 30px;
+  text-align: center;
+}
+
+.meeting-mode-container h2 {
+  font-size: 30px;
+  margin-bottom: 8px;
+}
+
+.meeting-mode-container p {
+  color: #6b7280;
+}
+
+.meeting-mode-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 24px;
+  margin-top: 35px;
+}
+
+.meeting-mode-card {
+  border: 1px solid #e5e7eb;
+  background: white;
+  padding: 35px 25px;
+  border-radius: 16px;
+  cursor: pointer;
+  transition: 0.2s ease;
+}
+
+.meeting-mode-card:hover {
+  transform: translateY(-4px);
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.08);
+}
+
+.live-card {
+  border: 2px solid #ef4444;
+}
+
+.meeting-mode-icon {
+  font-size: 42px;
+  margin-bottom: 15px;
+}
+
+.live-meeting-page {
+  display: flex;
+  justify-content: center;
+  padding: 60px 20px;
+}
+
+.live-meeting-card {
+  width: 100%;
+  max-width: 650px;
+  background: white;
+  border-radius: 18px;
+  padding: 40px;
+  text-align: center;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.08);
+}
+
+.live-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 700;
+  margin-bottom: 25px;
+}
+
+.live-dot {
+  width: 12px;
+  height: 12px;
+  background: #9ca3af;
+  border-radius: 50%;
+}
+
+.live-dot.recording {
+  background: #ef4444;
+  animation: livePulse 1s infinite;
+}
+
+@keyframes livePulse {
+  0% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: 0.35;
+  }
+
+  100% {
+    opacity: 1;
+  }
+}
+
+.live-status {
+  margin: 25px 0;
+  padding: 15px;
+  background: #f9fafb;
+  border-radius: 10px;
+  font-weight: 500;
+}
+
+.start-live-btn,
+.stop-live-btn {
+  padding: 14px 28px;
+  border: none;
+  border-radius: 10px;
+  font-size: 16px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.start-live-btn {
+  background: #111827;
+  color: white;
+}
+
+.stop-live-btn {
+  background: #dc2626;
+  color: white;
+}
+
+.back-mode-btn {
+  margin: 20px 0 0 30px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-weight: 600;
+}
+
+@media (max-width: 700px) {
+  .meeting-mode-grid {
+    grid-template-columns: 1fr;
+  }
+}
