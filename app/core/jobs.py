@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -152,11 +153,15 @@ class _StageError(Exception):
 
 
 def _run_stage(stage: str, fn):
-    """Call fn(), wrapping any exception in _StageError."""
+    """Call fn(), wrapping any exception in _StageError. Logs how long it took."""
+    started = time.monotonic()
     try:
-        return fn()
+        result = fn()
     except Exception as exc:
+        logger.info("Stage %s failed after %.1fs", stage, time.monotonic() - started)
         raise _StageError(stage, exc) from exc
+    logger.info("Stage %s finished in %.1fs", stage, time.monotonic() - started)
+    return result
 
 
 def _run_all_stages(meeting_id: str, file_path: Path) -> None:

@@ -32,6 +32,8 @@ from typing import Any, Dict, List, Optional
 from app.core import config
 
 logger = logging.getLogger(__name__)
+# Monotonic clock for the extraction time budget (patched in tests).
+_clock = time.monotonic
 
 # Gemini default when LLM_MODEL is unset or a placeholder. Override with
 # LLM_MODEL (see docs/phase-4/LLM_EXTRACTION.md); never hardcode it elsewhere.
@@ -40,6 +42,8 @@ DEFAULT_GEMINI_MODEL = "gemini-3.8-flash"
 PLACEHOLDER_MODELS = {"", "mock-v1"}
 REAL_PROVIDERS = ("gemini", "openai", "anthropic", "local")
 PROVIDERS_NEEDING_KEY = ("gemini", "openai", "anthropic")
+# Model ids such as gemini-3.5-flash-lite, llama3.1:8b, models/x or org/model.
+_MODEL_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,127}")
 
 
 def resolve_api_key(provider: str) -> Optional[str]:
@@ -68,10 +72,21 @@ def resolve_model(provider: str) -> Optional[str]:
     return None
 
 
+def model_name_is_valid(model: str) -> bool:
+    """A provider model id: no spaces, '=' or quotes (e.g. two .env lines run together)."""
+    return bool(_MODEL_NAME.fullmatch(model or ""))
+
+
 def configuration_problem(provider: str, api_key: Optional[str], model: Optional[str]) -> Optional[str]:
     """Why this provider configuration cannot make a real call, or None."""
     if provider not in REAL_PROVIDERS:
         return f"LLM_PROVIDER={provider} is not a supported provider ({', '.join(REAL_PROVIDERS)})"
+    if model and not model_name_is_valid(model):
+        # Never echo the value: a malformed line can contain another setting's secret.
+        return (
+            "LLM_MODEL is not a valid model name (it contains spaces, '=' or quotes); "
+            "check that every .env setting is on its own line"
+        )
     if provider in PROVIDERS_NEEDING_KEY and not api_key:
         return f"LLM_PROVIDER={provider} has no API key configured"
     if not model:
@@ -166,10 +181,44 @@ class LLMClient:
         self.backoff_delays = backoff_delays if backoff_delays is not None else [1.0, 2.0, 4.0]
         self.timeout = float(timeout or getattr(config, "LLM_TIMEOUT_SECONDS", 180) or 180)
         self.timeout_retries = max(0, int(getattr(config, "LLM_TIMEOUT_RETRIES", 1) or 0))
+        # Optional overall deadline (_clock() time) shared by every call; see start_budget().
+        self.deadline: Optional[float] = None
+        self.budget_seconds: Optional[float] = None
+        self._attempt_timeout = self.timeout
 
         # For "stub" provider in tests
         self.stub_responses: List[Any] = []
         self.call_count: int = 0
+
+    def start_budget(self, seconds: Optional[float]) -> None:
+        """
+        Bound the total time of every following call (all windows, retries,
+        backoff and JSON repair). Each request's timeout is capped by what is
+        left, and no request starts once the budget is spent.
+        """
+        if seconds and seconds > 0:
+            self.budget_seconds = float(seconds)
+            self.deadline = _clock() + self.budget_seconds
+
+    def _remaining(self) -> Optional[float]:
+        return None if self.deadline is None else self.deadline - _clock()
+
+    def _budget_error(self) -> "LLMClientError":
+        return LLMClientError(
+            f"LLM extraction stopped: its {self.budget_seconds:g}s time budget "
+            "(LLM_EXTRACTION_BUDGET_SECONDS) ran out"
+        )
+
+    def _sleep(self, delay: float) -> None:
+        remaining = self._remaining()
+        if remaining is not None and remaining <= delay:
+            raise self._budget_error()
+        time.sleep(delay)
+
+    def _redact(self, text: Any) -> str:
+        """Never let the API key into an error message, log or saved status."""
+        text = str(text)
+        return text.replace(self.api_key, "<redacted>") if self.api_key else text
 
     def set_stub_response(self, response: Any) -> None:
         """Register a fixture response for stub mode."""
@@ -216,7 +265,7 @@ class LLMClient:
             req_data = json.dumps(payload).encode("utf-8")
             req = urllib.request.Request(endpoint, data=req_data, headers=headers, method="POST")
 
-            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+            with urllib.request.urlopen(req, timeout=self._attempt_timeout) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
             try:
                 return data["choices"][0]["message"]["content"]
@@ -244,7 +293,7 @@ class LLMClient:
             req_data = json.dumps(payload).encode("utf-8")
             req = urllib.request.Request(endpoint, data=req_data, headers=headers, method="POST")
 
-            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+            with urllib.request.urlopen(req, timeout=self._attempt_timeout) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
             blocks = data.get("content", []) if isinstance(data, dict) else []
             text_parts = [b.get("text", "") for b in blocks if b.get("type") == "text"]
@@ -284,7 +333,7 @@ class LLMClient:
                 headers=headers,
                 method="POST",
             )
-            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+            with urllib.request.urlopen(req, timeout=self._attempt_timeout) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
             return _gemini_text(data)
 
@@ -303,18 +352,25 @@ class LLMClient:
         def timed_out(attempt: int, error: Exception) -> None:
             nonlocal timeouts
             timeouts += 1
+            remaining = self._remaining()
+            if remaining is not None and remaining <= 0:
+                raise self._budget_error() from error
             if timeouts <= self.timeout_retries and attempt < len(self.backoff_delays):
                 delay = self.backoff_delays[attempt]
                 logger.warning("LLM call timed out after %gs on attempt %d. Retrying in %ss...",
-                               self.timeout, attempt + 1, delay)
-                time.sleep(delay)
+                               self._attempt_timeout, attempt + 1, delay)
+                self._sleep(delay)
                 return
             raise LLMClientError(
-                f"LLM request timed out after {self.timeout:g}s ({attempt + 1} attempt"
+                f"LLM request timed out after {self._attempt_timeout:g}s ({attempt + 1} attempt"
                 f"{'s' if attempt else ''}). Raise LLM_TIMEOUT_SECONDS or choose a faster LLM_MODEL."
             ) from error
 
         for attempt in range(max_attempts):
+            remaining = self._remaining()
+            if remaining is not None and remaining <= 0:
+                raise self._budget_error()
+            self._attempt_timeout = self.timeout if remaining is None else min(self.timeout, remaining)
             try:
                 return self._execute_provider_call(system, user, max_tokens)
             except urllib.error.HTTPError as e:
@@ -323,7 +379,7 @@ class LLMClient:
                 if e.code in (429, 500, 502, 503, 504) and attempt < len(self.backoff_delays):
                     delay = self.backoff_delays[attempt]
                     logger.warning("LLM call attempt %d failed with HTTP %d. Retrying in %ss...", attempt + 1, e.code, delay)
-                    time.sleep(delay)
+                    self._sleep(delay)
                     continue
                 body_msg = ""
                 try:
@@ -331,8 +387,8 @@ class LLMClient:
                 except Exception:
                     pass
                 # Provider error bodies explain the problem (bad model, quota);
-                # keep them short. They never contain the request's API key.
-                body_msg = " ".join(body_msg.split())[:300]
+                # keep them short. They can echo the model name, so redact.
+                body_msg = self._redact(" ".join(body_msg.split()))[:300]
                 raise LLMClientError(f"LLM provider HTTP {e.code} error: {body_msg}") from e
             except TimeoutError as e:
                 last_error = e
@@ -346,15 +402,15 @@ class LLMClient:
                 if attempt < len(self.backoff_delays):
                     delay = self.backoff_delays[attempt]
                     logger.warning("LLM call network error on attempt %d. Retrying in %ss...", attempt + 1, delay)
-                    time.sleep(delay)
+                    self._sleep(delay)
                     continue
-                raise LLMClientError(f"LLM network error: {e.reason}") from e
+                raise LLMClientError(f"LLM network error: {self._redact(e.reason)}") from e
             except Exception as e:
                 if isinstance(e, LLMClientError):
                     raise
-                raise LLMClientError(f"LLM call failed: {e}") from e
+                raise LLMClientError(f"LLM call failed: {self._redact(e)}") from e
 
-        raise LLMClientError(f"LLM call failed after retries: {last_error}")
+        raise LLMClientError(f"LLM call failed after retries: {self._redact(last_error)}")
 
     def complete_json(
         self,

@@ -12,6 +12,7 @@ atomically persists and mirrors claims via claim_writer.
 import json
 import logging
 import os
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -213,15 +214,23 @@ def run_extraction(
                 if local_note:
                     fallback_reason = f"{fallback_reason}; {local_note}"
             else:
+                llm_started = time.monotonic()
                 try:
                     llm_client = client or LLMClient()
+                    if getattr(llm_client, "deadline", None) is None and hasattr(llm_client, "start_budget"):
+                        llm_client.start_budget(getattr(config, "LLM_EXTRACTION_BUDGET_SECONDS", 0))
                     candidates = extract_meeting(meeting_id, windows, llm_client, report=llm_report)
                     extractor_version = f"llm:{llm_client.provider}:{llm_client.model}:{PROMPT_VERSION}"
+                    logger.info(
+                        "LLM extraction for %s: %d window(s) in %.1fs",
+                        meeting_id, len(windows), time.monotonic() - llm_started,
+                    )
                 except LLMClientError as e:
                     llm_report = {}
                     logger.error(
-                        "LLM extraction failed for meeting %s (%s). Falling back to rules baseline.",
+                        "LLM extraction failed for meeting %s after %.1fs (%s). Falling back to rules baseline.",
                         meeting_id,
+                        time.monotonic() - llm_started,
                         e,
                     )
                     error_msg = str(e)

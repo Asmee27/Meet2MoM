@@ -182,6 +182,18 @@ def run_worker_loop(
 
 
 def main():
+    runner = (getattr(config, "JOB_RUNNER", "inline") or "inline").strip().lower()
+    if runner != "worker":
+        # With an inline API, a worker could claim a job the API is about to run,
+        # or requeue a long inline stage as "stale", and process the meeting twice.
+        logger.error(
+            "JOB_RUNNER=%s: the API runs jobs itself, so this worker is not needed and "
+            "would compete for the same jobs. Set JOB_RUNNER=worker for both the API "
+            "and the worker, or don't start the worker.",
+            runner,
+        )
+        sys.exit(2)
+
     signal.signal(signal.SIGINT, _signal_handler)
     if hasattr(signal, "SIGTERM"):
         signal.signal(signal.SIGTERM, _signal_handler)

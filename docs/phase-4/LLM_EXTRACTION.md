@@ -29,8 +29,8 @@ transcript index → windows (≤ 60 utterances, 10 overlap) → LLM per window
 | Situation | What happens | Where it shows |
 |---|---|---|
 | Real provider configured and working | `mode_used = llm`, `extractor_version = llm:<provider>:<model>:v2` | MoM, PDF and Summary page: "Extracted by LLM: gemini / gemini-3.8-flash" |
-| `LLM_PROVIDER=stub`, missing key, missing model, unsupported provider | No network call. The local fallback runs | "Extraction status … (extractor used: hybrid/rules) · LLM_PROVIDER=… has no API key configured" |
-| HTTP error, timeout, blocked response, non-JSON or wrong-schema output | Retries where sensible: 429/5xx/network errors up to 3 times; timeouts only `LLM_TIMEOUT_RETRIES` times (default 1); one JSON repair attempt. Then the local fallback runs | "LLM extraction failed: LLM request timed out after 180s (2 attempts). Raise LLM_TIMEOUT_SECONDS or choose a faster LLM_MODEL." (or the provider message) |
+| `LLM_PROVIDER=stub`, missing key, missing or malformed model, unsupported provider | No network call. The local fallback runs | "Extraction status … (extractor used: hybrid/rules) · LLM_PROVIDER=… has no API key configured" |
+| HTTP error, timeout, blocked response, non-JSON or wrong-schema output | Retries where sensible: 429/5xx/network errors up to 3 times; timeouts only `LLM_TIMEOUT_RETRIES` times (default 1); one JSON repair attempt; everything within `LLM_EXTRACTION_BUDGET_SECONDS` (default 600). Then the local fallback runs | "LLM extraction failed: LLM request timed out after 180s (2 attempts). Raise LLM_TIMEOUT_SECONDS or choose a faster LLM_MODEL." (or the provider message) |
 | An LLM detail is not in its own citations | The detail is removed and the claim is kept. Logged in `claims.json` → `stats.llm_grounding` | The claim is shown without the invented date or proposer |
 | An LLM cites a non-existent or out-of-window utterance | The claim is dropped (`unresolvable_utt_id` / `out_of_window`) | Dropped-claims counts |
 
@@ -66,13 +66,25 @@ To use another Gemini model, set it in `.env`, for example
 `LLM_MODEL=gemini-3.6-flash`, and restart. The model in use is part of
 `extractor_version` and is shown as "Extracted by LLM: gemini / <model>".
 
-Other settings:
+### Timeouts, retries and the maximum wait
 
-* `LLM_TIMEOUT_SECONDS` (default 180): the timeout for each request.
-* `LLM_TIMEOUT_RETRIES` (default 1): extra attempts after a timeout. These
-  are fewer than the 3 retries for HTTP 429/5xx because a model slower than
-  the timeout usually times out again, and each attempt is a full billed
-  request.
+| Setting | Default | Meaning |
+|---|---|---|
+| `LLM_TIMEOUT_SECONDS` | 180 | The longest wait for one request. |
+| `LLM_TIMEOUT_RETRIES` | 1 | Extra attempts after a timeout. HTTP 429/5xx and network errors keep up to 3 retries, with 1, 2 and 4 s pauses between them. |
+| `LLM_EXTRACTION_BUDGET_SECONDS` | 600 | A hard cap on all LLM calls for one meeting, covering every window, retry, pause and JSON repair. Each request's timeout is cut to the time left, and no request starts once it's used up. `0` turns the cap off. |
+| `EXTRACTOR` | `llm` | Use the LLM, with automatic fallback. |
+| `FALLBACK_EXTRACTOR` | `hybrid` | The local extractor used when the LLM can't be used or fails. |
+
+**Maximum wait for the LLM stage** is the smaller of two numbers:
+`LLM_EXTRACTION_BUDGET_SECONDS`, or the number of windows times the worst case
+per window. With the defaults, the worst case per window is
+(1 + 1) × 180 s + 1 s = 361 s. So the LLM stage never takes more than
+**10 minutes**, and a short meeting of up to 60 utterances (one window) never
+more than about 6 minutes. When the budget runs out, the minutes say "LLM
+extraction failed: LLM extraction stopped: its 600s time budget
+(LLM_EXTRACTION_BUDGET_SECONDS) ran out". The local extractor's results are
+used for the **whole** meeting; LLM and local results are never mixed.
 
 ### Latency (measured 20 October 2026, standard tier)
 
@@ -82,58 +94,154 @@ Other settings:
 | Synthetic 60-utterance window, real prompt | 59.1 s | HTTP 503 "high demand" (transient) |
 
 Network setup took under 1 s (DNS 0.03 s, TCP 0.02 s, model metadata 0.6 s).
-The time is spent generating the response, mostly before thinking starts.
-With `gemini-3.8-flash`, a 60 s timeout fails roughly at random, which is why
-the default is 180 s. A faster model can use a shorter timeout.
-* `EXTRACTOR=llm`: use the LLM, with automatic fallback.
-* `FALLBACK_EXTRACTOR` (default `hybrid`): the local extractor to use when the
-  LLM can't be used.
+The time is spent generating the response. `gemini-3.5-flash-lite` was not
+measured, because the key wasn't readable at the time (see "Configure
+Gemini", step 2). Google's model list marks it as stable.
+
+## Processing time: the 22-minute job (20 October 2026)
+
+Meeting `a67bec95…`: a 68 s recording with 2 speakers, 7 utterances and 4
+claims, processed inline by the API. Process was clicked at 15:50:58. The job
+finished at 16:12:48, after **21 min 50 s**, and the minutes were opened at
+16:15:32. Times come from the database, the files' timestamps and the saved
+verification timings:
+
+| Stage | Took | Cause |
+|---|---|---|
+| Recording pipeline (normalize, per-track transcription) | 5 min 27 s, 3 min 40 s of it before the first output | The transcription subprocess loads torch, Whisper and pyannote on a busy 2-core laptop CPU. The previous meeting needed 1 min 49 s for the same start-up. **Not changed.** |
+| Transcript index and topics | 41 s | Normal. |
+| LLM extraction | 4 min 10 s | `gemini-3.8-flash` answered more slowly than `LLM_TIMEOUT_SECONDS=60`. The code at the time retried the timeout 3 times (4 × 60 s plus 7 s of pauses), then fell back to hybrid. Fixed in `2ae7b86` (one retry) and now also capped by the budget. |
+| **Verification (NLI)** | **11 min 35 s** | **The NLI model ran in float16 on the CPU:** 58 sentence pairs at about 10 s each. |
+| Opening review and summary | 2 min 44 s | The reviewer clicking through the pages. Nothing ran again; all verification results share one timestamp. |
+
+**Why verification was slow.** The pinned `transformers==5.16.1` loads a model
+in the precision it was saved in. The NLI checkpoint
+(`MoritzLaurer/mDeBERTa-v3-base-mnli-xnli`) is saved in float16, and a CPU
+without float16 hardware runs that very slowly. This PC has an AMD Ryzen 3
+3250U. Measured on synthetic pairs:
+
+| Precision | Time per pair |
+|---|---|
+| float16 | 8.77 s |
+| float32 | 0.51 s, **17× faster** |
+
+The two precisions differed by at most 0.0044 in score and gave the same label
+for all 16 pairs. `app/core/model_registry.py` now loads Hugging Face pipelines
+in float32 unless the caller asks otherwise. For that meeting, verification
+would take about 30–40 s instead of 11.5 minutes. The NLI model, thresholds and
+verifier logic are unchanged.
+
+Other findings:
+
+* **Two API servers** were listening on port 8000, one from `.venv` and one
+  from the system Python 3.11, plus two `scripts/worker.py` processes. On
+  Windows both servers can bind the port, so requests reach either, possibly
+  running different code. Whenever either server starts, it marks every
+  running inline job as failed, including one the other server is processing.
+  Run exactly one API.
+* **Workers beside an inline API.** With `JOB_RUNNER=inline` (the default) the
+  API runs jobs itself. A worker running beside it could claim the job before
+  the API starts it. It could also requeue a long inline stage as "stale",
+  because heartbeats only update between stages. Either way, the meeting would
+  be processed twice. This didn't happen to `a67bec95` (no worker claim is
+  recorded), but `scripts/worker.py` now refuses to start unless
+  `JOB_RUNNER=worker`.
+* Each pipeline stage now logs `Stage <name> finished in N s`. LLM extraction
+  logs its window count and duration. Neither logs transcript text or keys.
+
+## How to tell real LLM extraction from fallback
+
+| Check | Real LLM extraction | Fallback |
+|---|---|---|
+| Summary page and PDF | "Extracted by LLM: gemini / <model>" | "Extraction status … (extractor used: hybrid)" and the reason |
+| `extractor_version` | starts with `llm:gemini:<model>:v2` | e.g. `rules-v2+dialogue-v1` |
+| `extraction_runs` | `mode_used = llm`, no `fallback_reason` | `mode_used = hybrid`/`rules`, `fallback_reason` set |
+| `storage/<id>/intelligence/llm_discussion_points.json` | exists | absent |
 
 ## Configure Gemini (exact steps)
 
 1. Create an API key in Google AI Studio (<https://aistudio.google.com/apikey>).
    Read the Gemini API terms on data use before you send real meetings to a
    free tier.
-2. Edit your local `.env`. Never commit it.
+2. Edit your local `.env`. Put **each setting on its own line**, and never
+   commit the file.
    ```
    LLM_PROVIDER=gemini
-   LLM_MODEL=gemini-3.8-flash
+   LLM_MODEL=gemini-3.5-flash-lite
    GEMINI_API_KEY=<your key>
    EXTRACTOR=llm
    LLM_TIMEOUT_SECONDS=180
    LLM_TIMEOUT_RETRIES=1
+   LLM_EXTRACTION_BUDGET_SECONDS=600
    ```
-3. Restart the API (and `scripts/worker.py` if `JOB_RUNNER=worker`). The
-   settings are read at startup.
+   If two lines run together (for example `LLM_MODEL=…GEMINI_API_KEY=…`), the
+   app reports "LLM_MODEL is not a valid model name", sends nothing and falls
+   back. It never displays the value. The configured key is also removed from
+   any provider error message before that message is logged or saved.
+3. Run **exactly one** API process. With `JOB_RUNNER` unset (inline), don't
+   start `scripts/worker.py`; it exits with an explanation. Settings are read
+   at start-up, so restart the API after editing `.env`.
 4. Check the configuration without processing a meeting:
    ```
    python -c "from app.services.intelligence.extraction_pipeline import llm_unavailable_reason as r; print(r() or 'LLM ready')"
    ```
 
-## Manual acceptance test
+## Manual acceptance test (for the tester)
 
 Use a **new** meeting. Don't reprocess existing meetings.
 
-1. Record or upload a short meeting that contains one explicit decision, one
-   task with a stated owner and deadline, and some small talk.
-2. Process it. Then open the Summary step and check that:
-   * the page shows **"Extracted by LLM: gemini / gemini-3.8-flash"**;
-   * the decision and the task are present, and each cites utterances you can
-     play back;
-   * the owner is the speaker who committed, and the deadline is the words
-     actually said;
+Before you start:
+
+1. The configuration check above prints `LLM ready`.
+2. Stop every running API and worker. In PowerShell, this command must list
+   **nothing**:
+   ```
+   Get-CimInstance Win32_Process -Filter "Name='python.exe'" | Where-Object { $_.CommandLine -match 'uvicorn|worker.py' } | Select-Object ProcessId, CommandLine
+   ```
+   Stop anything listed with `Stop-Process -Id <ProcessId>`.
+3. Start one API from `G:\Meet2MoM`:
+   `.venv\Scripts\python -m uvicorn app.api.main:app --host 127.0.0.1 --port 8000`.
+   Start the frontend with `cd frontend; npm run dev`.
+
+Test:
+
+1. Hold a two-browser meeting (host and guest). Both consent. Record 1–2
+   minutes containing:
+   * one explicit decision;
+   * one task with a spoken owner and deadline, for example "I will send the
+     report by Friday";
+   * some small talk;
+   * one vague remark that should not become a task.
+2. Stop the recording, end the meeting and click Process. Note the time. On
+   this laptop, expect roughly 4–8 minutes, mostly the transcription
+   subprocess, but record the actual time. If it's much longer, copy the API
+   console's `Stage … finished in` lines.
+3. On the Summary page, check that:
+   * it shows **"Extracted by LLM: gemini / gemini-3.5-flash-lite"**;
+   * there is no "(extractor used: hybrid)" and no fallback reason;
+   * each decision and action cites utterances that play back the right words;
+   * each owner is the speaker who committed, and each deadline is the words
+     actually spoken;
+   * anything unsupported, including the vague remark if it appears at all,
+     is held for review and not confirmed;
    * "Discussion Summary (LLM, cited, not verified)" lists cited points.
-3. Approve the meeting and download the PDF. It shows the same "Extracted by
-   LLM" line and the cited summary section.
-4. Failure check: set `GEMINI_API_KEY` to an invalid value, restart and
-   process another short meeting. The minutes must show "LLM extraction
+4. Approve the meeting and download the PDF. It must show the same "Extracted
+   by LLM" line and the same decisions and actions as the approved minutes.
+5. Record the meeting ID, the processing time, and screenshots of the Summary
+   page and PDF. Never screenshot `.env`.
+6. Optional failure check: set `GEMINI_API_KEY` to an invalid value, restart,
+   and process another short meeting. The minutes must show "LLM extraction
    failed: LLM provider HTTP 400/403 …" and "(extractor used: hybrid)". They
    must not claim LLM extraction.
-5. `storage/<meeting_id>/intelligence/claims.json` → `stats.llm_grounding`
-   lists any details the LLM stated without citing them.
 
 ## Limitations
 
+* Real-provider acceptance on a recorded meeting is still pending. Nobody has
+  verified `gemini-3.5-flash-lite` against the API from this project.
+* Start-up of the transcription subprocess takes 2–4 minutes on a 2-core
+  laptop. This work doesn't address it.
+* Gemini latency depends on the model and on demand. A transient "high demand"
+  HTTP 503 has been seen.
 * Discussion points are cited and their citations are validated, but they
   aren't NLI-verified. That's why they are labelled "not verified".
 * Grounding is lexical. A deadline paraphrased by the LLM (for example "end

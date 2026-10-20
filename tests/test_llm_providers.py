@@ -490,3 +490,147 @@ def test_misconfigured_client_raises_before_any_request(monkeypatch):
     with pytest.raises(LLMClientError, match="no API key"):
         LLMClient(provider="openai", model="m").complete_json("s", "u")
     assert provider.requests == []
+
+
+# ---------------------------------------------------------------------------
+# Malformed LLM_MODEL (two .env lines run together) must never leak a secret
+# ---------------------------------------------------------------------------
+
+MERGED_MODEL = f"gemini-3.5-flash-liteGEMINI_API_KEY={FAKE_KEY}"
+
+
+def test_malformed_model_name_is_rejected_without_echoing_it(gemini, monkeypatch):
+    provider = gemini(gemini_body(GOOD_PAYLOAD))
+    monkeypatch.setattr(config, "LLM_MODEL", MERGED_MODEL)
+    monkeypatch.setattr(config, "LLM_API_KEY", "another-key")   # even with a usable key
+    reason = llm_unavailable_reason()
+    assert "LLM_MODEL is not a valid model name" in reason
+    assert FAKE_KEY not in reason and "GEMINI_API_KEY=" not in reason
+
+    mid = make_meeting(LINES)
+    stats = extract(mid)
+    assert stats["mode_used"] == "rules" and provider.requests == []   # nothing sent
+    run = db.get_extraction_run(mid)
+    for value in (stats["fallback_reason"], run["fallback_reason"], run["extractor_version"]):
+        assert FAKE_KEY not in value
+    claims_json = MeetingStorage(mid).path_for("intelligence", "claims.json")
+    if claims_json.exists():
+        assert FAKE_KEY not in claims_json.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("model", [
+    "gemini-3.5-flash-lite", "gemini-3.8-flash", "llama3.1:8b", "models/gemini-3.6-flash",
+    "org/model-name", "gpt-4o-mini-2024-07-18",
+])
+def test_ordinary_model_names_are_valid(model):
+    assert llm_module.model_name_is_valid(model)
+
+
+@pytest.mark.parametrize("model", [MERGED_MODEL, "gemini flash", '"gemini-3.6-flash"', "-flag"])
+def test_malformed_model_names_are_invalid(model):
+    assert not llm_module.model_name_is_valid(model)
+
+
+def test_provider_error_bodies_are_redacted(gemini):
+    body = json.dumps({"error": {"message": f"models/x-{FAKE_KEY} is not found"}}).encode()
+    gemini(urllib.error.HTTPError("u", 404, "not found", {}, io.BytesIO(body)))
+    with pytest.raises(LLMClientError) as info:
+        LLMClient().complete_json(system="s", user="u")
+    assert FAKE_KEY not in str(info.value) and "<redacted>" in str(info.value)
+
+
+# ---------------------------------------------------------------------------
+# Total time budget: every window, retry and backoff together
+# ---------------------------------------------------------------------------
+
+class Clock:
+    def __init__(self):
+        self.now = 1000.0
+
+    def __call__(self):
+        return self.now
+
+
+@pytest.fixture
+def clock(monkeypatch):
+    c = Clock()
+    monkeypatch.setattr(llm_module, "_clock", c)
+    monkeypatch.setattr(llm_module.time, "sleep", lambda s: setattr(c, "now", c.now + s))
+    return c
+
+
+class SlowProvider(FakeProvider):
+    """Each request 'takes' `seconds`; past its timeout it raises TimeoutError, like urlopen."""
+
+    def __init__(self, clock, seconds, *outcomes):
+        super().__init__(*outcomes)
+        self.clock, self.seconds = clock, seconds
+
+    def __call__(self, request, timeout=None):
+        if self.seconds > timeout:
+            self.requests.append({"timeout": timeout})
+            self.clock.now += timeout
+            raise TimeoutError("timed out")
+        self.clock.now += self.seconds
+        return super().__call__(request, timeout)
+
+
+def test_budget_caps_each_request_timeout(gemini, clock, monkeypatch):
+    provider = gemini(gemini_body({"decisions": [], "actions": []}))
+    client = LLMClient()
+    client.start_budget(5)
+    client.complete_json(system="s", user="u")
+    assert provider.requests[0]["timeout"] == 5.0                # not the 12 s request timeout
+
+
+def test_budget_stops_retries_and_never_starts_a_request_after_it(gemini, clock, monkeypatch):
+    provider = SlowProvider(clock, 999, gemini_body(GOOD_PAYLOAD))
+    monkeypatch.setattr(llm_module.urllib.request, "urlopen", provider)
+    monkeypatch.setattr(config, "LLM_TIMEOUT_RETRIES", 3)
+    client = LLMClient()
+    client.start_budget(20)
+    with pytest.raises(LLMClientError, match=r"20s time budget \(LLM_EXTRACTION_BUDGET_SECONDS\) ran out"):
+        client.complete_json(system="s", user="u")
+    assert [r["timeout"] for r in provider.requests] == [12.0, 7.0]   # 12 + 1 s backoff + 7 = 20
+    assert clock.now - 1000.0 <= 20.0
+
+
+def test_backoff_that_would_cross_the_budget_is_not_slept(gemini, clock):
+    error = urllib.error.HTTPError("u", 503, "busy", {}, io.BytesIO(b"busy"))
+    provider = gemini(error)
+    client = LLMClient()
+    client.start_budget(0.5)
+    with pytest.raises(LLMClientError, match="time budget"):
+        client.complete_json(system="s", user="u")
+    assert len(provider.requests) == 1 and clock.now == 1000.0
+
+
+def test_budget_running_out_between_windows_falls_back_honestly(gemini, clock, monkeypatch):
+    # 70 utterances -> 2 extraction windows; each successful request takes 8 s.
+    provider = SlowProvider(clock, 8, gemini_body(GOOD_PAYLOAD))
+    monkeypatch.setattr(llm_module.urllib.request, "urlopen", provider)
+    monkeypatch.setattr(config, "LLM_EXTRACTION_BUDGET_SECONDS", 10)
+    mid = make_meeting(LINES * 24)
+    stats = extract(mid)
+    _assert_fell_back(stats, mid, "10s time budget")
+    assert stats["mode_used"] != "llm" and not stats["extractor_version"].startswith("llm:")
+    assert len(provider.requests) == 2                           # window 1 ok, window 2 capped at 2 s
+    assert provider.requests[1]["timeout"] == pytest.approx(2.0)
+
+
+def test_worst_case_with_defaults_is_bounded_by_the_budget(gemini, clock, monkeypatch):
+    for attr, value in (("LLM_TIMEOUT_SECONDS", 180.0), ("LLM_TIMEOUT_RETRIES", 1),
+                        ("LLM_EXTRACTION_BUDGET_SECONDS", 600.0)):
+        monkeypatch.setattr(config, attr, value)
+    provider = SlowProvider(clock, 10_000, gemini_body(GOOD_PAYLOAD))   # never answers
+    monkeypatch.setattr(llm_module.urllib.request, "urlopen", provider)
+    stats = extract(make_meeting(LINES))
+    assert stats["mode_used"] == "rules"
+    assert "timed out after 180s (2 attempts)" in stats["fallback_reason"]
+    assert clock.now - 1000.0 == 361.0                            # 180 + 1 s backoff + 180
+
+
+def test_zero_budget_means_no_overall_deadline():
+    client = LLMClient(provider="gemini", api_key="k")
+    client.start_budget(0)
+    assert client.deadline is None

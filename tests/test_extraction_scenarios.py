@@ -154,7 +154,9 @@ def test_stub_provider_without_fallback_is_extractor_unavailable(monkeypatch):
 
 def test_provider_without_api_key_is_unavailable(monkeypatch):
     monkeypatch.setattr(config, "LLM_PROVIDER", "openai")
+    monkeypatch.setattr(config, "LLM_MODEL", "gpt-4o-mini")   # independent of the local .env
     monkeypatch.setattr(config, "LLM_API_KEY", None)
+    monkeypatch.setattr(config, "OPENAI_API_KEY", None)
     monkeypatch.setattr(config, "GEMINI_API_KEY", None)
     mid = make_meeting(FILLER)
     stats = _extract(mid, mode="llm")

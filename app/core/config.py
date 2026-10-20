@@ -30,6 +30,9 @@ LLM_TIMEOUT_SECONDS = float(os.getenv("LLM_TIMEOUT_SECONDS", "180") or 180)
 # Extra attempts after a timed-out LLM request. A slow model usually times
 # out again on the same input, so this is lower than the 429/5xx retries.
 LLM_TIMEOUT_RETRIES = int(os.getenv("LLM_TIMEOUT_RETRIES", "1") or 0)
+# Hard cap on all LLM calls for one meeting (every window, retry and backoff).
+# When it runs out, extraction falls back to the local extractor and says so.
+LLM_EXTRACTION_BUDGET_SECONDS = float(os.getenv("LLM_EXTRACTION_BUDGET_SECONDS", "600") or 0)
 EXTRACTOR = os.getenv("EXTRACTOR", "llm").strip().lower()
 
 
