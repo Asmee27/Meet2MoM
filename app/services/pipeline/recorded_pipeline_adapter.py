@@ -56,6 +56,47 @@ env["PYTHONUNBUFFERED"] = "1"
 # locations. Until every service accepts a per-meeting output
 # directory, only one recorded pipeline should run at a time.
 _PIPELINE_LOCK = threading.Lock()
+
+
+
+def speech_pipeline_mode() -> str:
+    """
+    Where stages 1-9 run (Phase 6): "subprocess" starts a fresh Python process
+    per meeting (isolated, but reloads every library and model); "inprocess"
+    runs them inside the job runner and reuses loaded libraries and models.
+    "auto" (the default) uses inprocess only inside scripts/worker.py, so the
+    API process that holds live recordings never runs heavy ASR itself.
+    """
+    from app.core import config
+
+    mode = (getattr(config, "SPEECH_PIPELINE", "auto") or "auto").strip().lower()
+    if mode == "auto":
+        return "inprocess" if os.environ.get(PROCESS_ROLE_ENV) == "worker" else "subprocess"
+    return mode if mode in ("inprocess", "subprocess") else "subprocess"
+
+
+PROCESS_ROLE_ENV = "M2M_PROCESS_ROLE"
+_SPEECH_MODULE = "scripts.run_recorded_pipeline"
+
+
+def _run_speech_pipeline_inprocess(meeting_id: str, input_file: Path) -> None:
+    """Run stages 1-9 in this process, importing the libraries only once."""
+    import importlib
+
+    first_import = _SPEECH_MODULE not in sys.modules
+    started = time.monotonic()
+    module = importlib.import_module(_SPEECH_MODULE)
+    startup_seconds = time.monotonic() - started if first_import else None
+    module.run(
+        meeting_id,
+        input_file,
+        skip_post_transcript=True,
+        startup_seconds=startup_seconds,
+        startup_note=(
+            "In-process: first import of the speech libraries in this process"
+            if first_import else None
+        ),
+    )
 _CACHE_LOCK = threading.Lock()
 
 
@@ -188,6 +229,12 @@ def _cache_directory(
         PIPELINE_CACHE_DIR
         / content_hash
     )
+
+
+def _content_cache_enabled() -> bool:
+    from app.core import config
+
+    return bool(getattr(config, "ENABLE_PIPELINE_CACHE", True))
 
 
 def _cache_is_complete(
@@ -981,7 +1028,7 @@ def run_recorded_pipeline(
 
     with _CACHE_LOCK:
 
-        cache_hit = _cache_is_complete(
+        cache_hit = _content_cache_enabled() and _cache_is_complete(
             content_hash
         )
 
@@ -1129,92 +1176,112 @@ def run_recorded_pipeline(
 
     with _PIPELINE_LOCK:
 
-        process = subprocess.Popen(
-            command,
-            cwd=str(PROJECT_ROOT),
-            env=cmd_env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            bufsize=1,
-        )
+        if speech_pipeline_mode() == "inprocess":
+            try:
+                _run_speech_pipeline_inprocess(meeting_id, input_file)
+            except Exception as error:
+                error_message = f"{type(error).__name__}: {error}"
+                _write_json(
+                    status_file,
+                    {
+                        "file_id": meeting_id,
+                        "status": "failed",
+                        "started_at": started_at,
+                        "finished_at": time.time(),
+                        "content_hash": content_hash,
+                        "cache_hit": False,
+                        "speech_pipeline": "inprocess",
+                        "error": error_message,
+                    }
+                )
+                raise RecordedPipelineError(error_message) from error
+        else:
+            process = subprocess.Popen(
+                command,
+                cwd=str(PROJECT_ROOT),
+                env=cmd_env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                bufsize=1,
+            )
 
-        output_lines = []
+            output_lines = []
 
-        if process.stdout is not None:
+            if process.stdout is not None:
 
-            for line in process.stdout:
+                for line in process.stdout:
 
-                output_lines.append(
-                    line
+                    output_lines.append(
+                        line
+                    )
+
+                    print(
+                        line,
+                        end="",
+                        flush=True
+                    )
+
+            return_code = (
+                process.wait()
+            )
+
+            combined_output = (
+                "".join(
+                    output_lines
+                ).strip()
+            )
+
+            # ----------------------------------------------------
+            # Pipeline failure
+            # ----------------------------------------------------
+
+            if return_code != 0:
+
+                error_message = (
+                    combined_output
+                    or
+                    "Recorded pipeline failed."
                 )
 
-                print(
-                    line,
-                    end="",
-                    flush=True
+                _write_json(
+                    status_file,
+                    {
+                        "file_id":
+                            meeting_id,
+
+                        "status":
+                            "failed",
+
+                        "started_at":
+                            started_at,
+
+                        "finished_at":
+                            time.time(),
+
+                        "return_code":
+                            return_code,
+
+                        "content_hash":
+                            content_hash,
+
+                        "cache_hit":
+                            False,
+
+                        "error":
+                            error_message
+                    }
                 )
 
-        return_code = (
-            process.wait()
-        )
+                raise RecordedPipelineError(
+                    error_message
+                )
 
-        combined_output = (
-            "".join(
-                output_lines
-            ).strip()
-        )
-
-        # ----------------------------------------------------
-        # Pipeline failure
-        # ----------------------------------------------------
-
-        if return_code != 0:
-
-            error_message = (
-                combined_output
-                or
-                "Recorded pipeline failed."
-            )
-
-            _write_json(
-                status_file,
-                {
-                    "file_id":
-                        meeting_id,
-
-                    "status":
-                        "failed",
-
-                    "started_at":
-                        started_at,
-
-                    "finished_at":
-                        time.time(),
-
-                    "return_code":
-                        return_code,
-
-                    "content_hash":
-                        content_hash,
-
-                    "cache_hit":
-                        False,
-
-                    "error":
-                        error_message
-                }
-            )
-
-            raise RecordedPipelineError(
-                error_message
-            )
-
-        # ----------------------------------------------------
-        # Snapshot shared output into this meeting folder
-        # ----------------------------------------------------
+            # ----------------------------------------------------
+            # Snapshot shared output into this meeting folder
+            # ----------------------------------------------------
 
         copied = _snapshot_outputs(
             meeting_id
@@ -1300,7 +1367,10 @@ def run_recorded_pipeline(
 
         with _CACHE_LOCK:
 
+            # ENABLE_PIPELINE_CACHE=false: neither reuse nor save results.
             cache_saved = (
+                _content_cache_enabled()
+                and
                 _save_results_to_cache(
                     meeting_id,
                     content_hash

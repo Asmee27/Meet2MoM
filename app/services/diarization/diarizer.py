@@ -17,6 +17,22 @@ from app.core.config import (
 )
 
 
+DIARIZATION_MODEL_KEY = f"pyannote::{DIARIZATION_MODEL}"
+
+
+def load_diarization_pipeline(token: str):
+    """The process-wide pyannote pipeline, loaded on first use (Phase 6)."""
+    from app.core import model_registry
+
+    return model_registry.get_cached_model(
+        DIARIZATION_MODEL_KEY,
+        lambda: Pipeline.from_pretrained(
+            DIARIZATION_MODEL,
+            token=token
+        ),
+    )
+
+
 class SpeakerDiarizer:
 
     def __init__(self):
@@ -47,10 +63,11 @@ class SpeakerDiarizer:
             f"{DIARIZATION_MODEL}"
         )
 
-        self.pipeline = Pipeline.from_pretrained(
-            DIARIZATION_MODEL,
-            token=token
-        )
+        # One pipeline per process (Phase 6): a long-lived worker reuses it.
+        from app.core import model_registry
+
+        self.model_reused = model_registry.is_loaded(DIARIZATION_MODEL_KEY)
+        self.pipeline = load_diarization_pipeline(token)
 
         # ======================================================
         # DEVICE SELECTION

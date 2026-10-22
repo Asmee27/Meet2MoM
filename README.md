@@ -26,7 +26,7 @@ Open two Windows PowerShell terminals in the repository root:
 **Terminal 1 — Start the API Server:**
 ```powershell
 $env:JOB_RUNNER="worker"
-.\.venv\Scripts\uvicorn.exe app.api.main:app --host 127.0.0.1 --port 8000 --reload
+.\.venv\Scripts\uvicorn.exe app.api.main:app --host 127.0.0.1 --port 8000
 ```
 
 **Terminal 2 — Start the Background Worker:**
@@ -34,6 +34,10 @@ $env:JOB_RUNNER="worker"
 $env:JOB_RUNNER="worker"
 .\.venv\Scripts\python.exe scripts/worker.py
 ```
+
+Do not use `--reload` while recording live meetings: a recording lives in the API process and a reload cuts it off.
+
+The worker keeps the speech libraries and models loaded between meetings (`SPEECH_PIPELINE=auto`, Phase 6) and preloads them at start-up (`WORKER_PRELOAD_MODELS=true`). For English-only meetings, `WHISPER_LANGUAGE=en` skips per-track language detection. Measurements: `docs/phase-6/PHASE_6_PROCESSING_SPEED.md`.
 
 The worker script:
 - Polls the `jobs` table every second (`WORKER_POLL_INTERVAL_SECONDS=1.0`).

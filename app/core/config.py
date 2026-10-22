@@ -13,7 +13,9 @@ import os
 import sys
 
 INPUT_DIR = PROJECT_ROOT / "input"
-STORAGE_ROOT = PROJECT_ROOT / "storage"
+# MEET2MOM_STORAGE_ROOT moves all meeting data and the database (benchmarks,
+# deployments); unset, it is the repository's storage/ folder.
+STORAGE_ROOT = Path(os.getenv("MEET2MOM_STORAGE_ROOT") or (PROJECT_ROOT / "storage")).resolve()
 DB_PATH = STORAGE_ROOT / "meet2mom.db"
 
 # LLM Configuration
@@ -175,9 +177,10 @@ TARGET_LANGUAGES = {
     "mr": "Marathi"
 }
 
-# IMPORTANT:
-# Keep None so Whisper automatically detects language.
-FORCE_LANGUAGE = None
+# WHISPER_LANGUAGE (e.g. en, hi, mr) skips per-track language detection, which
+# costs about 14 s per track on a 2-core laptop (Phase 6 measurement). Leave it
+# empty for automatic detection, e.g. for code-switched meetings.
+FORCE_LANGUAGE = (os.getenv("WHISPER_LANGUAGE") or "").strip().lower() or None
 
 
 # ==========================================================
@@ -313,6 +316,15 @@ JOB_RUNNER = os.getenv("JOB_RUNNER", "inline").strip().lower()
 WORKER_POLL_INTERVAL_SECONDS = float(os.getenv("WORKER_POLL_INTERVAL_SECONDS", "1.0"))
 WORKER_STALE_TIMEOUT_SECONDS = float(os.getenv("WORKER_STALE_TIMEOUT_SECONDS", "300.0"))
 WORKER_MAX_RETRIES = int(os.getenv("WORKER_MAX_RETRIES", "3"))
+
+# Where the speech pipeline (audio, ASR, speaker attribution) runs (Phase 6):
+#   subprocess: a fresh Python process per meeting (isolated; reloads libraries and models)
+#   inprocess:  inside the job runner, reusing loaded libraries and models
+#   auto:       inprocess inside scripts/worker.py, subprocess in the API process
+SPEECH_PIPELINE = os.getenv("SPEECH_PIPELINE", "auto").strip().lower()
+# Load Whisper, pyannote, embeddings and NLI when the worker starts, so even the
+# first meeting avoids model start-up (only with the in-process speech pipeline).
+WORKER_PRELOAD_MODELS = _env_flag("WORKER_PRELOAD_MODELS", True)
 
 # Topic title generation mode: "extractive" (default) or "llm"
 TOPIC_TITLES = os.getenv("TOPIC_TITLES", "extractive").strip().lower()

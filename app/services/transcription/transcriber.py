@@ -32,6 +32,24 @@ from app.services.transcription.language_utils import (
 )
 
 
+def whisper_model_key() -> str:
+    return f"whisper::{WHISPER_MODEL}::{DEVICE}::{COMPUTE_TYPE}"
+
+
+def load_whisper_model():
+    """The process-wide Whisper model, loaded on first use (Phase 6)."""
+    from app.core import model_registry
+
+    return model_registry.get_cached_model(
+        whisper_model_key(),
+        lambda: WhisperModel(
+            WHISPER_MODEL,
+            device=DEVICE,
+            compute_type=COMPUTE_TYPE
+        ),
+    )
+
+
 class MeetingTranscriber:
 
     def __init__(self):
@@ -46,11 +64,11 @@ class MeetingTranscriber:
             f"{WHISPER_MODEL}"
         )
 
-        self.model = WhisperModel(
-            WHISPER_MODEL,
-            device=DEVICE,
-            compute_type=COMPUTE_TYPE
-        )
+        # One model per process (Phase 6): a long-lived worker reuses it.
+        from app.core import model_registry
+
+        self.model_reused = model_registry.is_loaded(whisper_model_key())
+        self.model = load_whisper_model()
 
         print("✓ Whisper model loaded")
 

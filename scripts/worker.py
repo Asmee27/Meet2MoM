@@ -181,6 +181,55 @@ def run_worker_loop(
             break
 
 
+def preload_models() -> dict:
+    """
+    Import the speech libraries and load every model once, before the first
+    job (Phase 6). Each step is timed; a failure is logged and that model is
+    simply loaded by the first job that needs it.
+    """
+    import importlib
+    import time
+
+    def speech_libraries():
+        importlib.import_module("scripts.run_recorded_pipeline")
+
+    def whisper():
+        from app.services.transcription.transcriber import load_whisper_model
+
+        load_whisper_model()
+
+    def embeddings():
+        from app.core.model_registry import get_sentence_transformer
+        from app.services.verification.retrieval_index import EMBED_MODEL_NAME
+
+        get_sentence_transformer(EMBED_MODEL_NAME)
+
+    def nli():
+        from app.services.verification.nli_scorer import NLIScorer
+
+        NLIScorer()._pipe_or_load()
+
+    def pyannote():
+        token = config.get_hf_token()
+        if not token:
+            raise RuntimeError("no Hugging Face token configured")
+        from app.services.diarization.diarizer import load_diarization_pipeline
+
+        load_diarization_pipeline(token)
+
+    results = {}
+    for name, step in (("speech_libraries", speech_libraries), ("whisper", whisper),
+                       ("embeddings", embeddings), ("nli", nli), ("pyannote", pyannote)):
+        started = time.monotonic()
+        try:
+            step()
+            results[name] = {"status": "loaded", "seconds": round(time.monotonic() - started, 2)}
+        except Exception as exc:
+            results[name] = {"status": "failed", "error": f"{type(exc).__name__}: {exc}"[:200]}
+        logger.info("Preload %s: %s", name, results[name])
+    return results
+
+
 def main():
     runner = (getattr(config, "JOB_RUNNER", "inline") or "inline").strip().lower()
     if runner != "worker":
@@ -193,6 +242,16 @@ def main():
             runner,
         )
         sys.exit(2)
+
+    # This long-lived process may run the speech pipeline in-process and keep
+    # its models loaded across meetings (Phase 6, SPEECH_PIPELINE=auto).
+    from app.services.pipeline.recorded_pipeline_adapter import PROCESS_ROLE_ENV, speech_pipeline_mode
+
+    os.environ[PROCESS_ROLE_ENV] = "worker"
+    mode = speech_pipeline_mode()
+    logger.info("Speech pipeline mode: %s", mode)
+    if mode == "inprocess" and getattr(config, "WORKER_PRELOAD_MODELS", True):
+        preload_models()
 
     signal.signal(signal.SIGINT, _signal_handler)
     if hasattr(signal, "SIGTERM"):
