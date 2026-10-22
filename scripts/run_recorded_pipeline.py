@@ -6,6 +6,9 @@ import time
 from pathlib import Path
 from uuid import uuid4
 
+# Taken before the heavy imports below, to time the subprocess start-up.
+_SCRIPT_STARTED = time.monotonic()
+
 # Parse arguments early to set active meeting before downstream imports
 parser = argparse.ArgumentParser(description="Meet2MoM - Recorded Meeting Intelligence Pipeline")
 parser.add_argument("input_file", nargs="?", default=None, help="Path to input recording")
@@ -65,6 +68,22 @@ def main():
     print(f"Meeting ID: {meeting_id}")
     print(f"Storage root: {storage.root}")
 
+    # Per-stage timings, written to metadata/stage_timings.json after every
+    # stage; the job runner stores them in the database (Phase 5).
+    from app.core.stage_timings import RUN_ID_ENV, STAGE_FILE, StageRecorder
+
+    timer = StageRecorder(
+        meeting_id,
+        os.environ.get(RUN_ID_ENV),
+        file_path=storage.path_for("metadata", STAGE_FILE),
+    )
+    timer.record(
+        "pipeline_startup",
+        "completed",
+        duration_seconds=time.monotonic() - _SCRIPT_STARTED,
+        detail={"note": "Subprocess start-up: importing torch, Whisper, pyannote and other libraries"},
+    )
+
     # ======================================================
     # INPUT RECORDING
     # ======================================================
@@ -100,6 +119,8 @@ def main():
         # ==================================================
         # 1 — VALIDATION
         # ==================================================
+
+        timer.begin("audio_preparation")
 
         print("\n[1/9] Validating recording...")
 
@@ -153,6 +174,8 @@ def main():
             )
         )
 
+        timer.end()
+
         # ==================================================
         # OUTPUT PATHS USED BY CACHE
         # ==================================================
@@ -187,6 +210,12 @@ def main():
 
         if track_plan is not None and track_plan.usable:
 
+            asr_stage = timer.begin(
+                "transcription",
+                mode="livekit_tracks",
+                tracks=len(track_plan.tracks),
+            )
+
             print(
                 f"\n[6/9] Running ASR on "
                 f"{len(track_plan.tracks)} participant tracks..."
@@ -199,7 +228,9 @@ def main():
             cache_manager.invalidate_stage("transcription")
             cache_manager.invalidate_stage("diarization")
 
+            model_started = time.monotonic()
             transcriber = MeetingTranscriber()
+            asr_stage.detail["model_load_seconds"] = round(time.monotonic() - model_started, 2)
 
             track_segments, attribution = transcribe_tracks(
                 track_plan,
@@ -226,6 +257,9 @@ def main():
                 f"{time.perf_counter() - asr_start:.2f} seconds"
             )
 
+            timer.end()
+            timer.begin("speaker_attribution", method="livekit_tracks")
+
             print(
                 "\n[7/9] Speakers from LiveKit participant tracks "
                 "(mixed-audio diarization not needed)"
@@ -250,6 +284,8 @@ def main():
                     f"{item['segments']} segments"
                 )
 
+            timer.begin("transcript_merge", method="livekit_tracks")
+
             print(
                 "\n[8/9] Writing participant-attributed transcript..."
             )
@@ -273,6 +309,8 @@ def main():
             # ==================================================
             # 6 — MULTILINGUAL ASR
             # ==================================================
+
+            asr_stage = timer.begin("transcription", mode="mixed_recording")
 
             print(
                 "\n[6/9] Running multilingual ASR..."
@@ -299,11 +337,15 @@ def main():
                     "  Skipping Whisper transcription"
                 )
 
+                asr_stage.status = "cached"
+
             else:
 
                 asr_start = time.perf_counter()
 
+                model_started = time.monotonic()
                 transcriber = MeetingTranscriber()
+                asr_stage.detail["model_load_seconds"] = round(time.monotonic() - model_started, 2)
 
                 transcript_file = (
                     transcriber.transcribe(
@@ -330,6 +372,12 @@ def main():
             # 7 — SPEAKER DIARIZATION
             # ==================================================
 
+            timer.end()
+            diarization_stage = timer.begin(
+                "speaker_attribution",
+                method="pyannote_diarization",
+            )
+
             print(
                 "\n[7/9] Detecting speakers..."
             )
@@ -355,13 +403,19 @@ def main():
                     "  Skipping pyannote diarization"
                 )
 
+                diarization_stage.status = "cached"
+
             else:
 
                 diarization_start = (
                     time.perf_counter()
                 )
 
+                model_started = time.monotonic()
                 diarizer = SpeakerDiarizer()
+                diarization_stage.detail["model_load_seconds"] = round(
+                    time.monotonic() - model_started, 2
+                )
 
                 diarization_file = (
                     diarizer.diarize(
@@ -387,6 +441,8 @@ def main():
             # ==================================================
             # 8 — RELIABILITY-AWARE SPEAKER ATTRIBUTION
             # ==================================================
+
+            timer.begin("transcript_merge", method="reliability_merge")
 
             print(
                 "\n[8/9] Running reliability-aware "
@@ -433,6 +489,8 @@ def main():
             frontend_json,
             encoding="utf-8",
         )
+        timer.end()
+
         if not args.skip_post_transcript:
             from app.services.pipeline.intelligence_service import ensure_verification
 
@@ -489,7 +547,9 @@ def main():
             report_file
         )
 
-    except KeyboardInterrupt:
+    except KeyboardInterrupt as interrupted:
+
+        timer.fail_current(interrupted)
 
         print(
             "\n⚠ Processing interrupted."
@@ -501,6 +561,8 @@ def main():
         )
 
     except Exception as error:
+
+        timer.fail_current(error)
 
         print(
             "\n✗ MEET2MOM PIPELINE FAILED"

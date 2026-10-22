@@ -822,26 +822,35 @@ def run_post_transcript_stages(meeting_id: str, mode: str | None = None) -> dict
     from app.services.intelligence.topic_segmenter import TopicSegmenter
     from app.services.intelligence.extraction_pipeline import run_extraction
 
+    from app.core.stage_timings import timed_stage
+
     storage = MeetingStorage(meeting_id)
     db.init_db()
     try:
-        payload = json.loads(
-            storage.path_for("transcript", "meeting_transcript_ready.json")
-            .read_text(encoding="utf-8")
-        )
-        utterances = build_transcript_index(payload, meeting_id)
-        persist_transcript_index(utterances, meeting_id)
+        with timed_stage("transcript_index") as index_stage:
+            payload = json.loads(
+                storage.path_for("transcript", "meeting_transcript_ready.json")
+                .read_text(encoding="utf-8")
+            )
+            utterances = build_transcript_index(payload, meeting_id)
+            persist_transcript_index(utterances, meeting_id)
+            index_stage.detail["utterances"] = len(utterances)
     except Exception as exc:
         logger.exception("Post-transcript stage 'index' failed for %s", meeting_id)
         raise PostTranscriptStageError("index", exc) from exc
     try:
-        frontend_path = storage.path_for("transcript", "frontend_transcript.json")
-        TopicSegmenter(output_dir=str(storage.intelligence)).process(str(frontend_path))
+        with timed_stage("topic_segmentation") as topic_stage:
+            frontend_path = storage.path_for("transcript", "frontend_transcript.json")
+            segmenter = TopicSegmenter(output_dir=str(storage.intelligence))
+            segmenter.process(str(frontend_path))
+            _describe_topics(topic_stage, segmenter)
     except Exception as exc:
         logger.exception("Post-transcript stage 'topics' failed for %s", meeting_id)
         raise PostTranscriptStageError("topics", exc) from exc
     try:
-        stats = run_extraction(meeting_id, mode=mode)
+        with timed_stage("extraction") as extraction_stage:
+            stats = run_extraction(meeting_id, mode=mode)
+            _describe_extraction(extraction_stage, stats)
         logger.info(
             "Extraction progress for %s: accepted=%d dropped=%d",
             meeting_id, stats.get("accepted", 0), stats.get("dropped", 0),
@@ -850,6 +859,40 @@ def run_post_transcript_stages(meeting_id: str, mode: str | None = None) -> dict
     except Exception as exc:
         logger.exception("Post-transcript stage 'extraction' failed for %s", meeting_id)
         raise PostTranscriptStageError("extraction", exc) from exc
+
+
+def _describe_topics(handle, segmenter) -> None:
+    """Topic count, and an explicit fallback when LLM titles were not used."""
+    mode = getattr(segmenter, "title_mode", "extractive")
+    handle.detail["title_mode"] = mode
+    if mode != "llm":
+        return
+    counts = getattr(segmenter, "title_counts", None) or {}
+    handle.detail["llm_titles"] = counts.get("llm", 0)
+    handle.detail["extractive_title_fallbacks"] = counts.get("fallback", 0)
+    reason = getattr(segmenter, "title_fallback_reason", None)
+    if reason or counts.get("fallback"):
+        handle.status = "fallback"
+        handle.detail["title_fallback_reason"] = str(
+            reason or f"{counts.get('fallback')} LLM title(s) rejected by the word check"
+        )[:300]
+
+
+def _describe_extraction(handle, stats: dict) -> None:
+    """Which extractor produced the claims, and what the LLM cost."""
+    keys = (
+        "status", "mode_requested", "mode_used", "extractor_version", "accepted", "dropped",
+        "llm_provider", "llm_model", "llm_windows", "llm_requests", "llm_provider_seconds",
+        "llm_cache_hits",
+    )
+    handle.detail.update({k: stats[k] for k in keys if stats.get(k) is not None})
+    if stats.get("fallback_reason"):
+        handle.detail["fallback_reason"] = str(stats["fallback_reason"])[:300]
+    if stats.get("status") == "failed":
+        handle.status = "failed"
+        handle.detail["reason"] = str(stats.get("reason") or "")[:300]
+    elif stats.get("mode_requested") == "llm" and stats.get("mode_used") != "llm":
+        handle.status = "fallback"
 
 
 _run_post_transcript_stages = run_post_transcript_stages

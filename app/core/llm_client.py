@@ -185,6 +185,10 @@ class LLMClient:
         self.deadline: Optional[float] = None
         self.budget_seconds: Optional[float] = None
         self._attempt_timeout = self.timeout
+        # Time spent waiting on the provider and number of HTTP requests made,
+        # including failed attempts (reported in extraction stage timings).
+        self.provider_seconds = 0.0
+        self.requests_made = 0
 
         # For "stub" provider in tests
         self.stub_responses: List[Any] = []
@@ -243,6 +247,7 @@ class LLMClient:
         problem = configuration_problem(self.provider, self.api_key, self.model)
         if problem:
             raise LLMClientError(problem)
+        self.requests_made += 1
 
         if self.provider in ("openai", "local"):
             default_base = "https://api.openai.com/v1" if self.provider == "openai" else "http://localhost:11434/v1"
@@ -371,8 +376,13 @@ class LLMClient:
             if remaining is not None and remaining <= 0:
                 raise self._budget_error()
             self._attempt_timeout = self.timeout if remaining is None else min(self.timeout, remaining)
+            call_started = time.monotonic()
             try:
-                return self._execute_provider_call(system, user, max_tokens)
+                try:
+                    return self._execute_provider_call(system, user, max_tokens)
+                finally:
+                    # Only the wait for the provider, not the backoff sleeps.
+                    self.provider_seconds += time.monotonic() - call_started
             except urllib.error.HTTPError as e:
                 last_error = e
                 # Retry on 429 and 5xx

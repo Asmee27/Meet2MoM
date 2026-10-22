@@ -163,7 +163,7 @@ def init_db(db_path: Optional[Path | str] = None) -> None:
 # Migrations only ADD tables/indexes; they never rewrite or drop existing
 # data. Each step is idempotent (IF NOT EXISTS) and bumps user_version.
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 _MIGRATION_V1 = """
 CREATE TABLE IF NOT EXISTS extraction_runs (
@@ -363,6 +363,31 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_recording_one_active
 """
 
 
+# Phase 5: per-stage processing timings, one row per stage of each run.
+# status: running | completed | failed | skipped | cached | fallback.
+# duration_seconds is NULL unless the stage actually ran (never a fake 0).
+_MIGRATION_V4 = """
+CREATE TABLE IF NOT EXISTS processing_stage_timings (
+    meeting_id        TEXT NOT NULL,
+    run_id            TEXT NOT NULL,
+    stage             TEXT NOT NULL,
+    parent_stage      TEXT,
+    seq               INTEGER NOT NULL,
+    status            TEXT NOT NULL CHECK (status IN
+                      ('running', 'completed', 'failed', 'skipped', 'cached', 'fallback')),
+    started_at        TEXT,
+    finished_at       TEXT,
+    duration_seconds  REAL,
+    detail            TEXT,
+    PRIMARY KEY (meeting_id, run_id, stage),
+    FOREIGN KEY (meeting_id) REFERENCES meetings(meeting_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_stage_timings_meeting
+    ON processing_stage_timings(meeting_id, run_id, seq);
+"""
+
+
 def _migrate(conn: sqlite3.Connection) -> None:
     current = conn.execute("PRAGMA user_version").fetchone()[0]
     if current < 1:
@@ -376,6 +401,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
     if current < 3:
         conn.executescript(_MIGRATION_V3)
         conn.execute("PRAGMA user_version = 3")
+        current = 3
+    if current < 4:
+        conn.executescript(_MIGRATION_V4)
+        conn.execute("PRAGMA user_version = 4")
 
 
 def get_schema_version(db_path: Optional[Path | str] = None) -> int:
@@ -2372,3 +2401,87 @@ def fail_interrupted_inline_jobs(
                 [(mid,) for mid in ids],
             )
     return ids
+
+
+# ---------------------------------------------------------------------------
+# Phase 5: processing stage timings
+# ---------------------------------------------------------------------------
+
+STAGE_STATUSES = ("running", "completed", "failed", "skipped", "cached", "fallback")
+
+
+def upsert_stage_timing(
+    meeting_id: str,
+    run_id: str,
+    stage: str,
+    status: str,
+    *,
+    seq: int,
+    parent_stage: Optional[str] = None,
+    started_at: Optional[str] = None,
+    finished_at: Optional[str] = None,
+    duration_seconds: Optional[float] = None,
+    detail: Optional[Dict[str, Any]] = None,
+    db_path: Optional[Path | str] = None,
+) -> None:
+    """Insert or update one stage of one processing run."""
+    if status not in STAGE_STATUSES:
+        raise ValueError(f"Unknown stage status: {status}")
+    with get_conn(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO processing_stage_timings (
+                meeting_id, run_id, stage, parent_stage, seq, status,
+                started_at, finished_at, duration_seconds, detail
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(meeting_id, run_id, stage) DO UPDATE SET
+                parent_stage = excluded.parent_stage,
+                status = excluded.status,
+                started_at = COALESCE(excluded.started_at, processing_stage_timings.started_at),
+                finished_at = excluded.finished_at,
+                duration_seconds = excluded.duration_seconds,
+                detail = excluded.detail
+            """,
+            (
+                meeting_id, run_id, stage, parent_stage, seq, status,
+                started_at, finished_at,
+                None if duration_seconds is None else round(float(duration_seconds), 3),
+                json.dumps(detail, ensure_ascii=False) if detail else None,
+            ),
+        )
+
+
+def latest_stage_run_id(meeting_id: str, db_path: Optional[Path | str] = None) -> Optional[str]:
+    """The run id of the most recent processing run (run ids sort by start time)."""
+    with get_conn(db_path) as conn:
+        row = conn.execute(
+            "SELECT MAX(run_id) AS run_id FROM processing_stage_timings WHERE meeting_id = ?",
+            (meeting_id,),
+        ).fetchone()
+    return row["run_id"] if row and row["run_id"] else None
+
+
+def get_stage_timings(
+    meeting_id: str,
+    run_id: Optional[str] = None,
+    db_path: Optional[Path | str] = None,
+) -> List[Dict[str, Any]]:
+    """Stages of one run (the latest by default), in execution order."""
+    run_id = run_id or latest_stage_run_id(meeting_id, db_path=db_path)
+    if not run_id:
+        return []
+    with get_conn(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT * FROM processing_stage_timings
+            WHERE meeting_id = ? AND run_id = ?
+            ORDER BY seq, started_at
+            """,
+            (meeting_id, run_id),
+        ).fetchall()
+    out = []
+    for row in rows:
+        item = dict(row)
+        item["detail"] = json.loads(item["detail"]) if item["detail"] else {}
+        out.append(item)
+    return out

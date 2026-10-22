@@ -163,6 +163,8 @@ def extract_from_window(
         try:
             cached_data = validate_response(json.loads(cache_file.read_text(encoding="utf-8")))
             logger.debug("Cache hit for window %s (%s)", window.window_id, cache_key[:8])
+            if report is not None:
+                report["cache_hits"] = report.get("cache_hits", 0) + 1
             return _ground(_attach_provenance(cached_data, window), window, report)
         except Exception:
             pass  # Corrupt or outdated cache: fall through to LLM call

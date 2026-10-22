@@ -106,6 +106,21 @@ def _write_discussion_points(meeting_id: str, extractor_version: str, points) ->
         logger.warning("Failed to write discussion points for %s: %s", meeting_id, exc)
 
 
+def _llm_call_stats(client: Any, report: Dict[str, Any], windows: int) -> Dict[str, Any]:
+    """What the LLM calls cost; the model is reported only if it is a valid id."""
+    from app.core.llm_client import model_name_is_valid
+
+    model = getattr(client, "model", None)
+    return {
+        "llm_provider": getattr(client, "provider", None),
+        "llm_model": model if model and model_name_is_valid(str(model)) else None,
+        "llm_windows": windows,
+        "llm_requests": int(getattr(client, "requests_made", 0) or 0),
+        "llm_provider_seconds": round(float(getattr(client, "provider_seconds", 0.0) or 0.0), 3),
+        "llm_cache_hits": int(report.get("cache_hits", 0) or 0),
+    }
+
+
 def llm_unavailable_reason(client: Optional[LLMClient] = None) -> Optional[str]:
     """
     Explain why the configured LLM extractor cannot produce real output, or
@@ -183,6 +198,7 @@ def run_extraction(
     extractor_version = RULES_EXTRACTOR_VERSION
     candidates = []
     llm_report: Dict[str, Any] = {}
+    llm_stats: Dict[str, Any] = {}
 
     try:
         if requested_mode == "llm":
@@ -220,12 +236,14 @@ def run_extraction(
                     if getattr(llm_client, "deadline", None) is None and hasattr(llm_client, "start_budget"):
                         llm_client.start_budget(getattr(config, "LLM_EXTRACTION_BUDGET_SECONDS", 0))
                     candidates = extract_meeting(meeting_id, windows, llm_client, report=llm_report)
+                    llm_stats = _llm_call_stats(llm_client, llm_report, len(windows))
                     extractor_version = f"llm:{llm_client.provider}:{llm_client.model}:{PROMPT_VERSION}"
                     logger.info(
                         "LLM extraction for %s: %d window(s) in %.1fs",
                         meeting_id, len(windows), time.monotonic() - llm_started,
                     )
                 except LLMClientError as e:
+                    llm_stats = _llm_call_stats(llm_client, llm_report, len(windows))
                     llm_report = {}
                     logger.error(
                         "LLM extraction failed for meeting %s after %.1fs (%s). Falling back to rules baseline.",
@@ -275,6 +293,8 @@ def run_extraction(
         stats["fallback_reason"] = fallback_reason
     if error_msg:
         stats["error"] = error_msg
+    # Provider wait time and identity of the LLM that was actually called.
+    stats.update(llm_stats)
     if mode_used == "llm":
         stats["llm_grounding"] = {
             "ungrounded_fields_removed": llm_report.get("ungrounded_fields_removed", []),

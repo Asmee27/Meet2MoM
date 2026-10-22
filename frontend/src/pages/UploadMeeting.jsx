@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useMeetingFlow } from "../context/MeetingFlowContext";
 import { listMeetings } from "../services/api";
+import StageTimings from "../components/StageTimings";
 
 // Ordered pipeline stages matching app/core/jobs.py
 const PIPELINE_STAGES = [
@@ -373,6 +374,7 @@ export default function UploadMeeting() {
                   );
                 })}
               </ol>
+              <StageTimings timings={jobStatus?.stage_timings} />
             </div>
           )}
 
@@ -381,6 +383,7 @@ export default function UploadMeeting() {
             <div className="upload-error" role="alert" style={{ marginTop: "1rem" }}>
               <strong>Processing failed at stage "{jobStage}":</strong>
               <div style={{ marginTop: "0.35rem", fontSize: "0.85rem" }}>{jobError}</div>
+              <StageTimings timings={jobStatus?.stage_timings} />
               <button
                 type="button"
                 className="remove-button"

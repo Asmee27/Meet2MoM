@@ -36,6 +36,14 @@ LLM_EXTRACTION_BUDGET_SECONDS = float(os.getenv("LLM_EXTRACTION_BUDGET_SECONDS",
 EXTRACTOR = os.getenv("EXTRACTOR", "llm").strip().lower()
 
 
+def _env_flag(name: str, default: bool) -> bool:
+    """true/false style setting from the environment; unset or empty keeps the default."""
+    value = (os.getenv(name) or "").strip().lower()
+    if not value:
+        return default
+    return value in ("1", "true", "yes", "on")
+
+
 def get_hf_token() -> str | None:
     """Resolve the Hugging Face token from either accepted variable name."""
     return os.getenv("HF_TOKEN") or os.getenv("HUGGINGFACE_TOKEN") or None
@@ -145,10 +153,11 @@ DENOISE_LEVEL = 25
 # WHISPER
 # ==========================================================
 
-WHISPER_MODEL = "small"
+# Overridable from .env (Phase 5); the defaults are the benchmarked setup.
+WHISPER_MODEL = os.getenv("WHISPER_MODEL", "small").strip() or "small"
 
-DEVICE = "cpu"
-COMPUTE_TYPE = "int8"
+DEVICE = os.getenv("WHISPER_DEVICE", "cpu").strip() or "cpu"
+COMPUTE_TYPE = os.getenv("WHISPER_COMPUTE_TYPE", "int8").strip() or "int8"
 
 BEAM_SIZE = 5
 RETRY_BEAM_SIZE = 8
@@ -281,13 +290,13 @@ PROCESSING_REPORT_FILE = (
 # PERFORMANCE / CACHE SETTINGS
 # ==========================================================
 
-ENABLE_PIPELINE_CACHE = True
+ENABLE_PIPELINE_CACHE = _env_flag("ENABLE_PIPELINE_CACHE", True)
 
 # Expensive stages that may be reused when their input
 # recording has not changed.
 CACHE_NORMALIZED_AUDIO = True
-CACHE_TRANSCRIPTION = True
-CACHE_DIARIZATION = True
+CACHE_TRANSCRIPTION = _env_flag("CACHE_TRANSCRIPTION", True)
+CACHE_DIARIZATION = _env_flag("CACHE_DIARIZATION", True)
 
 # Cache information for identifying the processed recording.
 PIPELINE_CACHE_FILE = (
@@ -307,6 +316,8 @@ WORKER_MAX_RETRIES = int(os.getenv("WORKER_MAX_RETRIES", "3"))
 
 # Topic title generation mode: "extractive" (default) or "llm"
 TOPIC_TITLES = os.getenv("TOPIC_TITLES", "extractive").strip().lower()
+# Cap on all LLM topic-title requests of one meeting (TOPIC_TITLES=llm).
+TOPIC_TITLE_LLM_BUDGET_SECONDS = float(os.getenv("TOPIC_TITLE_LLM_BUDGET_SECONDS", "60") or 0)
 
 # ==========================================================
 # LIVEKIT SETTINGS (Phase 4 Real Live Meetings)

@@ -76,6 +76,12 @@ def test_live_recording_processes_through_review_approval_and_export(live_api, m
     assert state["status"] == "completed"
     assert state["processing"]["state"] == "done" and state["processing"]["progress"] == 1.0
     assert state["can_process"] is False and state["can_start"] is False
+    # Phase 5: per-stage timings travel with the processing state.
+    stages = {s["stage"]: s for s in state["processing"]["stage_timings"]["stages"]}
+    assert stages["speech_pipeline"]["status"] == "completed"
+    assert stages["verification"]["status"] == "completed"
+    assert stages["verification"]["duration_seconds"] is not None
+    assert stages["pdf_export"]["status"] == "skipped" and stages["pdf_export"]["duration_seconds"] is None
     assert db.get_meeting(mid)["status"] == "completed"
     assert client.get(f"/api/meetings/{mid}/status").json()["state"] == "done"
 
@@ -105,6 +111,12 @@ def test_live_recording_processes_through_review_approval_and_export(live_api, m
     assert any("u0000" in str(row) for row in mom["evidence_appendix"])
     pdf = client.get(f"/api/download-mom/{mid}")
     assert pdf.status_code == 200 and pdf.content[:4] == b"%PDF"
+    on_demand = {
+        s["stage"]: s
+        for s in client.get(f"/api/meetings/{mid}/status").json()["stage_timings"]["stages"]
+    }
+    assert on_demand["minutes_generation"]["status"] == "completed"
+    assert on_demand["pdf_export"]["status"] == "completed"
 
     # Participant mapping is available for the processed meeting.
     speakers = client.get(f"/api/live/meetings/{mid}/speakers", headers=host).json()
@@ -122,6 +134,10 @@ def test_failed_processing_is_visible_and_retry_runs_once(live_api, monkeypatch)
     assert state["processing"]["state"] == "failed"
     assert "asr crashed" in state["processing"]["error"]
     assert db.get_meeting(mid)["status"] == "failed"
+    failed = {s["stage"]: s for s in state["processing"]["stage_timings"]["stages"]}
+    assert failed["speech_pipeline"]["status"] == "failed"
+    assert "asr crashed" in failed["speech_pipeline"]["detail"]["error"]
+    assert "verification" not in failed                   # never claimed after a failure
 
     # Without retry=true a failed job is not resubmitted.
     plain = client.post(f"/api/live/meetings/{mid}/recording/process", headers=host)

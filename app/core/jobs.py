@@ -105,8 +105,15 @@ def run_pipeline(meeting_id: str, file_path: Path) -> None:
 
     _emit(meeting_id, "uploaded", "running")
 
+    # Per-stage timings for this run (Phase 5). Saving them is best effort
+    # and never affects the job itself.
+    from app.core.stage_timings import StageRecorder, use_recorder
+
+    recorder = StageRecorder.for_database(meeting_id)
+
     try:
-        _run_all_stages(meeting_id, file_path)
+        with use_recorder(recorder):
+            _run_all_stages(meeting_id, file_path)
         _set_meeting_status(meeting_id, "completed")
     except _StageError as exc:
         _emit(meeting_id, exc.stage, "failed", str(exc.cause))
@@ -164,6 +171,56 @@ def _run_stage(stage: str, fn):
     return result
 
 
+def _storage_path(meeting_id: str, kind: str, name: str):
+    try:
+        from app.core.storage import MeetingStorage
+
+        return MeetingStorage(meeting_id).path_for(kind, name)
+    except Exception:
+        return None
+
+
+def _pipeline_cache_hit(meeting_id: str) -> bool:
+    import json
+
+    path = _storage_path(meeting_id, "root", "pipeline_status.json")
+    try:
+        return bool(path and path.exists() and json.loads(path.read_text(encoding="utf-8")).get("cache_hit"))
+    except Exception:
+        return False
+
+
+def _describe_verification(handle, verification: dict) -> None:
+    """Verification outcome and its retrieval / NLI sub-stages."""
+    from app.core.stage_timings import current_recorder
+
+    handle.detail.update({
+        "claims_total": verification.get("claims_total"),
+        "final_counts": verification.get("final_counts"),
+    })
+    timings = verification.get("timings") or {}
+    if verification.get("status") == "semantic_unavailable":
+        handle.status = "fallback"
+        handle.detail["reason"] = str(verification.get("reason") or "")[:300]
+    recorder = current_recorder()
+    if recorder is None:
+        return
+    semantic_ran = verification.get("status") == "completed"
+    per_claim = (timings.get("per_claim_ms") or {}).values()
+    subs = {
+        "evidence_retrieval": (timings.get("retrieval_index_seconds") or 0.0)
+        + (timings.get("candidate_retrieval_seconds") or 0.0),
+        "nli_model_load": timings.get("nli_model_load_seconds"),
+        "nli_verification": sum(v.get("semantic", 0.0) for v in per_claim) / 1000.0,
+    }
+    for name, seconds in subs.items():
+        if semantic_ran and seconds is not None:
+            recorder.record(name, "completed", duration_seconds=seconds, parent_stage="verification")
+        else:
+            recorder.record(name, "skipped", parent_stage="verification",
+                            detail={"note": "Semantic verification did not run"})
+
+
 def _run_all_stages(meeting_id: str, file_path: Path) -> None:
     """
     Execute each pipeline stage sequentially, emitting DB progress after each.
@@ -190,7 +247,21 @@ def _run_all_stages(meeting_id: str, file_path: Path) -> None:
     def _run_core_pipeline():
         return run_recorded_pipeline(meeting_id, file_path, run_post_transcript=False)
 
-    transcript = _run_stage("merge", _run_core_pipeline)
+    from app.core.stage_timings import STAGE_FILE, current_recorder, timed_stage
+
+    stage_file = _storage_path(meeting_id, "metadata", STAGE_FILE)
+    if stage_file is not None:
+        stage_file.unlink(missing_ok=True)  # never import a previous run's stages
+    try:
+        with timed_stage("speech_pipeline") as speech:
+            transcript = _run_stage("merge", _run_core_pipeline)
+            if _pipeline_cache_hit(meeting_id):
+                speech.status = "cached"
+                speech.detail["note"] = "Transcript and speakers reused from the pipeline cache"
+    finally:
+        recorder = current_recorder()
+        if recorder is not None and stage_file is not None:
+            recorder.import_file(stage_file, parent_stage="speech_pipeline")
     _emit(meeting_id, "merge", "running")  # completed
 
     for stage in ("index", "topics", "extraction"):
@@ -227,7 +298,9 @@ def _run_all_stages(meeting_id: str, file_path: Path) -> None:
 
         return ensure_verification(meeting_id, force=True)
 
-    verification = _run_stage("verification", _run_verification)
+    with timed_stage("verification") as verification_stage:
+        verification = _run_stage("verification", _run_verification)
+        _describe_verification(verification_stage, verification)
     logger.info(
         "Verification for %s: status=%s counts=%s",
         meeting_id,
@@ -245,6 +318,15 @@ def _run_all_stages(meeting_id: str, file_path: Path) -> None:
     # MoM generation is handled by the /generate-mom endpoint on demand;
     # mark stage done here so status polling advances correctly.
     _emit(meeting_id, "mom", "running")
+    recorder = current_recorder()
+    if recorder is not None:
+        from app.core.stage_timings import ON_DEMAND_SEQ
+
+        for name in ("minutes_generation", "pdf_export"):
+            recorder.record(
+                name, "skipped", seq=ON_DEMAND_SEQ[name],
+                detail={"note": "Runs on demand when the minutes are opened or exported"},
+            )
 
     # ------------------------------------------------------------------ #
     # Done                                                                 #

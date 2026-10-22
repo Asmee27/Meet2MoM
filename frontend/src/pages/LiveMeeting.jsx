@@ -17,6 +17,7 @@ import {
   updateLiveConsent,
 } from "../services/api";
 import "./LiveMeeting.css";
+import StageTimings from "../components/StageTimings";
 
 // ============================================================================
 // Server-side recording helpers (Phase 4.2)
@@ -1554,6 +1555,7 @@ export default function LiveMeeting() {
           {processing.error && (
             <div className="lm-rec-notice error" style={{ marginTop: "10px" }}>{processing.error}</div>
           )}
+          <StageTimings timings={processing.stage_timings} />
         </div>
       )}
 

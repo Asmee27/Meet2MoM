@@ -454,7 +454,10 @@ def get_meeting_status(meeting_id: str):
                 "updated_at": meeting.get("created_at"),
             }
         raise HTTPException(status_code=404, detail="No status found for this meeting.")
-    return job.model_dump()
+    from app.core.stage_timings import timings_view
+
+    # stage_timings is an added field; existing fields are unchanged (Phase 5).
+    return {**job.model_dump(), "stage_timings": timings_view(meeting_id)}
 
 
 # ============================================================
@@ -1252,7 +1255,25 @@ def build_evidence_appendix(
     return appendix
 
 
+def _timed_on_demand(stage: str):
+    """Record MoM / PDF generation time against the meeting's latest run (Phase 5)."""
+    import functools
+
+    def decorate(fn):
+        @functools.wraps(fn)
+        def wrapper(meeting_id, *args, **kwargs):
+            from app.core.stage_timings import on_demand_stage
+
+            with on_demand_stage(str(meeting_id), stage):
+                return fn(meeting_id, *args, **kwargs)
+
+        return wrapper
+
+    return decorate
+
+
 @router.post("/meetings/{meeting_id}/approve")
+@_timed_on_demand("minutes_generation")
 def approve_meeting_review(
     meeting_id: str,
     request: ApproveReviewRequest,
@@ -1835,6 +1856,7 @@ def _llm_discussion_summary(storage: MeetingStorage, extraction: dict, utterance
     }
 
 
+@_timed_on_demand("minutes_generation")
 def create_mom(
     file_id: str,
 ):
@@ -2037,6 +2059,7 @@ def format_duration(
 # PDF GENERATION
 # ============================================================
 
+@_timed_on_demand("pdf_export")
 def build_pdf(
     file_id: str,
     mom: dict,

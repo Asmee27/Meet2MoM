@@ -14,6 +14,7 @@ from pydantic import BaseModel
 from app.core import config
 from app.core import db
 from app.core.jobs import run_pipeline
+from app.core.stage_timings import timings_view
 from app.core.storage import MeetingStorage, is_valid_meeting_id
 from app.services.live.livekit_service import (
     TokenVerificationError,
@@ -251,7 +252,10 @@ def recording_state(meeting: Dict[str, Any]) -> Dict[str, Any]:
         "last_stop_reason": last_stop_reason,
         "segments": [_segment_view(s) for s in segments],
         "artifact": artifact,
-        "processing": job.model_dump(mode="json") if job else None,
+        "processing": (
+            {**job.model_dump(mode="json"), "stage_timings": timings_view(meeting_id)}
+            if job else None
+        ),
         "can_start": (
             meeting["status"] == "active"
             and live is None
