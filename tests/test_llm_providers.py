@@ -739,3 +739,34 @@ def test_env_flag_parsing(monkeypatch):
         assert _env_flag("M2M_FLAG_TEST", not expected) is expected
     monkeypatch.setenv("M2M_FLAG_TEST", "")
     assert _env_flag("M2M_FLAG_TEST", True) is True
+
+
+# ---------------------------------------------------------------------------
+# Phase 6: every provider attempt is recorded with its outcome
+# ---------------------------------------------------------------------------
+
+def test_attempts_record_a_503_then_success(gemini):
+    error = urllib.error.HTTPError("u", 503, "busy", {}, io.BytesIO(b"busy"))
+    gemini(error, gemini_body({"decisions": [], "actions": []}))
+    client = LLMClient()
+    client.complete_json(system="s", user="u")
+    assert [a["outcome"] for a in client.attempts] == ["http_503", "ok"]
+    assert all(a["seconds"] >= 0 for a in client.attempts)
+
+
+def test_attempts_record_timeouts_and_reach_the_stats(gemini):
+    gemini(TimeoutError("timed out"))
+    stats = extract(make_meeting(LINES))
+    assert stats["mode_used"] == "rules"                       # fallback, never a false success
+    assert [a["outcome"] for a in stats["llm_attempts"]] == ["timeout", "timeout"]
+
+
+def test_a_request_refused_by_configuration_is_not_an_attempt(monkeypatch):
+    monkeypatch.setattr(llm_module.urllib.request, "urlopen", FakeProvider(b"{}"))
+    client = LLMClient(provider="openai", model="m", api_key=None, backoff_delays=[])
+    for attr in ("LLM_API_KEY", "OPENAI_API_KEY"):
+        monkeypatch.setattr(config, attr, None)
+    client.api_key = None
+    with pytest.raises(LLMClientError):
+        client.complete_json("s", "u")
+    assert client.attempts == [] and client.requests_made == 0

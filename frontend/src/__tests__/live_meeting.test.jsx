@@ -130,6 +130,8 @@ afterEach(() => {
 });
 
 beforeEach(() => {
+  // Phase 7: the app first asks who is signed in; here sign-in is off.
+  vi.spyOn(api, "getMe").mockResolvedValue({ auth_required: false, user: null });
   vi.spyOn(api, "listMeetings").mockResolvedValue([]);
   vi.spyOn(api, "getReview").mockResolvedValue({
     draft: { draft_status: "draft", meeting_title: "Sprint Planning" },
@@ -187,18 +189,18 @@ function recordingState(overrides = {}) {
 }
 
 describe("Phase 4.1: Real LiveKit Meeting UI & WebRTC Lifecycle", () => {
-  it("renders 'Start Live Meeting' alongside 'Upload Recorded Meeting' on initial source selection", () => {
+  it("renders 'Start Live Meeting' alongside 'Upload Recorded Meeting' on initial source selection", async () => {
     render(<App />);
 
-    expect(screen.getByText("Choose Meeting Source")).toBeTruthy();
+    expect(await screen.findByText("Choose Meeting Source")).toBeTruthy();
     expect(screen.getByText("Upload Recorded Meeting")).toBeTruthy();
     expect(screen.getByText("Start Live Meeting")).toBeTruthy();
   });
 
-  it("navigates to Live Meeting flow from mode selection", () => {
+  it("navigates to Live Meeting flow from mode selection", async () => {
     render(<App />);
 
-    const liveBtn = screen.getByText("Start Live Meeting").closest("button");
+    const liveBtn = (await screen.findByText("Start Live Meeting")).closest("button");
     fireEvent.click(liveBtn);
 
     expect(screen.getByText("Create a Live Meeting")).toBeTruthy();

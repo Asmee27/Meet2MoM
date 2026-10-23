@@ -9,6 +9,52 @@ const defaultBaseUrl =
 export const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL || defaultBaseUrl;
 
+// Phase 7: the session is an HttpOnly cookie, so every API request (and the
+// <audio> / PDF links, which the browser handles itself) must carry cookies.
+if (typeof window !== "undefined" && window.fetch && !window.__m2mCredentialsFetch) {
+  const browserFetch = window.fetch.bind(window);
+  window.fetch = (input, init = {}) => {
+    const url = typeof input === "string" ? input : input?.url || "";
+    if (url.startsWith(API_BASE_URL)) {
+      return browserFetch(input, { credentials: "include", ...init });
+    }
+    return browserFetch(input, init);
+  };
+  window.__m2mCredentialsFetch = true;
+}
+
+async function authRequest(path, { method = "GET", body } = {}) {
+  const res = await fetch(`${API_BASE_URL}${path}`, {
+    method,
+    credentials: "include",
+    headers: body ? { "Content-Type": "application/json" } : undefined,
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  let data = null;
+  try {
+    data = await res.json();
+  } catch {
+    data = null;
+  }
+  if (!res.ok) {
+    const error = new Error(data?.detail || `Request failed (${res.status})`);
+    error.status = res.status;
+    throw error;
+  }
+  return data;
+}
+
+// Accounts (Phase 7). getMe resolves to { auth_required, user } or throws 401.
+export const getMe = () => authRequest("/api/auth/me");
+export const login = (email, password) => authRequest("/api/auth/login", { method: "POST", body: { email, password } });
+export const register = (email, password, display_name) =>
+  authRequest("/api/auth/register", { method: "POST", body: { email, password, display_name } });
+export const logout = () => authRequest("/api/auth/logout", { method: "POST" });
+export const createInvitation = (meetingId) =>
+  authRequest(`/api/auth/meetings/${encodeURIComponent(meetingId)}/invitations`, { method: "POST" });
+export const acceptInvitation = (token) =>
+  authRequest("/api/auth/invitations/accept", { method: "POST", body: { token } });
+
 // ---------------------------------------------------------------------------
 // Health
 // ---------------------------------------------------------------------------
@@ -388,3 +434,19 @@ export async function processLiveRecording(meetingId, token, { retry = false } =
     fallback: "Failed to start processing.",
   });
 }
+
+// ---------------------------------------------------------------------------
+// Meeting deletion (Phase 10) and commitment ledger (Phase 9)
+// ---------------------------------------------------------------------------
+export const deleteMeeting = (meetingId) =>
+  authRequest(`/api/meetings/${encodeURIComponent(meetingId)}`, { method: "DELETE" });
+export const getMeetingCommitments = (meetingId) =>
+  authRequest(`/api/meetings/${encodeURIComponent(meetingId)}/commitments`);
+export const proposeCommitmentUpdates = (meetingId) =>
+  authRequest(`/api/meetings/${encodeURIComponent(meetingId)}/commitments/propose`, { method: "POST" });
+export const reviewCommitmentUpdate = (meetingId, commitmentId, status, note = "", reviewer = "") =>
+  authRequest(
+    `/api/meetings/${encodeURIComponent(meetingId)}/commitments/${encodeURIComponent(commitmentId)}/review`,
+    { method: "POST", body: { status, note, reviewer } },
+  );
+export const getLedger = () => authRequest("/api/commitments");

@@ -118,6 +118,8 @@ def _llm_call_stats(client: Any, report: Dict[str, Any], windows: int) -> Dict[s
         "llm_requests": int(getattr(client, "requests_made", 0) or 0),
         "llm_provider_seconds": round(float(getattr(client, "provider_seconds", 0.0) or 0.0), 3),
         "llm_cache_hits": int(report.get("cache_hits", 0) or 0),
+        # Every provider request with its wait and outcome (ok, http_503, timeout...).
+        "llm_attempts": list(getattr(client, "attempts", []) or [])[:20],
     }
 
 

@@ -182,6 +182,18 @@ TARGET_LANGUAGES = {
 # empty for automatic detection, e.g. for code-switched meetings.
 FORCE_LANGUAGE = (os.getenv("WHISPER_LANGUAGE") or "").strip().lower() or None
 
+# Whisper initial prompt (Phase 6 transcript-quality fix):
+#   none (default): no prompt
+#   language: a short instruction to keep the spoken language
+#   vocabulary: the language instruction plus TECHNICAL_VOCABULARY and
+#     PARTICIPANT_NAMES (the old behaviour). On a real meeting this replaced an
+#     unclear "by Friday" with "by FFmpeg", a word from the vocabulary list.
+WHISPER_PROMPT = (os.getenv("WHISPER_PROMPT") or "none").strip().lower()
+# Split a decoded Whisper segment where its words are separated by a pause
+# longer than this (seconds). Voice-activity filtering glues separate speech
+# chunks together, so one segment could otherwise span 30 s of silence.
+WHISPER_SPLIT_GAP_SECONDS = float(os.getenv("WHISPER_SPLIT_GAP_SECONDS", "1.5") or 1.5)
+
 
 # ==========================================================
 # TECHNICAL / DOMAIN VOCABULARY
@@ -325,6 +337,12 @@ SPEECH_PIPELINE = os.getenv("SPEECH_PIPELINE", "auto").strip().lower()
 # Load Whisper, pyannote, embeddings and NLI when the worker starts, so even the
 # first meeting avoids model start-up (only with the in-process speech pipeline).
 WORKER_PRELOAD_MODELS = _env_flag("WORKER_PRELOAD_MODELS", True)
+
+# Accounts and meeting access (Phase 7). On by default: every /api meeting
+# route needs a signed-in member. false = the old open local mode.
+AUTH_REQUIRED = _env_flag("AUTH_REQUIRED", True)
+# Set true when the API is served over HTTPS so the session cookie is Secure.
+SESSION_COOKIE_SECURE = _env_flag("SESSION_COOKIE_SECURE", False)
 
 # Topic title generation mode: "extractive" (default) or "llm"
 TOPIC_TITLES = os.getenv("TOPIC_TITLES", "extractive").strip().lower()

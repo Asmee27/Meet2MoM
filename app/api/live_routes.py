@@ -7,7 +7,9 @@ from pathlib import Path
 from uuid import uuid4
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, status
+from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Request, status
+
+from app.core import auth
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
@@ -287,12 +289,14 @@ def get_live_config():
 
 
 @router.post("/rooms")
-async def create_room(payload: CreateRoomRequest):
+async def create_room(payload: CreateRoomRequest, request: Request):
     """
     Create or initialize a LiveKit room.
-    Generates a shareable room identifier.
+    Generates a shareable room identifier. With sign-in required, the caller
+    becomes the meeting's owner (and therefore its host).
     """
     _require_configured()
+    user = auth.current_user(request)
 
     room_name = payload.room_name
     if not room_name:
@@ -321,11 +325,16 @@ async def create_room(payload: CreateRoomRequest):
         title=payload.title or "Live Meeting",
         room_sid=room_info.get("sid"),
     )
+    if auth.auth_required():
+        owner = (db.get_meeting(meeting["meeting_id"]) or {}).get("owner_user_id")
+        if owner and owner != user["user_id"]:
+            raise HTTPException(status_code=409, detail="This room belongs to another meeting owner.")
+        db.add_meeting_member(meeting["meeting_id"], user["user_id"], "owner")
     return {**room_info, "meeting_id": meeting["meeting_id"]}
 
 
 @router.post("/token")
-def create_token(payload: TokenRequest):
+def create_token(payload: TokenRequest, request: Request):
     """
     Generate an authenticated LiveKit participant token.
     Grants publishing, subscription, and data messaging rights.
@@ -337,25 +346,36 @@ def create_token(payload: TokenRequest):
     _require_configured()
 
     clean_room = sanitize_room_name(payload.room_name)
-    identity = payload.participant_identity
-    if not identity:
-        identity = f"user_{uuid4().hex[:6]}"
+    client_meta = dict(payload.metadata or {})
+    requested_consent = client_meta.pop("consented", None)
+    db.init_db()
+
+    if auth.auth_required():
+        # The server chooses identity, name and host role from the session and
+        # the meeting membership; the client's values are ignored.
+        user = auth.current_user(request)
+        meeting = db.get_active_live_meeting(clean_room)
+        if meeting is None:
+            raise HTTPException(status_code=404, detail="Meeting not found.")
+        role = db.get_member_role(meeting["meeting_id"], user["user_id"])
+        if role is None:
+            raise HTTPException(status_code=403, detail="Ask the host for an invitation to join this meeting.")
+        identity, name, is_host = user["user_id"], user["display_name"], role == "owner"
+    else:
+        identity = payload.participant_identity or f"user_{uuid4().hex[:6]}"
+        name = payload.participant_name.strip() or "Guest Participant"
+        is_host = payload.is_host
+        meeting = db.get_or_create_live_meeting(clean_room, title=client_meta.get("topic"))
     if is_recorder_identity(identity):
         raise HTTPException(status_code=400, detail="Reserved participant identity.")
 
-    name = payload.participant_name.strip() or "Guest Participant"
-    client_meta = dict(payload.metadata or {})
-    requested_consent = client_meta.pop("consented", None)
-
-    db.init_db()
-    meeting = db.get_or_create_live_meeting(clean_room, title=client_meta.get("topic"))
     meeting_id = meeting["meeting_id"]
-    if payload.is_host and not db.claim_live_meeting_host(meeting_id, identity):
+    if is_host and not db.claim_live_meeting_host(meeting_id, identity):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="This meeting already has a host. Join as a participant instead.",
         )
-    db.upsert_live_participant(meeting_id, identity, name=name, is_host=payload.is_host)
+    db.upsert_live_participant(meeting_id, identity, name=name, is_host=is_host)
 
     previously = db.is_participant_consented(meeting_id, identity)
     if requested_consent is True and not previously:
@@ -369,7 +389,7 @@ def create_token(payload: TokenRequest):
             room_name=clean_room,
             identity=identity,
             name=name,
-            is_host=payload.is_host,
+            is_host=is_host,
             metadata={**client_meta, "consented": consented, "meeting_id": meeting_id},
         )
         return {
@@ -378,7 +398,7 @@ def create_token(payload: TokenRequest):
             "room_name": clean_room,
             "participant_identity": identity,
             "participant_name": name,
-            "is_host": payload.is_host,
+            "is_host": is_host,
             "meeting_id": meeting_id,
             "consented": consented,
         }

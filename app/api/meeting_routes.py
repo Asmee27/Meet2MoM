@@ -6,7 +6,9 @@ import json
 import re
 import shutil
 
-from fastapi import APIRouter, BackgroundTasks, File, HTTPException, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Request, UploadFile
+
+from app.core import auth
 from fastapi.responses import FileResponse, JSONResponse
 
 from reportlab.lib import colors
@@ -47,6 +49,8 @@ from app.services.verification.claims_view import build_claims_view
 router = APIRouter(
     prefix="/api",
     tags=["Meetings"],
+    # Phase 7: a signed-in user, and membership of the meeting in the path.
+    dependencies=[Depends(auth.require_meeting_access)],
 )
 
 
@@ -283,6 +287,7 @@ def clean_text(
 async def upload_meeting(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
+    request: Request = None,
 ):
     """
     Upload a meeting recording and immediately queue the full pipeline.
@@ -363,6 +368,11 @@ async def upload_meeting(
     except Exception:
         pass  # DB write failures must not block upload response
 
+    # The uploader owns the meeting (Phase 7).
+    uploader = getattr(request.state, "user", None) if request is not None else None
+    if uploader:
+        _db.add_meeting_member(file_id, uploader["user_id"], "owner")
+
     # When JOB_RUNNER is worker, only enqueue without starting inline BackgroundTasks
     if (getattr(config, "JOB_RUNNER", "inline") or "inline").strip().lower() != "worker":
         background_tasks.add_task(run_pipeline, file_id, destination)
@@ -385,9 +395,11 @@ async def upload_meeting(
 # ============================================================
 
 @router.get("/meetings")
-def list_meetings():
-    """List previously processed meetings that have indexed utterances."""
+def list_meetings(request: Request):
+    """List previously processed meetings that have indexed utterances (the user's own)."""
     _db.init_db()
+    user = getattr(request.state, "user", None)
+    allowed = set(_db.get_member_meeting_ids(user["user_id"])) if auth.auth_required() and user else None
     with _db.get_conn() as conn:
         rows = conn.execute(
             """
@@ -423,6 +435,7 @@ def list_meetings():
         dict(row)
         for row in rows
         if row["utterance_count"] > 0
+        and (allowed is None or row["meeting_id"] in allowed)
     ]
 
 
@@ -1071,12 +1084,14 @@ def update_review_item_endpoint(
     meeting_id: str,
     item_id: str,
     request: ReviewItemUpdate,
+    http_request: Request,
 ):
     """
     Update a decision or action item in the review draft.
     Records field-level diffs in the review audit log.
     Rejects changes if the draft is currently approved (must be reopened first).
     """
+    request.reviewer = auth.reviewer_identity(http_request, request.reviewer)
     validate_file_id(meeting_id)
     draft = _db.init_review_draft(meeting_id)
     if draft["draft_status"] == "approved":
@@ -1108,11 +1123,13 @@ def update_review_item_endpoint(
 def add_review_item_endpoint(
     meeting_id: str,
     request: ReviewItemCreate,
+    http_request: Request,
 ):
     """
     Add a new human-curated decision or action item to the review draft.
     Rejects additions if the draft is currently approved.
     """
+    request.reviewer = auth.reviewer_identity(http_request, request.reviewer)
     validate_file_id(meeting_id)
     draft = _db.init_review_draft(meeting_id)
     if draft["draft_status"] == "approved":
@@ -1277,6 +1294,7 @@ def _timed_on_demand(stage: str):
 def approve_meeting_review(
     meeting_id: str,
     request: ApproveReviewRequest,
+    http_request: Request,
 ):
     """
     Explicitly approve and lock the Minutes of Meeting.
@@ -1284,6 +1302,7 @@ def approve_meeting_review(
     in the audit log, and generates the approved PDF artifact.
     Idempotent: re-approving an already-approved draft returns the current snapshot.
     """
+    request.reviewer = auth.reviewer_identity(http_request, request.reviewer)
     validate_file_id(meeting_id)
     if not request.reviewer or not request.reviewer.strip():
         raise HTTPException(status_code=422, detail="Reviewer name is required.")
@@ -1440,7 +1459,15 @@ def approve_meeting_review(
     write_json(storage.root / "mom.json", mom)
     pdf_path = build_pdf(meeting_id, mom)
 
+    # Phase 9: approved action items become commitments in the owner's ledger.
+    from app.services.ledger import commitment_ledger
+
+    commitments_recorded = commitment_ledger.record_commitments(
+        meeting_id, mom, commitment_ledger.ledger_owner(meeting_id)
+    )
+
     return {
+        "commitments_recorded": commitments_recorded,
         "status": "approved",
         "message": "Minutes of Meeting approved and locked successfully.",
         "snapshot_id": snapshot["snapshot_id"],
@@ -1456,11 +1483,13 @@ def approve_meeting_review(
 def reopen_meeting_review(
     meeting_id: str,
     request: ReopenReviewRequest,
+    http_request: Request,
 ):
     """
     Reopen an approved meeting review for further corrections.
     Preserves previously approved snapshot rows in approved_snapshots.
     """
+    request.reviewer = auth.reviewer_identity(http_request, request.reviewer)
     validate_file_id(meeting_id)
     if not request.reviewer or not request.reviewer.strip():
         raise HTTPException(status_code=422, detail="Reviewer name is required.")
@@ -1516,6 +1545,85 @@ def export_mom_json(meeting_id: str, preview: bool = False):
         status_code=409,
         detail="MoM has not been approved yet. Approve minutes before exporting, or pass ?preview=true to preview.",
     )
+
+
+@router.delete("/meetings/{meeting_id}")
+def delete_meeting_endpoint(meeting_id: str, http_request: Request):
+    """
+    Permanently delete a meeting and all derived data (owner only when sign-in
+    is on). Refused while it is being processed or recorded.
+    """
+    from app.services.meeting_deletion import DeletionRefused, delete_meeting
+
+    validate_file_id(meeting_id)
+    auth.require_owner(http_request, meeting_id)
+    if _db.get_meeting(meeting_id) is None:
+        raise HTTPException(status_code=404, detail="Meeting not found.")
+    try:
+        return delete_meeting(meeting_id)
+    except DeletionRefused as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+# ============================================================
+# COMMITMENT LEDGER (Phase 9)
+# ============================================================
+
+class CommitmentReviewRequest(BaseModel):
+    status: str
+    note: Optional[str] = None
+    reviewer: Optional[str] = None
+
+
+@router.get("/commitments")
+def list_ledger(request: Request):
+    """The signed-in user's commitment ledger with each commitment's history."""
+    from app.services.ledger import commitment_ledger
+
+    user = getattr(request.state, "user", None)
+    owner = user["user_id"] if (auth.auth_required() and user) else None
+    return {"commitments": commitment_ledger.list_commitments(owner)}
+
+
+@router.get("/meetings/{meeting_id}/commitments")
+def get_meeting_commitments(meeting_id: str):
+    """Commitments created by this meeting and proposals for earlier ones."""
+    from app.services.ledger import commitment_ledger
+
+    validate_file_id(meeting_id)
+    owner = commitment_ledger.ledger_owner(meeting_id)
+    created = [c for c in commitment_ledger.list_commitments(owner) if c["source_meeting_id"] == meeting_id]
+    return {"created_here": created, "follow_ups": commitment_ledger.meeting_follow_ups(meeting_id)}
+
+
+@router.post("/meetings/{meeting_id}/commitments/propose")
+def propose_commitment_updates(meeting_id: str):
+    """Check the ledger's outstanding commitments against this meeting (proposals only)."""
+    from app.services.ledger import commitment_ledger
+
+    validate_file_id(meeting_id)
+    try:
+        commitment_ledger.propose_updates(meeting_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"follow_ups": commitment_ledger.meeting_follow_ups(meeting_id)}
+
+
+@router.post("/meetings/{meeting_id}/commitments/{commitment_id}/review")
+def review_commitment_update(meeting_id: str, commitment_id: str, payload: CommitmentReviewRequest,
+                             http_request: Request):
+    """A reviewer confirms or corrects a proposal; only this changes a commitment's status."""
+    from app.services.ledger import commitment_ledger
+
+    validate_file_id(meeting_id)
+    reviewer = auth.reviewer_identity(http_request, payload.reviewer)
+    try:
+        result = commitment_ledger.review_update(meeting_id, commitment_id, payload.status, reviewer, payload.note)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {**result, "follow_ups": commitment_ledger.meeting_follow_ups(meeting_id)}
 
 
 @router.get("/meetings/{meeting_id}/audio")

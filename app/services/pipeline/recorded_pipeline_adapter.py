@@ -930,7 +930,7 @@ def _describe_extraction(handle, stats: dict) -> None:
     keys = (
         "status", "mode_requested", "mode_used", "extractor_version", "accepted", "dropped",
         "llm_provider", "llm_model", "llm_windows", "llm_requests", "llm_provider_seconds",
-        "llm_cache_hits",
+        "llm_cache_hits", "llm_attempts",
     )
     handle.detail.update({k: stats[k] for k in keys if stats.get(k) is not None})
     if stats.get("fallback_reason"):

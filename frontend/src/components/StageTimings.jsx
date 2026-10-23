@@ -57,7 +57,10 @@ function outcome(stage) {
 function note(stage) {
   const d = stage.detail || {};
   if (stage.stage === "extraction" && d.mode_used === "llm") {
-    return `LLM: ${d.llm_provider || "?"} / ${d.llm_model || "?"} · provider wait ${formatSeconds(d.llm_provider_seconds || 0)} · ${d.llm_requests ?? 0} request(s)`;
+    const attempts = (d.llm_attempts || [])
+      .map((a) => `${a.outcome} ${formatSeconds(a.seconds)}`)
+      .join(", ");
+    return `LLM: ${d.llm_provider || "?"} / ${d.llm_model || "?"} · provider wait ${formatSeconds(d.llm_provider_seconds || 0)} · ${d.llm_requests ?? 0} request(s)${attempts ? ` (${attempts})` : ""}`;
   }
   return d.fallback_reason || d.title_fallback_reason || d.reason || d.error || null;
 }

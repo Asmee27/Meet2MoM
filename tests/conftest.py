@@ -34,6 +34,8 @@ from app.core import db  # noqa: E402  (must follow the config redirect)
 # Tests never use the developer's real LLM configuration from .env: start every
 # session with the stub provider and no keys. Tests that need a provider patch
 # config themselves and fake the HTTP layer.
+# The legacy suites predate accounts; Phase 7 auth tests switch this on.
+config.AUTH_REQUIRED = False
 config.LLM_PROVIDER = "stub"
 config.LLM_MODEL = "mock-v1"
 for _key in ("LLM_API_KEY", "GEMINI_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY"):

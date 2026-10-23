@@ -163,7 +163,7 @@ def init_db(db_path: Optional[Path | str] = None) -> None:
 # Migrations only ADD tables/indexes; they never rewrite or drop existing
 # data. Each step is idempotent (IF NOT EXISTS) and bumps user_version.
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 6
 
 _MIGRATION_V1 = """
 CREATE TABLE IF NOT EXISTS extraction_runs (
@@ -388,6 +388,90 @@ CREATE INDEX IF NOT EXISTS idx_stage_timings_meeting
 """
 
 
+# Phase 7: accounts, sessions, meeting membership and invitations.
+# Session and invitation tokens are stored only as SHA-256 hashes.
+_MIGRATION_V5 = """
+CREATE TABLE IF NOT EXISTS users (
+    user_id        TEXT PRIMARY KEY,
+    email          TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    display_name   TEXT NOT NULL,
+    password_hash  TEXT NOT NULL,
+    created_at     TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS sessions (
+    token_hash  TEXT PRIMARY KEY,
+    user_id     TEXT NOT NULL,
+    created_at  TEXT NOT NULL,
+    expires_at  TEXT NOT NULL,
+    FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS meeting_members (
+    meeting_id  TEXT NOT NULL,
+    user_id     TEXT NOT NULL,
+    role        TEXT NOT NULL CHECK (role IN ('owner', 'member')),
+    added_at    TEXT NOT NULL,
+    PRIMARY KEY (meeting_id, user_id),
+    FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_meeting_members_user ON meeting_members(user_id);
+
+CREATE TABLE IF NOT EXISTS meeting_invitations (
+    token_hash  TEXT PRIMARY KEY,
+    meeting_id  TEXT NOT NULL,
+    created_by  TEXT NOT NULL,
+    created_at  TEXT NOT NULL,
+    expires_at  TEXT NOT NULL,
+    FOREIGN KEY (created_by) REFERENCES users(user_id) ON DELETE CASCADE
+);
+"""
+
+
+# Phase 9: evidence-linked commitment ledger. A commitment is created only
+# from a human-approved action item; its status changes only when a reviewer
+# confirms or corrects a proposal (commitment_updates keeps the history).
+_MIGRATION_V6 = """
+CREATE TABLE IF NOT EXISTS commitments (
+    commitment_id      TEXT PRIMARY KEY,
+    ledger_owner_id    TEXT,
+    source_meeting_id  TEXT NOT NULL,
+    source_item_id     TEXT NOT NULL,
+    text               TEXT NOT NULL,
+    assignee           TEXT,
+    assignee_user_id   TEXT,
+    deadline           TEXT,
+    evidence_ids       TEXT NOT NULL DEFAULT '[]',
+    status             TEXT NOT NULL CHECK (status IN ('open', 'done', 'delayed')),
+    created_at         TEXT NOT NULL,
+    updated_at         TEXT NOT NULL,
+    UNIQUE (source_meeting_id, source_item_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_commitments_owner ON commitments(ledger_owner_id, status);
+
+CREATE TABLE IF NOT EXISTS commitment_updates (
+    update_id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    commitment_id     TEXT NOT NULL,
+    meeting_id        TEXT NOT NULL,
+    proposed_status   TEXT NOT NULL CHECK (proposed_status IN ('done', 'delayed', 'no_update')),
+    evidence_ids      TEXT NOT NULL DEFAULT '[]',
+    scores            TEXT,
+    method            TEXT,
+    review_status     TEXT NOT NULL DEFAULT 'proposed'
+                      CHECK (review_status IN ('proposed', 'confirmed', 'corrected')),
+    final_status      TEXT CHECK (final_status IN ('done', 'delayed', 'no_update')),
+    reviewer          TEXT,
+    note              TEXT,
+    created_at        TEXT NOT NULL,
+    reviewed_at       TEXT,
+    UNIQUE (commitment_id, meeting_id),
+    FOREIGN KEY (commitment_id) REFERENCES commitments(commitment_id) ON DELETE CASCADE
+);
+"""
+
+
 def _migrate(conn: sqlite3.Connection) -> None:
     current = conn.execute("PRAGMA user_version").fetchone()[0]
     if current < 1:
@@ -405,6 +489,18 @@ def _migrate(conn: sqlite3.Connection) -> None:
     if current < 4:
         conn.executescript(_MIGRATION_V4)
         conn.execute("PRAGMA user_version = 4")
+        current = 4
+    if current < 5:
+        conn.executescript(_MIGRATION_V5)
+        try:
+            conn.execute("ALTER TABLE meetings ADD COLUMN owner_user_id TEXT")
+        except sqlite3.OperationalError:
+            pass
+        conn.execute("PRAGMA user_version = 5")
+        current = 5
+    if current < 6:
+        conn.executescript(_MIGRATION_V6)
+        conn.execute("PRAGMA user_version = 6")
 
 
 def get_schema_version(db_path: Optional[Path | str] = None) -> int:
@@ -2485,3 +2581,114 @@ def get_stage_timings(
         item["detail"] = json.loads(item["detail"]) if item["detail"] else {}
         out.append(item)
     return out
+
+
+# ---------------------------------------------------------------------------
+# Phase 7: users, sessions, membership, invitations
+# ---------------------------------------------------------------------------
+
+def create_user(user_id: str, email: str, display_name: str, password_hash: str,
+                db_path: Optional[Path | str] = None) -> bool:
+    """False when the email is already registered."""
+    try:
+        with get_conn(db_path) as conn:
+            conn.execute(
+                "INSERT INTO users (user_id, email, display_name, password_hash, created_at) VALUES (?, ?, ?, ?, ?)",
+                (user_id, email.strip().lower(), display_name.strip(), password_hash, _now_iso()),
+            )
+        return True
+    except sqlite3.IntegrityError:
+        return False
+
+
+def get_user_by_email(email: str, db_path: Optional[Path | str] = None) -> Optional[Dict[str, Any]]:
+    with get_conn(db_path) as conn:
+        row = conn.execute("SELECT * FROM users WHERE email = ?", (email.strip().lower(),)).fetchone()
+    return dict(row) if row else None
+
+
+def get_user(user_id: str, db_path: Optional[Path | str] = None) -> Optional[Dict[str, Any]]:
+    with get_conn(db_path) as conn:
+        row = conn.execute("SELECT * FROM users WHERE user_id = ?", (user_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def create_session(token_hash: str, user_id: str, expires_at: str,
+                   db_path: Optional[Path | str] = None) -> None:
+    with get_conn(db_path) as conn:
+        conn.execute(
+            "INSERT INTO sessions (token_hash, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)",
+            (token_hash, user_id, _now_iso(), expires_at),
+        )
+
+
+def get_session_user(token_hash: str, now_iso: str,
+                     db_path: Optional[Path | str] = None) -> Optional[Dict[str, Any]]:
+    with get_conn(db_path) as conn:
+        row = conn.execute(
+            """
+            SELECT u.user_id, u.email, u.display_name FROM sessions s
+            JOIN users u ON u.user_id = s.user_id
+            WHERE s.token_hash = ? AND s.expires_at > ?
+            """,
+            (token_hash, now_iso),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def delete_session(token_hash: str, db_path: Optional[Path | str] = None) -> None:
+    with get_conn(db_path) as conn:
+        conn.execute("DELETE FROM sessions WHERE token_hash = ?", (token_hash,))
+
+
+def add_meeting_member(meeting_id: str, user_id: str, role: str,
+                       db_path: Optional[Path | str] = None) -> None:
+    """Idempotent; never downgrades an owner."""
+    with get_conn(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO meeting_members (meeting_id, user_id, role, added_at) VALUES (?, ?, ?, ?)
+            ON CONFLICT(meeting_id, user_id) DO UPDATE SET
+                role = CASE WHEN meeting_members.role = 'owner' THEN 'owner' ELSE excluded.role END
+            """,
+            (meeting_id, user_id, role, _now_iso()),
+        )
+        if role == "owner":
+            conn.execute(
+                "UPDATE meetings SET owner_user_id = ? WHERE meeting_id = ? AND owner_user_id IS NULL",
+                (user_id, meeting_id),
+            )
+
+
+def get_member_role(meeting_id: str, user_id: str, db_path: Optional[Path | str] = None) -> Optional[str]:
+    with get_conn(db_path) as conn:
+        row = conn.execute(
+            "SELECT role FROM meeting_members WHERE meeting_id = ? AND user_id = ?", (meeting_id, user_id)
+        ).fetchone()
+    return row["role"] if row else None
+
+
+def get_member_meeting_ids(user_id: str, db_path: Optional[Path | str] = None) -> List[str]:
+    with get_conn(db_path) as conn:
+        rows = conn.execute("SELECT meeting_id FROM meeting_members WHERE user_id = ?", (user_id,)).fetchall()
+    return [r["meeting_id"] for r in rows]
+
+
+def create_invitation(token_hash: str, meeting_id: str, created_by: str, expires_at: str,
+                      db_path: Optional[Path | str] = None) -> None:
+    with get_conn(db_path) as conn:
+        conn.execute(
+            "INSERT INTO meeting_invitations (token_hash, meeting_id, created_by, created_at, expires_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (token_hash, meeting_id, created_by, _now_iso(), expires_at),
+        )
+
+
+def get_invitation(token_hash: str, now_iso: str,
+                   db_path: Optional[Path | str] = None) -> Optional[Dict[str, Any]]:
+    with get_conn(db_path) as conn:
+        row = conn.execute(
+            "SELECT * FROM meeting_invitations WHERE token_hash = ? AND expires_at > ?", (token_hash, now_iso)
+        ).fetchone()
+    return dict(row) if row else None
+

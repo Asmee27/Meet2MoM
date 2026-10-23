@@ -3193,3 +3193,35 @@ h1 {
     grid-template-columns: 1fr;
   }
 }
+
+/* Phase 7: sign-in screen and signed-in user */
+.auth-shell { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 16px; background: #f1f5f9; }
+.auth-card { width: 100%; max-width: 380px; background: #fff; border-radius: 14px; padding: 28px; box-shadow: 0 10px 30px rgba(15, 23, 42, 0.12); display: flex; flex-direction: column; gap: 12px; }
+.auth-card h1 { margin: 0; font-size: 1.5rem; }
+.auth-subtitle { margin: 0 0 4px; color: #475569; font-size: 0.92rem; }
+.auth-card label { display: flex; flex-direction: column; gap: 4px; font-size: 0.85rem; font-weight: 600; color: #334155; }
+.auth-card input { padding: 10px 12px; border: 1px solid #cbd5e1; border-radius: 8px; font-size: 0.95rem; }
+.auth-card input:focus { outline: 2px solid #6366f1; outline-offset: 1px; }
+.auth-card button[type="submit"] { padding: 10px; border: 0; border-radius: 8px; background: #4f46e5; color: #fff; font-weight: 600; cursor: pointer; }
+.auth-card button[type="submit"]:disabled { opacity: 0.6; cursor: default; }
+.auth-switch { background: none; border: 0; color: #4f46e5; cursor: pointer; font-size: 0.85rem; }
+.auth-error { background: #fef2f2; color: #b91c1c; border-radius: 8px; padding: 8px 10px; font-size: 0.85rem; }
+.header-user { display: flex; align-items: center; gap: 10px; margin-left: auto; font-size: 0.85rem; }
+.header-signout { background: none; border: 1px solid #cbd5e1; border-radius: 6px; padding: 4px 10px; cursor: pointer; }
+
+/* Phase 9/10: commitment ledger and meeting list actions */
+.commitment-panel h4 { margin: 12px 0 6px; font-size: 0.95rem; }
+.commitment-list { list-style: none; padding: 0; margin: 8px 0; display: flex; flex-direction: column; gap: 10px; }
+.commitment-list > li { border: 1px solid #e2e8f0; border-radius: 10px; padding: 10px 12px; display: flex; flex-direction: column; gap: 4px; }
+.commitment-status { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 0.78rem; font-weight: 600; background: #e2e8f0; margin-left: 6px; }
+.commitment-status.status-done { background: #dcfce7; color: #166534; }
+.commitment-status.status-delayed { background: #fef3c7; color: #92400e; }
+.commitment-status.status-no_update, .commitment-status.status-open { background: #e0e7ff; color: #3730a3; }
+.commitment-evidence { margin: 4px 0 0; padding-left: 18px; font-size: 0.85rem; }
+.commitment-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.commitment-actions input { flex: 1 1 160px; padding: 6px 8px; border: 1px solid #cbd5e1; border-radius: 6px; }
+.commitment-actions button, .commitment-check { padding: 6px 10px; border-radius: 6px; border: 1px solid #6366f1; background: #fff; color: #4338ca; cursor: pointer; }
+.previous-meeting-item { display: flex; gap: 8px; align-items: stretch; }
+.previous-meeting-item .previous-meeting-row { flex: 1; }
+.previous-meeting-delete { border: 1px solid #fecaca; color: #b91c1c; background: #fff; border-radius: 8px; padding: 0 12px; cursor: pointer; }
+@media (max-width: 600px) { .previous-meeting-item { flex-direction: column; } .previous-meeting-delete { padding: 8px; } }

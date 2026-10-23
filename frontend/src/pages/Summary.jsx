@@ -1,7 +1,10 @@
 import { useMeetingFlow } from "../context/MeetingFlowContext";
 import "../components/ClaimVerification.css";
+import CommitmentPanel from "../components/CommitmentPanel";
+import { useAuth } from "../components/AuthGate";
 
 export default function Summary() {
+  const { user } = useAuth();
   const {
     selectedFile,
     setSelectedFile,
@@ -360,6 +363,12 @@ export default function Summary() {
                     ))}
                   </div>
                 )}
+
+                {/* Phase 9: commitment ledger */}
+                <CommitmentPanel
+                  meetingId={backendFileId}
+                  reviewerName={user?.display_name || "Local reviewer"}
+                />
 
                 {/* FOLLOW UPS */}
 

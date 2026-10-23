@@ -103,6 +103,13 @@ def run_pipeline(meeting_id: str, file_path: Path) -> None:
     except Exception as exc:
         logger.warning("init_db() failed: %s", exc)
 
+    # A meeting deleted before its job started must not be recreated (Phase 10).
+    from app.core.db import get_meeting
+
+    if get_meeting(meeting_id) is None:
+        logger.warning("Skipping job for %s: the meeting no longer exists", meeting_id)
+        return
+
     _emit(meeting_id, "uploaded", "running")
 
     # Per-stage timings for this run (Phase 5). Saving them is best effort

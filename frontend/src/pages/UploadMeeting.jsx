@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useMeetingFlow } from "../context/MeetingFlowContext";
-import { listMeetings } from "../services/api";
+import { deleteMeeting, listMeetings } from "../services/api";
 import StageTimings from "../components/StageTimings";
 
 // Ordered pipeline stages matching app/core/jobs.py
@@ -33,6 +33,13 @@ const STAGE_LABELS = {
   mom:          "Generating minutes",
   done:         "Processing complete",
 };
+
+// Meeting times are stored in UTC; show them in the viewer's local time.
+function formatMeetingDate(value) {
+  if (!value) return "date unknown";
+  const date = new Date(/[zZ]|[+-]\d\d:\d\d$/.test(value) ? value : `${value}Z`);
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
+}
 
 export default function UploadMeeting() {
   const [previousMeetings, setPreviousMeetings] = useState([]);
@@ -74,6 +81,19 @@ export default function UploadMeeting() {
       active = false;
     };
   }, []);
+
+  // Phase 10: permanent deletion of a meeting and everything derived from it.
+  const handleDelete = async (meetingId) => {
+    if (!window.confirm("Delete this meeting permanently? The recording, transcript, minutes and caches are removed.")) {
+      return;
+    }
+    try {
+      await deleteMeeting(meetingId);
+      setPreviousMeetings((items) => items.filter((m) => m.meeting_id !== meetingId));
+    } catch (err) {
+      window.alert(err.message || "The meeting could not be deleted.");
+    }
+  };
 
   const currentStageIndex = PIPELINE_STAGES.indexOf(jobStage);
   const isPipelineRunning =
@@ -258,20 +278,31 @@ export default function UploadMeeting() {
               <h2 id="previous-meetings-title">Or open a previous meeting</h2>
               <div className="previous-meeting-list">
                 {previousMeetings.map((meeting) => (
-                  <button
-                    type="button"
-                    className="previous-meeting-row"
-                    key={meeting.meeting_id}
-                    onClick={() => loadExistingMeeting(meeting.meeting_id)}
-                  >
-                    <span>
-                      <strong>{meeting.meeting_id}</strong>
-                      {meeting.filename && <small>{meeting.filename}</small>}
-                    </span>
-                    <span className="previous-meeting-counts">
-                      {meeting.utterance_count} utterances · {meeting.claim_count} claims
-                    </span>
-                  </button>
+                  <div className="previous-meeting-item" key={meeting.meeting_id}>
+                    <button
+                      type="button"
+                      className="previous-meeting-row"
+                      onClick={() => loadExistingMeeting(meeting.meeting_id)}
+                    >
+                      <span>
+                        <strong>{meeting.filename || meeting.meeting_id}</strong>
+                        <small>
+                          {formatMeetingDate(meeting.created_at)} · {meeting.status || "unknown"} · ID {meeting.meeting_id.slice(0, 8)}
+                        </small>
+                      </span>
+                      <span className="previous-meeting-counts">
+                        {meeting.utterance_count} utterances · {meeting.claim_count} claims
+                      </span>
+                    </button>
+                    <button
+                      type="button"
+                      className="previous-meeting-delete"
+                      aria-label={`Delete meeting ${meeting.meeting_id}`}
+                      onClick={() => handleDelete(meeting.meeting_id)}
+                    >
+                      Delete
+                    </button>
+                  </div>
                 ))}
               </div>
             </section>

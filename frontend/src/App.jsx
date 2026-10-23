@@ -3,6 +3,7 @@ import "./App.css";
 import { useState } from "react";
 
 import Header from "./components/Header";
+import AuthGate from "./components/AuthGate";
 import {
   MeetingFlowProvider,
   useMeetingFlow,
@@ -101,8 +102,10 @@ function MeetingFlow() {
 
 export default function App() {
   return (
-    <MeetingFlowProvider>
-      <MeetingFlow />
-    </MeetingFlowProvider>
+    <AuthGate>
+      <MeetingFlowProvider>
+        <MeetingFlow />
+      </MeetingFlowProvider>
+    </AuthGate>
   );
 }

@@ -1,7 +1,9 @@
 import { useMeetingFlow } from "../context/MeetingFlowContext";
+import { useAuth } from "./AuthGate";
 
 export default function Header() {
   const { currentStep, meetingMode } = useMeetingFlow();
+  const { user, signOut } = useAuth();
 
   return (
     <>
@@ -80,6 +82,15 @@ export default function Header() {
           </div>
 
         </nav>
+
+        {user && (
+          <div className="header-user">
+            <span title={user.email}>{user.display_name}</span>
+            <button type="button" className="header-signout" onClick={signOut}>
+              Sign out
+            </button>
+          </div>
+        )}
 
       </header>
     </>

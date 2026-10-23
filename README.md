@@ -46,6 +46,14 @@ The worker script:
 - Automatically recovers stale jobs older than `WORKER_STALE_TIMEOUT_SECONDS=300.0` upon startup, failing jobs after `WORKER_MAX_RETRIES=3`.
 - Handles `Ctrl+C` / `SIGTERM` gracefully by releasing the active job back to the queue.
 
+### Accounts and access (Phase 7)
+
+With `AUTH_REQUIRED=true` (default) the UI asks you to register or sign in. Passwords are stored as scrypt hashes and the session is an HttpOnly cookie. You see only meetings you own or were invited to; the host of a live meeting invites others with a single-meeting link (valid two days). Live meeting identity and host role come from your account, not from the form. For a local single-user demo, set `AUTH_REQUIRED=false`.
+
+Meetings created before accounts existed have no owner and are hidden while sign-in is on. After registering, claim them with `.venv\Scripts\python.exe scripts\claim_meetings.py --owner-email you@example.com --apply` (without `--apply` it only lists them). If live recording is unavailable, `scripts\seed_demo_meetings.py --owner-email you@example.com` loads two synthetic demo meetings.
+
+Deleting a meeting (owner only, from the meeting list) removes its database rows, recording, transcripts, minutes and caches. It is refused while the meeting is being processed or recorded.
+
 ### 3. Frontend UI
 
 ```powershell

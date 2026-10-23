@@ -6,6 +6,8 @@ import {
 } from "livekit-client";
 import { useMeetingFlow } from "../context/MeetingFlowContext";
 import {
+  acceptInvitation,
+  createInvitation,
   createLiveRoom,
   endLiveRoom,
   getLiveConfig,
@@ -562,8 +564,20 @@ export default function LiveMeeting() {
     }
   }, [viewState, recState?.status, meetingId, loadExistingMeeting]);
 
-  const handleCopyInvite = () => {
-    const inviteUrl = `${window.location.origin}/?room=${encodeURIComponent(roomCode)}`;
+  const handleCopyInvite = async () => {
+    let inviteUrl = `${window.location.origin}/?room=${encodeURIComponent(roomCode)}`;
+    // Phase 7: with sign-in on, the link carries a single-meeting invitation.
+    // Without sign-in (or before the meeting exists) the plain room link is used.
+    if (meetingId) {
+      try {
+        const invitation = await createInvitation(meetingId);
+        if (invitation?.token) {
+          inviteUrl += `&invite=${encodeURIComponent(invitation.token)}`;
+        }
+      } catch {
+        // AUTH_REQUIRED=false or not the owner: keep the plain link.
+      }
+    }
     if (navigator.clipboard) {
       navigator.clipboard.writeText(inviteUrl).catch(() => {});
     }
@@ -592,6 +606,19 @@ export default function LiveMeeting() {
         } catch (err) {
           console.warn("createLiveRoom warning (continuing with join token):", err);
         }
+      }
+
+      // 1b. Phase 7: a guest opening an invitation link becomes a member of
+      // this meeting first; the server then issues their LiveKit identity.
+      const inviteToken = (() => {
+        try {
+          return new URLSearchParams(window.location.search).get("invite") || "";
+        } catch {
+          return "";
+        }
+      })();
+      if (!isHost && inviteToken) {
+        await acceptInvitation(inviteToken);
       }
 
       // 2. Request authenticated JWT access token from FastAPI backend

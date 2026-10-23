@@ -104,7 +104,7 @@ def test_schema_v4_adds_the_timings_table(tmp_path):
         conn.execute("DROP TABLE processing_stage_timings")
         conn.execute("PRAGMA user_version = 3")
     db.init_db(path)
-    assert db.get_schema_version(path) == db.SCHEMA_VERSION == 4
+    assert db.get_schema_version(path) == db.SCHEMA_VERSION >= 4
     with sqlite3.connect(path) as conn:
         assert conn.execute("SELECT count(*) FROM processing_stage_timings").fetchone()[0] == 0
 
