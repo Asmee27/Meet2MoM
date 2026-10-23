@@ -3,6 +3,16 @@
 import { useState } from "react";
 import "./ClaimVerification.css";
 import { STATUS_LABELS, formatTimestamp } from "./verificationFormat";
+import { Icon } from "./ui";
+
+// Phase 8: each status has its own icon so it never relies on colour alone.
+const STATUS_ICONS = {
+  verified: "checkCircle",
+  verified_with_warning: "warning",
+  review: "clock",
+  rejected: "error",
+  unverified: "skip",
+};
 
 const SEMANTIC_LABELS = {
   supported: "Supported by cited evidence",
@@ -30,6 +40,7 @@ function formatScore(value) {
 export function StatusBadge({ label }) {
   return (
     <span className={`claim-status claim-status-${label}`} data-testid="claim-status">
+      {STATUS_ICONS[label] && <Icon name={STATUS_ICONS[label]} />}
       {STATUS_LABELS[label] || label}
     </span>
   );
@@ -53,7 +64,7 @@ export function ReviewBadge({ reviewStatus }) {
   );
 }
 
-export function EvidenceList({ title, utterances, onSeek, testId }) {
+export function EvidenceList({ title, utterances, onSeek, onFocusEvidence, testId }) {
   if (!utterances || utterances.length === 0) return null;
   return (
     <div className="transcript-evidence" data-testid={testId}>
@@ -81,7 +92,20 @@ export function EvidenceList({ title, utterances, onSeek, testId }) {
             ) : (
               <span className="evidence-plain-time">{formatTimestamp(u.start)}</span>
             )}{" "}
-            · {u.utt_id}
+            ·{" "}
+            {onFocusEvidence ? (
+              <button
+                type="button"
+                className="evidence-utt-link"
+                onClick={() => onFocusEvidence(u.utt_id)}
+                aria-label={`Show ${u.utt_id} in transcript`}
+                title="Show in transcript"
+              >
+                {u.utt_id}
+              </button>
+            ) : (
+              u.utt_id
+            )}
           </span>
           <span>“{u.text}”</span>
         </div>
@@ -130,7 +154,7 @@ export function MethodComparison({ claim }) {
   );
 }
 
-export function SuggestedEvidenceCard({ suggestion, onDecision, busy }) {
+export function SuggestedEvidenceCard({ suggestion, onDecision, busy, onFocusEvidence }) {
   if (!suggestion) return null;
   return (
     <div className="suggested-evidence-card" data-testid="suggested-evidence">
@@ -140,7 +164,7 @@ export function SuggestedEvidenceCard({ suggestion, onDecision, busy }) {
         current citation (support {formatScore(suggestion.support)} vs{" "}
         {formatScore(suggestion.cited_support)}).
       </p>
-      <EvidenceList title="Suggested span" utterances={suggestion.evidence} testId="suggested-utterances" />
+      <EvidenceList title="Suggested span" utterances={suggestion.evidence} onFocusEvidence={onFocusEvidence} testId="suggested-utterances" />
       <div className="suggestion-actions">
         <button type="button" className="save-button" disabled={busy} onClick={() => onDecision("accept")}>
           Accept suggestion
@@ -274,6 +298,7 @@ export function ClaimReviewCard({
   isApproved = false,
   onEdit,         // async (itemId, updates, reason) => void
   onSeek,         // (seconds) => void
+  onFocusEvidence, // (uttId) => void — Phase 8: jump to the transcript line
 }) {
   const [editMode, setEditMode] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -341,6 +366,7 @@ export function ClaimReviewCard({
             title="Cited evidence"
             utterances={claim.evidence}
             onSeek={onSeek}
+            onFocusEvidence={onFocusEvidence}
             testId="cited-evidence"
           />
 
@@ -349,6 +375,7 @@ export function ClaimReviewCard({
               title="Possibly contradicting evidence"
               utterances={claim.contradiction.evidence}
               onSeek={onSeek}
+              onFocusEvidence={onFocusEvidence}
               testId="contradicting-evidence"
             />
           )}
@@ -358,10 +385,14 @@ export function ClaimReviewCard({
               title="Independently retrieved evidence"
               utterances={alternatives}
               onSeek={onSeek}
+              onFocusEvidence={onFocusEvidence}
               testId="retrieved-evidence"
             />
           )}
 
+          {final.label === "review" && final.reasons?.length > 0 && (
+            <span className="claim-reasons-title">Why it is held for review</span>
+          )}
           <ReasonList reasons={final.reasons} />
 
           {claim.correction && (
@@ -374,6 +405,7 @@ export function ClaimReviewCard({
           <SuggestedEvidenceCard
             suggestion={claim.suggestion}
             busy={busy}
+            onFocusEvidence={onFocusEvidence}
             onDecision={(action) => onSuggestionDecision(claim.claim_id, action)}
           />
 

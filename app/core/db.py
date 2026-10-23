@@ -163,7 +163,7 @@ def init_db(db_path: Optional[Path | str] = None) -> None:
 # Migrations only ADD tables/indexes; they never rewrite or drop existing
 # data. Each step is idempotent (IF NOT EXISTS) and bumps user_version.
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 _MIGRATION_V1 = """
 CREATE TABLE IF NOT EXISTS extraction_runs (
@@ -472,6 +472,28 @@ CREATE TABLE IF NOT EXISTS commitment_updates (
 """
 
 
+# Phase 8: reviewer corrections of transcript text. Append-only history; the
+# ASR text in `utterances` is never overwritten. asr_text records the text the
+# correction was made against, so a reprocessed transcript (same utt_id, new
+# text) is never shown with a correction meant for different words.
+_MIGRATION_V7 = """
+CREATE TABLE IF NOT EXISTS transcript_corrections (
+    correction_id   INTEGER PRIMARY KEY AUTOINCREMENT,
+    meeting_id      TEXT NOT NULL,
+    utt_id          TEXT NOT NULL,
+    asr_text        TEXT NOT NULL,
+    previous_text   TEXT NOT NULL,
+    corrected_text  TEXT NOT NULL,
+    reviewer        TEXT,
+    reason          TEXT,
+    created_at      TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_transcript_corrections_meeting
+    ON transcript_corrections(meeting_id, utt_id, correction_id);
+"""
+
+
 def _migrate(conn: sqlite3.Connection) -> None:
     current = conn.execute("PRAGMA user_version").fetchone()[0]
     if current < 1:
@@ -501,6 +523,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
     if current < 6:
         conn.executescript(_MIGRATION_V6)
         conn.execute("PRAGMA user_version = 6")
+        current = 6
+    if current < 7:
+        conn.executescript(_MIGRATION_V7)
+        conn.execute("PRAGMA user_version = 7")
 
 
 def get_schema_version(db_path: Optional[Path | str] = None) -> int:
@@ -687,10 +713,15 @@ def get_utterances(
             (meeting_id,),
         )
         rows = cursor.fetchall()
+        corrected = _active_correction_texts(conn, meeting_id)
 
     result = []
     for r in rows:
         lang_tags = json.loads(r["lang_tags"]) if r["lang_tags"] else []
+        text = r["text"]
+        latest = corrected.get(r["utt_id"])
+        if latest and latest["asr_text"] == text:
+            text = latest["corrected_text"]
         conf_src = r["conf_source"] if "conf_source" in r.keys() and r["conf_source"] is not None else "missing"
         result.append(
             Utterance(
@@ -700,7 +731,7 @@ def get_utterances(
                 end=r["end"],
                 speaker_id=r["speaker_id"],
                 speaker_name=r["speaker_name"],
-                text=r["text"],
+                text=text,
                 lang_tags=lang_tags,
                 script=r["script"],
                 asr_conf=r["asr_conf"],
@@ -713,6 +744,156 @@ def get_utterances(
             )
         )
     return result
+
+
+# ---------------------------------------------------------------------------
+# Transcript corrections (Phase 8)
+# ---------------------------------------------------------------------------
+
+def _active_correction_texts(conn: sqlite3.Connection, meeting_id: str) -> Dict[str, Dict[str, Any]]:
+    """Latest correction per utterance (applied only while asr_text still matches)."""
+    try:
+        rows = conn.execute(
+            """
+            SELECT * FROM transcript_corrections
+            WHERE meeting_id = ?
+            ORDER BY correction_id ASC
+            """,
+            (meeting_id,),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        # Database not migrated to v7 yet: there are no corrections.
+        return {}
+    return {r["utt_id"]: dict(r) for r in rows}
+
+
+def get_transcript_corrections(
+    meeting_id: str,
+    db_path: Optional[Path | str] = None,
+) -> List[Dict[str, Any]]:
+    """Full correction history of a meeting, oldest first."""
+    init_db(db_path)
+    with get_conn(db_path) as conn:
+        rows = conn.execute(
+            "SELECT * FROM transcript_corrections WHERE meeting_id = ? ORDER BY correction_id ASC",
+            (meeting_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def get_active_transcript_corrections(
+    meeting_id: str,
+    db_path: Optional[Path | str] = None,
+) -> Dict[str, Dict[str, Any]]:
+    """
+    utt_id -> latest correction for utterances whose shown text differs from
+    the ASR text. A correction back to the ASR wording is not active.
+    """
+    init_db(db_path)
+    with get_conn(db_path) as conn:
+        latest = _active_correction_texts(conn, meeting_id)
+        asr = {
+            r["utt_id"]: r["text"]
+            for r in conn.execute(
+                "SELECT utt_id, text FROM utterances WHERE meeting_id = ?", (meeting_id,)
+            )
+        }
+    return {
+        utt_id: row
+        for utt_id, row in latest.items()
+        if asr.get(utt_id) == row["asr_text"] and row["corrected_text"] != row["asr_text"]
+    }
+
+
+def latest_transcript_correction_at(
+    meeting_id: str,
+    db_path: Optional[Path | str] = None,
+) -> Optional[str]:
+    """
+    Time of the most recent correction made against the current ASR text, or
+    None. A correction back to the ASR wording counts too: it also changed the
+    text the verifier last saw.
+    """
+    init_db(db_path)
+    with get_conn(db_path) as conn:
+        try:
+            row = conn.execute(
+                """
+                SELECT MAX(c.created_at)
+                FROM transcript_corrections c
+                JOIN utterances u ON u.meeting_id = c.meeting_id AND u.utt_id = c.utt_id
+                WHERE c.meeting_id = ? AND u.text = c.asr_text
+                """,
+                (meeting_id,),
+            ).fetchone()
+        except sqlite3.OperationalError:
+            return None
+    return row[0] if row else None
+
+
+def record_transcript_correction(
+    meeting_id: str,
+    utt_id: str,
+    corrected_text: str,
+    reviewer: Optional[str] = None,
+    reason: Optional[str] = None,
+    db_path: Optional[Path | str] = None,
+) -> Dict[str, Any]:
+    """
+    Record a reviewer's correction of one utterance and an audit event.
+    Raises LookupError for an unknown utterance and ValueError for empty or
+    unchanged text.
+    """
+    init_db(db_path)
+    new_text = (corrected_text or "").strip()
+    if not new_text:
+        raise ValueError("Corrected text cannot be empty.")
+    with get_conn(db_path) as conn:
+        row = conn.execute(
+            "SELECT text FROM utterances WHERE meeting_id = ? AND utt_id = ?",
+            (meeting_id, utt_id),
+        ).fetchone()
+        if row is None:
+            raise LookupError("Utterance not found.")
+        asr_text = row["text"]
+        latest = _active_correction_texts(conn, meeting_id).get(utt_id)
+        previous = latest["corrected_text"] if latest and latest["asr_text"] == asr_text else asr_text
+        if new_text == previous:
+            raise ValueError("The corrected text is the same as the current text.")
+        created_at = _now_iso()
+        cursor = conn.execute(
+            """
+            INSERT INTO transcript_corrections (
+                meeting_id, utt_id, asr_text, previous_text, corrected_text,
+                reviewer, reason, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (meeting_id, utt_id, asr_text, previous, new_text, reviewer, reason, created_at),
+        )
+        correction_id = cursor.lastrowid
+    record_audit_event(
+        meeting_id,
+        "transcript_corrected",
+        item_id=utt_id,
+        field_name="text",
+        old_value=previous,
+        new_value=new_text,
+        reason=reason,
+        reviewer_id=reviewer,
+        timestamp=created_at,
+        db_path=db_path,
+    )
+    return {
+        "correction_id": correction_id,
+        "meeting_id": meeting_id,
+        "utt_id": utt_id,
+        "asr_text": asr_text,
+        "previous_text": previous,
+        "corrected_text": new_text,
+        "reviewer": reviewer,
+        "reason": reason,
+        "created_at": created_at,
+    }
 
 
 def get_claims_with_evidence(

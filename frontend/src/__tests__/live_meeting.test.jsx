@@ -189,21 +189,28 @@ function recordingState(overrides = {}) {
 }
 
 describe("Phase 4.1: Real LiveKit Meeting UI & WebRTC Lifecycle", () => {
-  it("renders 'Start Live Meeting' alongside 'Upload Recorded Meeting' on initial source selection", async () => {
+  // Phase 8: the start screen is the Meetings dashboard; both sources are
+  // offered there as primary actions.
+  it("renders 'Start live meeting' alongside 'Upload recording' on the start screen", async () => {
+    vi.spyOn(api, "listMeetings").mockResolvedValue([]);
+    vi.spyOn(api, "getLedger").mockResolvedValue({ commitments: [] });
     render(<App />);
 
-    expect(await screen.findByText("Choose Meeting Source")).toBeTruthy();
-    expect(screen.getByText("Upload Recorded Meeting")).toBeTruthy();
-    expect(screen.getByText("Start Live Meeting")).toBeTruthy();
+    expect(await screen.findByRole("heading", { level: 1, name: "Meetings" })).toBeTruthy();
+    expect(screen.getAllByRole("button", { name: "Upload recording" }).length).toBeGreaterThan(0);
+    expect(screen.getAllByRole("button", { name: "Start live meeting" }).length).toBeGreaterThan(0);
   });
 
-  it("navigates to Live Meeting flow from mode selection", async () => {
+  it("navigates to Live Meeting flow from the start screen", async () => {
+    vi.spyOn(api, "listMeetings").mockResolvedValue([]);
+    vi.spyOn(api, "getLedger").mockResolvedValue({ commitments: [] });
     render(<App />);
 
-    const liveBtn = (await screen.findByText("Start Live Meeting")).closest("button");
+    const [liveBtn] = await screen.findAllByRole("button", { name: "Start live meeting" });
     fireEvent.click(liveBtn);
 
-    expect(screen.getByText("Create a Live Meeting")).toBeTruthy();
+    // The live room is code-split (LiveKit is loaded on demand).
+    expect(await screen.findByText("Create a Live Meeting")).toBeTruthy();
     expect(screen.getByText(/Phase 4.1 · LiveKit Real WebRTC/i)).toBeTruthy();
   });
 

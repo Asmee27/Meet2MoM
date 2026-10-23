@@ -417,8 +417,33 @@ def list_meetings(request: Request):
                     SELECT COUNT(*)
                     FROM claims c
                     WHERE c.meeting_id = m.meeting_id
-                ) AS claim_count
+                ) AS claim_count,
+                -- Phase 8 dashboard fields; all NULL when unknown, never guessed.
+                (
+                    SELECT MAX(u.end)
+                    FROM utterances u
+                    WHERE u.meeting_id = m.meeting_id
+                ) AS duration_seconds,
+                (
+                    SELECT COUNT(DISTINCT COALESCE(u.speaker_name, u.speaker_id))
+                    FROM utterances u
+                    WHERE u.meeting_id = m.meeting_id
+                ) AS speaker_count,
+                (
+                    SELECT r.draft_status
+                    FROM review_drafts r
+                    WHERE r.meeting_id = m.meeting_id
+                ) AS review_status,
+                (
+                    SELECT MAX(s.approved_at)
+                    FROM approved_snapshots s
+                    WHERE s.meeting_id = m.meeting_id
+                ) AS approved_at,
+                j.state AS job_state,
+                j.stage AS job_stage,
+                j.error AS job_error
             FROM meetings m
+            LEFT JOIN jobs j ON j.meeting_id = m.meeting_id
             WHERE m.filename IS NOT NULL
               AND m.filename <> 'synthetic.wav'
               AND m.meeting_id NOT LIKE 'background-%'
@@ -431,10 +456,12 @@ def list_meetings(request: Request):
             LIMIT 50
             """
         ).fetchall()
+    # A meeting without utterances is listed only while its job is queued,
+    # running or failed, so the dashboard can show processing and failures.
     return [
         dict(row)
         for row in rows
-        if row["utterance_count"] > 0
+        if (row["utterance_count"] > 0 or row["job_state"] in ("queued", "running", "failed"))
         and (allowed is None or row["meeting_id"] in allowed)
     ]
 
@@ -506,7 +533,104 @@ def get_meeting_transcript(meeting_id: str):
             status_code=404,
             detail="Transcript index not found. Processing may still be in progress.",
         )
-    return [u.model_dump() for u in utterances]
+    # Phase 8: `text` is what the reviewer approved; `asr_text` keeps the
+    # speech-to-text output whenever the two differ.
+    corrections = _db.get_active_transcript_corrections(meeting_id)
+    out = []
+    for u in utterances:
+        row = u.model_dump()
+        fix = corrections.get(u.utt_id)
+        row["corrected"] = fix is not None
+        row["asr_text"] = fix["asr_text"] if fix else u.text
+        row["correction"] = (
+            {key: fix[key] for key in ("correction_id", "reviewer", "reason", "created_at")}
+            if fix else None
+        )
+        out.append(row)
+    return out
+
+
+class TranscriptCorrectionRequest(BaseModel):
+    text: str
+    reason: Optional[str] = None
+    reviewer: Optional[str] = None
+
+
+_ACTIVE_JOB_STATES = ("queued", "running")
+
+
+@router.put("/meetings/{meeting_id}/transcript/{utt_id}")
+def correct_transcript_utterance(
+    meeting_id: str,
+    utt_id: str,
+    request: TranscriptCorrectionRequest,
+    http_request: Request,
+):
+    """
+    Correct the text of one utterance (Phase 8).
+
+    The ASR text is kept; the correction is stored with reviewer, reason and
+    time, and logged in the review audit history. Verification results that
+    predate the correction are held for review until verification runs again,
+    and approval is refused until then. Nothing is replaced automatically.
+    """
+    validate_file_id(meeting_id)
+    reviewer = auth.reviewer_identity(http_request, request.reviewer)
+    if _db.get_meeting(meeting_id) is None:
+        raise HTTPException(status_code=404, detail="Meeting not found.")
+    job = _db.get_job_status(meeting_id)
+    if job is not None and job.state in _ACTIVE_JOB_STATES:
+        raise HTTPException(
+            status_code=409,
+            detail="The meeting is still being processed. Correct the transcript when processing finishes.",
+        )
+    draft = _db.get_review_draft(meeting_id)
+    if draft and draft["draft_status"] == "approved":
+        raise HTTPException(
+            status_code=409,
+            detail="Cannot correct the transcript of approved minutes. Please reopen review first.",
+        )
+    if len(request.text or "") > 4000:
+        raise HTTPException(status_code=422, detail="Corrected text is too long (4000 characters at most).")
+    try:
+        correction = _db.record_transcript_correction(
+            meeting_id,
+            utt_id,
+            request.text,
+            reviewer=reviewer,
+            reason=(request.reason or "").strip() or None,
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    storage = MeetingStorage(meeting_id)
+    # The retrieval index embeds utterance text and is reused by utterance
+    # count, so it must be rebuilt; minutes built from the old text are stale.
+    _remove_files((
+        storage.path_for("verification", "retrieval/spans.json"),
+        storage.path_for("verification", "retrieval/embeddings.npy"),
+        *_stale_mom_files(storage),
+    ))
+    view = build_claims_view(meeting_id)
+    return {
+        "correction": correction,
+        "utterance": next(
+            (row for row in get_meeting_transcript(meeting_id) if row["utt_id"] == utt_id),
+            None,
+        ),
+        "transcript": view["transcript"],
+    }
+
+
+@router.get("/meetings/{meeting_id}/transcript-corrections")
+def get_transcript_corrections(meeting_id: str):
+    """Complete correction history (every edit, including reverts), oldest first."""
+    validate_file_id(meeting_id)
+    if _db.get_meeting(meeting_id) is None:
+        raise HTTPException(status_code=404, detail="Meeting not found.")
+    return {"meeting_id": meeting_id, "corrections": _db.get_transcript_corrections(meeting_id)}
 
 
 # ============================================================
@@ -1322,6 +1446,13 @@ def approve_meeting_review(
 
     storage = get_storage(meeting_id)
     view = build_claims_view(meeting_id)
+    if view["transcript"]["stale_claims"]:
+        # Phase 8: never approve claims verified against words a reviewer has
+        # since corrected.
+        raise HTTPException(
+            status_code=409,
+            detail="The transcript was corrected after verification. Run verification again before approving.",
+        )
     claims_by_id = {c["claim_id"]: c for c in view["claims"]}
     utterances = _db.get_utterances(meeting_id)
     utts_by_id = {u.utt_id: u for u in utterances}
@@ -2688,12 +2819,35 @@ def build_pdf(
 # GENERATE MOM
 # ============================================================
 
+def _approved_mom(meeting_id: str) -> Optional[dict]:
+    """The approved snapshot's MoM while the review is approved, else None."""
+    draft = _db.get_review_draft(meeting_id)
+    if not draft or draft["draft_status"] != "approved":
+        return None
+    snapshot = _db.get_latest_approved_snapshot(meeting_id)
+    return dict(snapshot["mom_payload"]) if snapshot else None
+
+
 @router.post(
     "/generate-mom/{file_id}"
 )
 def generate_mom(
     file_id: str,
 ):
+
+    # Phase 8: while the minutes are approved, the approved snapshot is the
+    # minutes. Rebuilding a draft here would overwrite the approved PDF with
+    # held claims.
+    approved = _approved_mom(file_id)
+    if approved is not None:
+        pdf_path = build_pdf(file_id, approved)
+        return {
+            "message": "Approved Minutes of Meeting",
+            "file_id": file_id,
+            "mom": approved,
+            "pdf_file": pdf_path.name,
+            "status": "approved_snapshot",
+        }
 
     mom = create_mom(
         file_id
@@ -2737,8 +2891,12 @@ def download_mom(
     storage = get_storage(file_id)
     snapshot = _db.get_latest_approved_snapshot(file_id)
     pdf_path = storage.path_for("mom", "Meet2MoM-Meeting-Minutes.pdf")
+    approved = _approved_mom(file_id)
 
-    if snapshot is not None:
+    if approved is not None:
+        # Always the approved snapshot, never a PDF left by a draft run.
+        pdf_path = build_pdf(file_id, approved)
+    elif snapshot is not None:
         if not pdf_path.exists():
             pdf_path = build_pdf(file_id, snapshot["mom_payload"])
     else:

@@ -2,7 +2,7 @@
 // status endpoints add to the processing job. Skipped, cached, fallback and
 // failed stages are shown as such, never as a misleading "0 s".
 
-const STAGE_LABELS = {
+export const STAGE_LABELS = {
   speech_pipeline: "Speech pipeline (total)",
   pipeline_startup: "Start-up (loading libraries)",
   audio_preparation: "Audio preparation",
@@ -20,23 +20,14 @@ const STAGE_LABELS = {
   pdf_export: "PDF export",
 };
 
-const STATUS_COLORS = {
-  completed: "#16a34a",
-  running: "#6366f1",
-  failed: "#dc2626",
-  fallback: "#d97706",
-  cached: "#0891b2",
-  skipped: "#94a3b8",
-};
-
-function formatSeconds(seconds) {
+export function formatSeconds(seconds) {
   if (seconds === null || seconds === undefined) return "";
   if (seconds < 60) return `${seconds.toFixed(1)} s`;
   const minutes = Math.floor(seconds / 60);
   return `${minutes} min ${Math.round(seconds - minutes * 60)} s`;
 }
 
-function outcome(stage) {
+export function outcome(stage) {
   const time = formatSeconds(stage.duration_seconds);
   switch (stage.status) {
     case "completed":
@@ -54,7 +45,7 @@ function outcome(stage) {
   }
 }
 
-function note(stage) {
+export function note(stage) {
   const d = stage.detail || {};
   if (stage.stage === "extraction" && d.mode_used === "llm") {
     const attempts = (d.llm_attempts || [])
@@ -68,30 +59,28 @@ function note(stage) {
 export default function StageTimings({ timings }) {
   if (!timings || !timings.stages || timings.stages.length === 0) return null;
   return (
-    <div className="stage-timings" data-testid="stage-timings" style={{ marginTop: "0.75rem", fontSize: "0.82rem" }}>
-      <div style={{ fontWeight: 600, marginBottom: "0.35rem" }}>
+    <div className="stage-timings" data-testid="stage-timings">
+      <div className="stage-timings__title">
         Stage timings
         {timings.processing_seconds != null && (
-          <span style={{ fontWeight: 400, opacity: 0.75 }}>
+          <span className="stage-timings__total">
             {" "}· processing {formatSeconds(timings.processing_seconds)}
           </span>
         )}
       </div>
-      <ul style={{ listStyle: "none", padding: 0, margin: 0 }}>
+      <ul className="stage-timings__list">
         {timings.stages.map((stage) => {
           const extra = note(stage);
           return (
             <li
               key={stage.stage}
               data-testid={`stage-${stage.stage}`}
-              style={{ padding: "0.15rem 0", paddingLeft: stage.parent_stage ? "1.1rem" : 0 }}
+              className={`stage-timings__row${stage.parent_stage ? " is-child" : ""}`}
             >
               <span>{STAGE_LABELS[stage.stage] || stage.stage}</span>
               {": "}
-              <strong style={{ color: STATUS_COLORS[stage.status] || undefined }}>{outcome(stage)}</strong>
-              {extra && (
-                <div style={{ opacity: 0.75, paddingLeft: "0.5rem", wordBreak: "break-word" }}>{extra}</div>
-              )}
+              <strong className={`stage-timings__outcome is-${stage.status}`}>{outcome(stage)}</strong>
+              {extra && <div className="stage-timings__note">{extra}</div>}
             </li>
           );
         })}

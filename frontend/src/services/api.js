@@ -450,3 +450,17 @@ export const reviewCommitmentUpdate = (meetingId, commitmentId, status, note = "
     { method: "POST", body: { status, note, reviewer } },
   );
 export const getLedger = () => authRequest("/api/commitments");
+
+// ---------------------------------------------------------------------------
+// Transcript correction (Phase 8). The server keeps the ASR text, audits the
+// change and holds claims verified against the old words until re-verified.
+// ---------------------------------------------------------------------------
+// `reviewer` is used only when sign-in is off; otherwise the server records
+// the signed-in account.
+export const correctTranscriptUtterance = (meetingId, uttId, text, reason = "", reviewer = "") =>
+  authRequest(
+    `/api/meetings/${encodeURIComponent(meetingId)}/transcript/${encodeURIComponent(uttId)}`,
+    { method: "PUT", body: { text, reason, reviewer: reviewer || null } },
+  );
+export const getTranscriptCorrections = (meetingId) =>
+  authRequest(`/api/meetings/${encodeURIComponent(meetingId)}/transcript-corrections`);

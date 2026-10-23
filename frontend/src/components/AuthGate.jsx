@@ -3,6 +3,7 @@
 // AUTH_REQUIRED=false the app renders exactly as before.
 import { createContext, useContext, useEffect, useState } from "react";
 import { getMe, login, logout, register } from "../services/api";
+import { BrandMark, Icon } from "./ui";
 
 const AuthContext = createContext({ user: null, authRequired: false, signOut: () => {} });
 
@@ -57,46 +58,73 @@ export default function AuthGate({ children }) {
   };
 
   if (state.status === "checking") {
-    return <div className="auth-shell" role="status">Loading…</div>;
+    return (
+      <div className="auth-loading" role="status">
+        <span className="ui-spinner" aria-hidden="true" />
+        <span>Loading…</span>
+      </div>
+    );
   }
 
   if (state.status === "signed-out") {
     return (
-      <div className="auth-shell">
-        <form className="auth-card" onSubmit={submit} aria-labelledby="auth-title">
-          <h1 id="auth-title">Meet2MoM</h1>
-          <p className="auth-subtitle">
-            {mode === "signin" ? "Sign in to your meetings." : "Create an account to host or join meetings."}
-          </p>
-          {mode === "register" && (
-            <label>
-              Name
-              <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required autoComplete="name" />
-            </label>
-          )}
-          <label>
-            Email
-            <input type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} required autoComplete="email" />
-          </label>
-          <label>
-            Password
-            <input
-              type="password"
-              value={form.password}
-              onChange={(e) => setForm({ ...form, password: e.target.value })}
-              required
-              minLength={mode === "register" ? 8 : undefined}
-              autoComplete={mode === "signin" ? "current-password" : "new-password"}
-            />
-          </label>
-          {error && <div className="auth-error" role="alert">{error}</div>}
-          <button type="submit" disabled={busy}>
-            {busy ? "Please wait…" : mode === "signin" ? "Sign in" : "Create account"}
-          </button>
-          <button type="button" className="auth-switch" onClick={() => { setMode(mode === "signin" ? "register" : "signin"); setError(""); }}>
-            {mode === "signin" ? "New here? Create an account" : "Already have an account? Sign in"}
-          </button>
-        </form>
+      <div className="auth-screen">
+        <aside className="auth-brand" aria-hidden="true">
+          <div className="auth-brand__logo">
+            <BrandMark size={36} />
+            <span>Meet2MoM</span>
+          </div>
+          <div className="auth-brand__copy">
+            <h2>Minutes you can trace back to what was said.</h2>
+            <ul>
+              <li><Icon name="shield" /> Every decision and action item cites the transcript lines it comes from.</li>
+              <li><Icon name="mic" /> Live meetings record only after each participant consents.</li>
+              <li><Icon name="checkCircle" /> Nothing is final until a reviewer approves the minutes.</li>
+            </ul>
+          </div>
+        </aside>
+
+        <main className="auth-main">
+          <form className="auth-card ui-enter" onSubmit={submit} aria-labelledby="auth-title">
+            <div className="auth-card__logo"><BrandMark size={32} /></div>
+            <h1 id="auth-title">{mode === "signin" ? "Sign in to Meet2MoM" : "Create your account"}</h1>
+            <p className="auth-subtitle">
+              {mode === "signin" ? "Sign in to your meetings." : "Create an account to host or join meetings."}
+            </p>
+            {mode === "register" && (
+              <div className="ui-field">
+                <label className="ui-label" htmlFor="auth-name">Name</label>
+                <input id="auth-name" className="ui-input" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required autoComplete="name" />
+              </div>
+            )}
+            <div className="ui-field">
+              <label className="ui-label" htmlFor="auth-email">Email</label>
+              <input id="auth-email" className="ui-input" type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} required autoComplete="email" />
+            </div>
+            <div className="ui-field">
+              <label className="ui-label" htmlFor="auth-password">Password</label>
+              <input
+                id="auth-password"
+                className="ui-input"
+                type="password"
+                value={form.password}
+                onChange={(e) => setForm({ ...form, password: e.target.value })}
+                required
+                minLength={mode === "register" ? 8 : undefined}
+                autoComplete={mode === "signin" ? "current-password" : "new-password"}
+                aria-describedby={mode === "register" ? "auth-password-help" : undefined}
+              />
+              {mode === "register" && <span className="ui-help" id="auth-password-help">At least 8 characters.</span>}
+            </div>
+            {error && <div className="ui-alert ui-alert--danger auth-error" role="alert"><Icon name="error" /><span>{error}</span></div>}
+            <button type="submit" className="ui-btn ui-btn--primary ui-btn--lg auth-submit" disabled={busy}>
+              {busy ? "Please wait…" : mode === "signin" ? "Sign in" : "Create account"}
+            </button>
+            <button type="button" className="auth-switch" onClick={() => { setMode(mode === "signin" ? "register" : "signin"); setError(""); }}>
+              {mode === "signin" ? "New here? Create an account" : "Already have an account? Sign in"}
+            </button>
+          </form>
+        </main>
       </div>
     );
   }

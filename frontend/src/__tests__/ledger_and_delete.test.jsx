@@ -2,11 +2,10 @@
 // Phase 9/10 UI tests: the commitment panel only proposes until a reviewer
 // decides, and a meeting is deleted only after confirmation.
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 
 import CommitmentPanel from "../components/CommitmentPanel";
-import UploadMeeting from "../pages/UploadMeeting";
-import { MeetingFlowProvider } from "../context/MeetingFlowContext";
+import Dashboard from "../pages/Dashboard";
 import * as api from "../services/api";
 
 afterEach(() => {
@@ -49,6 +48,8 @@ describe("CommitmentPanel", () => {
   });
 });
 
+// Phase 8: meeting history lives on the dashboard; deletion is confirmed in
+// an accessible dialog instead of window.confirm.
 describe("Previous meetings", () => {
   const meetings = [{
     meeting_id: "abcdef1234", filename: "standup.wav", created_at: "2026-10-22T09:00:00",
@@ -57,18 +58,36 @@ describe("Previous meetings", () => {
 
   it("deletes a meeting only after confirmation", async () => {
     vi.spyOn(api, "listMeetings").mockResolvedValue(meetings);
+    vi.spyOn(api, "getLedger").mockResolvedValue({ commitments: [] });
     const del = vi.spyOn(api, "deleteMeeting").mockResolvedValue({ deleted: true });
-    const confirm = vi.spyOn(window, "confirm").mockReturnValueOnce(false).mockReturnValueOnce(true);
 
-    render(<MeetingFlowProvider><UploadMeeting /></MeetingFlowProvider>);
+    render(<Dashboard onOpenMeeting={() => {}} onUpload={() => {}} onStartLive={() => {}} onOpenCommitments={() => {}} />);
     const button = await screen.findByRole("button", { name: "Delete meeting abcdef1234" });
 
+    // Cancelling the dialog deletes nothing.
     fireEvent.click(button);
-    expect(confirm).toHaveBeenCalledTimes(1);
+    const dialog = screen.getByRole("dialog", { name: "Delete this meeting?" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByRole("dialog")).toBeNull();
     expect(del).not.toHaveBeenCalled();
+    expect(screen.getByText("standup")).toBeTruthy();
 
     fireEvent.click(button);
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Delete meeting" }));
     await waitFor(() => expect(del).toHaveBeenCalledWith("abcdef1234"));
-    await waitFor(() => expect(screen.queryByText("standup.wav")).toBeNull());
+    await waitFor(() => expect(screen.queryByText("standup")).toBeNull());
+  });
+
+  it("keeps the meeting and shows the server's reason when deletion is refused", async () => {
+    vi.spyOn(api, "listMeetings").mockResolvedValue(meetings);
+    vi.spyOn(api, "getLedger").mockResolvedValue({ commitments: [] });
+    vi.spyOn(api, "deleteMeeting").mockRejectedValue(new Error("The meeting is being processed. Wait until processing finishes."));
+
+    render(<Dashboard onOpenMeeting={() => {}} onUpload={() => {}} onStartLive={() => {}} onOpenCommitments={() => {}} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Delete meeting abcdef1234" }));
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Delete meeting" }));
+
+    expect(await screen.findByText(/being processed/)).toBeTruthy();
+    expect(screen.getByText("standup")).toBeTruthy();
   });
 });
