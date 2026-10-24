@@ -94,6 +94,17 @@ class TopicSegmenter:
 
         self.model = None
 
+        # Topic-title mode and an explicit record of why LLM titles were not
+        # used (Phase 5). The LLM client is created once per run.
+        from app.core import config as _config
+
+        self.title_mode = (getattr(_config, "TOPIC_TITLES", "extractive") or "extractive").strip().lower()
+        self.title_fallback_reason: Optional[str] = None
+        self.title_counts: Dict[str, int] = {"llm": 0, "fallback": 0}
+        self._title_client = None
+        self._title_client_ready = False
+        self._last_title_fallback: Optional[str] = None
+
         if SENTENCE_TRANSFORMERS_AVAILABLE:
             print("Loading multilingual semantic model...")
 
@@ -448,11 +459,13 @@ class TopicSegmenter:
         label, method = self.generate_topic_label(
             text, speakers=speakers, return_method=True
         )
+        title_fallback = self._last_title_fallback if method != "llm" else None
 
         return {
             "topic_id": topic_id,
             "topic_label": label,
             "title_method": method,
+            **({"title_fallback_reason": title_fallback} if title_fallback else {}),
             "start": round(
                 start_time,
                 2
@@ -517,12 +530,16 @@ class TopicSegmenter:
                 for part in WORD_TOKEN_PATTERN.findall(s.lower()):
                     speaker_names.add(part)
 
-        # 3. Optional LLM generation
+        # 3. Optional LLM generation; every fallback keeps its reason
+        self._last_title_fallback = None
         mode = getattr(config, "TOPIC_TITLES", "extractive") or "extractive"
         if mode.strip().lower() == "llm":
-            llm_title = self._try_llm_title(text, source_words_set, source_casing)
+            llm_title, reason = self._try_llm_title(text, source_words_set, source_casing)
             if llm_title:
+                self.title_counts["llm"] = self.title_counts.get("llm", 0) + 1
                 return (llm_title, "llm") if return_method else llm_title
+            self._last_title_fallback = reason
+            self.title_counts["fallback"] = self.title_counts.get("fallback", 0) + 1
 
         # 4. Clean Extractive Title Generation
         extractive_title, method = self._generate_extractive_title(
@@ -530,40 +547,74 @@ class TopicSegmenter:
         )
         return (extractive_title, method) if return_method else extractive_title
 
+    def _llm_title_client(self):
+        """
+        One LLM client per run, or None with self.title_fallback_reason set.
+        Titles get their own short time budget so they never delay extraction
+        for long.
+        """
+        if self._title_client_ready:
+            return self._title_client
+        self._title_client_ready = True
+        try:
+            from app.core import config as _config
+            from app.core.llm_client import LLMClient
+            from app.services.intelligence.extraction_pipeline import llm_unavailable_reason
+
+            unavailable = llm_unavailable_reason()
+            if unavailable:
+                self.title_fallback_reason = f"LLM topic titles not used: {unavailable}"
+            else:
+                client = LLMClient()
+                if hasattr(client, "start_budget"):
+                    client.start_budget(getattr(_config, "TOPIC_TITLE_LLM_BUDGET_SECONDS", 60))
+                self._title_client = client
+        except Exception as exc:
+            self.title_fallback_reason = f"LLM topic titles not used: {type(exc).__name__}: {exc}"[:300]
+        if self.title_fallback_reason:
+            print(f"⚠ {self.title_fallback_reason}; using extractive titles")
+        return self._title_client
+
     def _try_llm_title(
         self,
         text: str,
         source_words_set: set[str],
         source_casing: Dict[str, str],
-    ) -> Optional[str]:
+    ) -> Tuple[Optional[str], Optional[str]]:
+        """(title, None) when the LLM title is accepted, else (None, reason)."""
+        client = self._llm_title_client()
+        if client is None:
+            return None, self.title_fallback_reason
+        system_prompt = (
+            "You are a meeting assistant. Generate a concise 2 to 5 word topic title summarizing the text. "
+            "CRITICAL CONSTRAINT: You MUST use ONLY words that appear verbatim in the source text below. "
+            "Do NOT invent, infer, or extrapolate any new words. "
+            'Return ONLY JSON of the form {"title": "Title Words In Title Case"}.'
+        )
+        user_prompt = f"Transcript excerpt:\n{text[:1500]}"
         try:
-            from app.core.llm_client import LLMClient
-            client = LLMClient()
-            system_prompt = (
-                "You are a meeting assistant. Generate a concise 2 to 5 word topic title summarizing the text. "
-                "CRITICAL CONSTRAINT: You MUST use ONLY words that appear verbatim in the source text below. "
-                "Do NOT invent, infer, or extrapolate any new words. "
-                "Return ONLY the title words separated by spaces in Title Case."
-            )
-            user_prompt = f"Transcript excerpt:\n{text[:1500]}"
-            resp = client.complete(system_prompt, user_prompt, max_tokens=25).strip()
-            resp_clean = resp.strip("\"' \n\r\t")
-            words = WORD_TOKEN_PATTERN.findall(resp_clean)
-            if not (2 <= len(words) <= 5):
-                return None
-            # Every word must appear in the source text
-            if not all(w.lower() in source_words_set for w in words):
-                return None
-            # Must not be stopword-only
-            if not any(w.lower() not in EXPANDED_STOP_WORDS for w in words):
-                return None
-            # No duplicate words
-            lowers = [w.lower() for w in words]
-            if len(set(lowers)) != len(lowers):
-                return None
-            return _format_title_words(words, source_casing)
-        except Exception:
-            return None
+            data = client.complete_json(system=system_prompt, user=user_prompt, max_tokens=60)
+        except Exception as exc:
+            # A provider error or exhausted budget: stop asking for this run.
+            self._title_client = None
+            self.title_fallback_reason = f"LLM topic title request failed: {type(exc).__name__}: {exc}"[:300]
+            print(f"⚠ {self.title_fallback_reason}; using extractive titles")
+            return None, self.title_fallback_reason
+        resp_clean = str((data or {}).get("title") or "").strip("\"' \n\r\t")
+        words = WORD_TOKEN_PATTERN.findall(resp_clean)
+        if not (2 <= len(words) <= 5):
+            return None, "LLM title rejected: not 2 to 5 words"
+        # Every word must appear in the source text
+        if not all(w.lower() in source_words_set for w in words):
+            return None, "LLM title rejected: uses words not in the topic's utterances"
+        # Must not be stopword-only
+        if not any(w.lower() not in EXPANDED_STOP_WORDS for w in words):
+            return None, "LLM title rejected: only stop words"
+        # No duplicate words
+        lowers = [w.lower() for w in words]
+        if len(set(lowers)) != len(lowers):
+            return None, "LLM title rejected: repeated words"
+        return _format_title_words(words, source_casing), None
 
     def _generate_extractive_title(
         self,

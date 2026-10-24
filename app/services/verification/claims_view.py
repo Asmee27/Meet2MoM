@@ -10,9 +10,25 @@ from __future__ import annotations
 from typing import Any, Optional
 
 from app.core import db
-from app.services.verification.fusion import EXPORTABLE_LABELS, FINAL_LABELS
+from app.services.verification.fusion import EXPORTABLE_LABELS, FINAL_LABELS, REVIEW
 
 UNVERIFIED = "unverified"
+
+# Phase 8: a verification result older than a transcript correction was
+# computed against words the reviewer has since changed. It is held for review
+# (never shown as verified) until verification runs again.
+STALE_REASON_CODE = "transcript_corrected_after_verification"
+
+
+def _stale_reason(corrected_ids: list[str]) -> dict[str, Any]:
+    cited = f" Corrected cited utterances: {', '.join(corrected_ids)}." if corrected_ids else ""
+    return {
+        "code": STALE_REASON_CODE,
+        "severity": "review",
+        "message": "The transcript was corrected after this claim was verified. "
+                   "Run verification again before approving." + cited,
+        "utt_ids": corrected_ids,
+    }
 
 
 def _utterance(u: Any) -> dict[str, Any]:
@@ -59,15 +75,30 @@ def build_claims_view(meeting_id: str) -> dict[str, Any]:
     by_id = {u.utt_id: u for u in utterances}
     results = db.get_verification_results(meeting_id)
     corrections = db.get_evidence_corrections(meeting_id)
+    transcript_corrected_at = db.latest_transcript_correction_at(meeting_id)
+    corrected_utts = db.get_active_transcript_corrections(meeting_id)
 
     claims_out: list[dict[str, Any]] = []
     counts = {label: 0 for label in (*FINAL_LABELS, UNVERIFIED)}
+    stale_claims = 0
     for claim in db.get_claims_with_evidence(meeting_id):
         payload = claim.get("payload") or {}
         methods = results.get(claim["claim_id"], {})
         fusion = methods.get("fusion")
         semantic = methods.get("semantic_nli")
-        final_label = fusion["label"] if fusion else UNVERIFIED
+        stale = bool(
+            fusion and transcript_corrected_at
+            and (fusion.get("created_at") or "") < transcript_corrected_at
+        )
+        final_label = REVIEW if stale else (fusion["label"] if fusion else UNVERIFIED)
+        final_reasons = (fusion or {}).get("reasons") or [
+            {"code": "not_verified", "severity": "review",
+             "message": "This claim has not been verified yet.", "utt_ids": []}
+        ]
+        if stale:
+            stale_claims += 1
+            cited_fixed = [u for u in claim["evidence"] if u in corrected_utts]
+            final_reasons = [_stale_reason(cited_fixed), *final_reasons]
         counts[final_label] += 1
         correction = corrections.get(claim["claim_id"])
 
@@ -103,6 +134,7 @@ def build_claims_view(meeting_id: str) -> dict[str, Any]:
             "owner_type": payload.get("owner_type"),
             "deadline_text": payload.get("deadline_text"),
             "deadline_resolved": payload.get("deadline_resolved"),
+            "deadline_type": payload.get("deadline_type"),
             "commitment_type": payload.get("commitment_type"),
             "evidence_ids": list(claim["evidence"]),
             "evidence": cited,
@@ -113,15 +145,14 @@ def build_claims_view(meeting_id: str) -> dict[str, Any]:
                 "semantic": _method(semantic, by_id),
                 "final": {
                     "label": final_label,
-                    "reasons": (fusion or {}).get("reasons")
-                    or [{"code": "not_verified", "severity": "review",
-                         "message": "This claim has not been verified yet.", "utt_ids": []}],
+                    "reasons": final_reasons,
                     "config_version": (fusion or {}).get("config_version"),
                 },
             },
             "exportable": final_label in EXPORTABLE_LABELS and (
                 claim["claim_type"] != "decision" or payload.get("state") == "accepted"
             ),
+            "verification_stale": stale,
             "suggestion": suggestion,
             "contradiction": contradiction,
             "correction": correction,
@@ -133,4 +164,9 @@ def build_claims_view(meeting_id: str) -> dict[str, Any]:
         "verification_run": db.get_verification_run(meeting_id),
         "counts": counts,
         "claims": claims_out,
+        "transcript": {
+            "corrected_utterances": sorted(corrected_utts),
+            "last_corrected_at": transcript_corrected_at,
+            "stale_claims": stale_claims,
+        },
     }

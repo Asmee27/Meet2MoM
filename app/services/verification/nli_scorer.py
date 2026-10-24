@@ -22,6 +22,12 @@ MAX_PREMISE_CHARS = 1200
 PREMISE_CONTEXT = 1
 BACKGROUND_N = 5
 CONTENT_COVERAGE_MIN = 0.5
+# A retrieved utterance can contradict a claim only if it is about the claim:
+# at least this share of the claim's content words must appear in it. Without
+# this, NLI scored one person's "I will finalize the backend API" as a 0.97
+# contradiction of another person's unrelated "complete the front-end
+# validation" task. Cited evidence is always checked, whatever its wording.
+CONTRADICTION_TOPIC_MIN = 0.34
 SECONDARY_HYPOTHESIS_TOP_N = 3
 NLI_MODEL = "MoritzLaurer/mDeBERTa-v3-base-mnli-xnli"
 STOPWORDS = {
@@ -52,6 +58,7 @@ class PairScore:
     expanded: bool
     # Utterances actually included in the scored premise (span + context).
     premise_utt_ids: list[str] = field(default_factory=list)
+    premise: str = ""
 
 
 @dataclass
@@ -79,6 +86,10 @@ class ClaimNLIResult:
     x_core: float = 0.0
     # Entailment from the cited utterances alone (no neighbouring context).
     e_cited_strict: float | None = None
+    # Strongest contradiction from retrieved utterances about something else
+    # (kept for transparency; it does not hold the claim).
+    x_off_topic: float = 0.0
+    x_off_topic_utt_ids: list[str] = field(default_factory=list)
 
 
 def content_coverage(claim_text: str, premise_text: str) -> float:
@@ -451,12 +462,28 @@ class NLIScorer:
                     provenance=spec["provenance"],
                     expanded=bool(spec["expanded"]),
                     premise_utt_ids=list(spec["premise_utt_ids"]),
+                    premise=spec["premise"],
                 )
             )
 
+        claim_text = str(claim_payload.get("text", ""))
+
+        def can_contradict(score: PairScore) -> bool:
+            # Cited evidence (and spans overlapping it) always counts; a premise
+            # found only by retrieval must be about the claim's subject.
+            if score.provenance != "retrieved_only":
+                return True
+            return content_coverage(claim_text, score.premise) >= CONTRADICTION_TOPIC_MIN
+
         core_scores = [s for s in scored if s.hypothesis_kind == "core" and s.provenance != "cited_strict"]
         e_union = max((s.entail for s in core_scores), default=0.0)
-        x_union = max((s.contradict for s in scored if s.provenance != "cited_strict"), default=0.0)
+        x_union = max(
+            (s.contradict for s in scored if s.provenance != "cited_strict" and can_contradict(s)),
+            default=0.0,
+        )
+        off_topic = max(
+            (s for s in core_scores if not can_contradict(s)), key=lambda item: item.contradict, default=None
+        )
         cited_scores = [s for s in scored if s.hypothesis_kind == "core" and s.provenance == "cited_span"]
         e_cited = max((s.entail for s in cited_scores), default=0.0)
         strict_scores = [s for s in scored if s.provenance == "cited_strict"]
@@ -494,7 +521,9 @@ class NLIScorer:
                 default=0.0,
             )
 
-        strongest_contradiction = max(core_scores, key=lambda item: item.contradict, default=None)
+        strongest_contradiction = max(
+            (s for s in core_scores if can_contradict(s)), key=lambda item: item.contradict, default=None
+        )
 
         best_span = max(core_scores, key=lambda item: item.entail, default=None)
         best_span_id = best_span.span_id if best_span is not None else None
@@ -534,6 +563,8 @@ class NLIScorer:
             x_union_provenance=strongest_contradiction.provenance if strongest_contradiction else None,
             x_core=strongest_contradiction.contradict if strongest_contradiction else 0.0,
             e_cited_strict=e_cited_strict,
+            x_off_topic=off_topic.contradict if off_topic else 0.0,
+            x_off_topic_utt_ids=list(off_topic.premise_utt_ids) if off_topic else [],
         )
 
 

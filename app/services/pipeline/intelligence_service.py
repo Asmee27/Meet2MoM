@@ -111,6 +111,9 @@ def verification_is_current(meeting_id: str) -> bool:
         return False
     if (extraction.get("finished_at") or "") > (run.get("created_at") or ""):
         return False
+    # Phase 8: a reviewer corrected the transcript after this run.
+    if (db.latest_transcript_correction_at(meeting_id) or "") > (run.get("created_at") or ""):
+        return False
     results = db.get_verification_results(meeting_id)
     return all("fusion" in results.get(c["claim_id"], {}) for c in db.get_claims(meeting_id))
 

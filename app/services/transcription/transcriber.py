@@ -32,6 +32,83 @@ from app.services.transcription.language_utils import (
 )
 
 
+LANGUAGE_PROMPT = (
+    "This is a professional meeting. "
+    "Preserve the language actually spoken. "
+    "Do not translate the conversation."
+)
+
+
+def whisper_initial_prompt():
+    """
+    The Whisper initial prompt for WHISPER_PROMPT (none | language | vocabulary).
+    The vocabulary prompt biases decoding towards its listed terms: on a real
+    meeting an unclear "by Friday" came out as "by FFmpeg", so it is opt-in.
+    """
+    from app.core import config
+
+    mode = (getattr(config, "WHISPER_PROMPT", "none") or "none").strip().lower()
+    if mode == "vocabulary":
+        return MeetingTranscriber.build_context_prompt()
+    if mode == "language":
+        return LANGUAGE_PROMPT
+    return None
+
+
+class _SegmentPart:
+    """Part of a Whisper segment, with the attributes the transcriber reads."""
+
+    def __init__(self, segment, words):
+        self.words = words
+        self.start = float(words[0].start)
+        self.end = float(words[-1].end)
+        self.text = "".join(w.word for w in words).strip()
+        for name in ("avg_logprob", "no_speech_prob", "compression_ratio", "temperature"):
+            setattr(self, name, getattr(segment, name, None))
+
+
+def split_at_pauses(segments, max_gap: float):
+    """
+    Split segments wherever two consecutive words are more than max_gap
+    seconds apart. With voice-activity filtering, faster-whisper can decode
+    separate speech chunks as one segment whose start and end then span the
+    silence between them (seen: 29-31 s), which looked like speaker overlap.
+    Segments without word timings are returned unchanged.
+    """
+    parts = []
+    for segment in segments:
+        words = [w for w in (getattr(segment, "words", None) or []) if w.word.strip()]
+        if not words or not max_gap or max_gap <= 0:
+            parts.append(segment)
+            continue
+        group = [words[0]]
+        for previous, word in zip(words, words[1:]):
+            if float(word.start) - float(previous.end) > max_gap:
+                parts.append(_SegmentPart(segment, group))
+                group = []
+            group.append(word)
+        parts.append(_SegmentPart(segment, group))
+    return parts
+
+
+def whisper_model_key() -> str:
+    return f"whisper::{WHISPER_MODEL}::{DEVICE}::{COMPUTE_TYPE}"
+
+
+def load_whisper_model():
+    """The process-wide Whisper model, loaded on first use (Phase 6)."""
+    from app.core import model_registry
+
+    return model_registry.get_cached_model(
+        whisper_model_key(),
+        lambda: WhisperModel(
+            WHISPER_MODEL,
+            device=DEVICE,
+            compute_type=COMPUTE_TYPE
+        ),
+    )
+
+
 class MeetingTranscriber:
 
     def __init__(self):
@@ -46,17 +123,15 @@ class MeetingTranscriber:
             f"{WHISPER_MODEL}"
         )
 
-        self.model = WhisperModel(
-            WHISPER_MODEL,
-            device=DEVICE,
-            compute_type=COMPUTE_TYPE
-        )
+        # One model per process (Phase 6): a long-lived worker reuses it.
+        from app.core import model_registry
+
+        self.model_reused = model_registry.is_loaded(whisper_model_key())
+        self.model = load_whisper_model()
 
         print("✓ Whisper model loaded")
 
-        self.initial_prompt = (
-            self.build_context_prompt()
-        )
+        self.initial_prompt = whisper_initial_prompt()
 
     # ======================================================
     # CONTEXT PROMPT
@@ -287,11 +362,19 @@ class MeetingTranscriber:
                     LOG_PROB_THRESHOLD,
 
                 no_speech_threshold=
-                    NO_SPEECH_THRESHOLD
+                    NO_SPEECH_THRESHOLD,
+
+                # Word times let a segment be split at long pauses.
+                word_timestamps=True
             )
         )
 
-        return list(segments), info
+        from app.core import config
+
+        return split_at_pauses(
+            list(segments),
+            config.WHISPER_SPLIT_GAP_SECONDS
+        ), info
 
     # ======================================================
     # BUILD CHUNK RESULTS

@@ -67,12 +67,17 @@ def test_worker_refuses_to_run_beside_an_inline_api(monkeypatch, caplog):
 
 def test_worker_runs_in_worker_mode(monkeypatch):
     from scripts import worker
+    from app.services.pipeline.recorded_pipeline_adapter import PROCESS_ROLE_ENV
 
-    started = []
+    started, preloaded = [], []
+    monkeypatch.setenv(PROCESS_ROLE_ENV, "test")          # restored after the test
     monkeypatch.setattr(config, "JOB_RUNNER", "worker")
+    monkeypatch.setattr(config, "SPEECH_PIPELINE", "auto")
+    monkeypatch.setattr(worker, "preload_models", lambda: preloaded.append(True))
     monkeypatch.setattr(worker, "run_worker_loop", lambda *a, **k: started.append(True))
     worker.main()
     assert started == [True]
+    assert preloaded == [True]                            # auto -> in-process in the worker
 
 
 def test_stages_log_their_duration(caplog):

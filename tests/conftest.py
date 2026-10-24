@@ -31,6 +31,43 @@ config.DB_PATH = _TEST_ROOT / "test_meet2mom.db"
 
 from app.core import db  # noqa: E402  (must follow the config redirect)
 
+# Tests never use the developer's real LLM configuration from .env: start every
+# session with the stub provider and no keys. Tests that need a provider patch
+# config themselves and fake the HTTP layer.
+# The legacy suites predate accounts; Phase 7 auth tests switch this on.
+config.AUTH_REQUIRED = False
+config.LLM_PROVIDER = "stub"
+config.LLM_MODEL = "mock-v1"
+for _key in ("LLM_API_KEY", "GEMINI_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY"):
+    setattr(config, _key, None)
+
+# Tests never send real email: development (console) provider, no Brevo key
+# or webhook token from .env, and no background dispatcher. Email tests call
+# outbox.dispatch_pending() themselves with a fake sender.
+config.EMAIL_PROVIDER = "console"
+config.EMAIL_DISPATCH = "off"
+for _key in ("BREVO_API_KEY", "EMAIL_SENDER_ADDRESS", "BREVO_WEBHOOK_TOKEN"):
+    setattr(config, _key, None)
+config.PUBLIC_APP_URL = "http://app.test"
+
+
+@pytest.fixture(autouse=True)
+def _no_real_http(monkeypatch):
+    """Safety net: an unpatched urllib request to a non-local host fails the test."""
+    import urllib.request
+    from urllib.parse import urlparse
+
+    real_urlopen = urllib.request.urlopen
+
+    def guarded(url, *args, **kwargs):
+        target = getattr(url, "full_url", url)
+        host = urlparse(str(target)).hostname or ""
+        if host not in ("localhost", "127.0.0.1", "::1"):
+            raise RuntimeError(f"Test tried to make a real HTTP request to {host}")
+        return real_urlopen(url, *args, **kwargs)
+
+    monkeypatch.setattr(urllib.request, "urlopen", guarded)
+
 
 @pytest.fixture(autouse=True, scope="session")
 def _temp_db():

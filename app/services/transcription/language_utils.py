@@ -102,7 +102,21 @@ def language_name(code):
     names = {
         "en": "English",
         "hi": "Hindi",
-        "mr": "Marathi"
+        "mr": "Marathi",
+        # Other codes Whisper reports, e.g. when auto-detection mislabels
+        # accented English (seen: "ml" for English speech).
+        "ml": "Malayalam",
+        "ta": "Tamil",
+        "te": "Telugu",
+        "kn": "Kannada",
+        "bn": "Bengali",
+        "gu": "Gujarati",
+        "pa": "Punjabi",
+        "ur": "Urdu",
+        "ne": "Nepali",
+        "es": "Spanish",
+        "fr": "French",
+        "de": "German",
     }
 
     return names.get(

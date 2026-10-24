@@ -56,6 +56,47 @@ env["PYTHONUNBUFFERED"] = "1"
 # locations. Until every service accepts a per-meeting output
 # directory, only one recorded pipeline should run at a time.
 _PIPELINE_LOCK = threading.Lock()
+
+
+
+def speech_pipeline_mode() -> str:
+    """
+    Where stages 1-9 run (Phase 6): "subprocess" starts a fresh Python process
+    per meeting (isolated, but reloads every library and model); "inprocess"
+    runs them inside the job runner and reuses loaded libraries and models.
+    "auto" (the default) uses inprocess only inside scripts/worker.py, so the
+    API process that holds live recordings never runs heavy ASR itself.
+    """
+    from app.core import config
+
+    mode = (getattr(config, "SPEECH_PIPELINE", "auto") or "auto").strip().lower()
+    if mode == "auto":
+        return "inprocess" if os.environ.get(PROCESS_ROLE_ENV) == "worker" else "subprocess"
+    return mode if mode in ("inprocess", "subprocess") else "subprocess"
+
+
+PROCESS_ROLE_ENV = "M2M_PROCESS_ROLE"
+_SPEECH_MODULE = "scripts.run_recorded_pipeline"
+
+
+def _run_speech_pipeline_inprocess(meeting_id: str, input_file: Path) -> None:
+    """Run stages 1-9 in this process, importing the libraries only once."""
+    import importlib
+
+    first_import = _SPEECH_MODULE not in sys.modules
+    started = time.monotonic()
+    module = importlib.import_module(_SPEECH_MODULE)
+    startup_seconds = time.monotonic() - started if first_import else None
+    module.run(
+        meeting_id,
+        input_file,
+        skip_post_transcript=True,
+        startup_seconds=startup_seconds,
+        startup_note=(
+            "In-process: first import of the speech libraries in this process"
+            if first_import else None
+        ),
+    )
 _CACHE_LOCK = threading.Lock()
 
 
@@ -181,6 +222,24 @@ def _sha256_file(
     return digest.hexdigest()
 
 
+# Bump when transcription output changes for the same settings.
+ASR_PIPELINE_VERSION = "asr-3"
+
+
+def asr_settings_key() -> str:
+    """Everything that changes ASR output for the same recording."""
+    from app.core import config
+
+    return "|".join((
+        ASR_PIPELINE_VERSION,
+        f"model={getattr(config, 'WHISPER_MODEL', '')}",
+        f"compute={getattr(config, 'DEVICE', '')}/{getattr(config, 'COMPUTE_TYPE', '')}",
+        f"language={getattr(config, 'FORCE_LANGUAGE', None) or 'auto'}",
+        f"prompt={getattr(config, 'WHISPER_PROMPT', 'none')}",
+        f"split_gap={getattr(config, 'WHISPER_SPLIT_GAP_SECONDS', None)}",
+    ))
+
+
 def _cache_directory(
     content_hash: str
 ):
@@ -188,6 +247,12 @@ def _cache_directory(
         PIPELINE_CACHE_DIR
         / content_hash
     )
+
+
+def _content_cache_enabled() -> bool:
+    from app.core import config
+
+    return bool(getattr(config, "ENABLE_PIPELINE_CACHE", True))
 
 
 def _cache_is_complete(
@@ -745,7 +810,12 @@ def load_frontend_transcript(
         ).strip()
     )
 
-    language = _detect_language(
+    # A configured WHISPER_LANGUAGE is the language Whisper decoded with, so
+    # it is the meeting language; otherwise the detected one is used.
+    from app.core import config
+
+    forced = getattr(config, "FORCE_LANGUAGE", None)
+    language = forced or _detect_language(
         payload,
         segments
     )
@@ -757,6 +827,9 @@ def load_frontend_transcript(
 
         "language":
             language,
+
+        "language_source":
+            "configured" if forced else "detected",
 
         "segment_count":
             len(
@@ -822,26 +895,35 @@ def run_post_transcript_stages(meeting_id: str, mode: str | None = None) -> dict
     from app.services.intelligence.topic_segmenter import TopicSegmenter
     from app.services.intelligence.extraction_pipeline import run_extraction
 
+    from app.core.stage_timings import timed_stage
+
     storage = MeetingStorage(meeting_id)
     db.init_db()
     try:
-        payload = json.loads(
-            storage.path_for("transcript", "meeting_transcript_ready.json")
-            .read_text(encoding="utf-8")
-        )
-        utterances = build_transcript_index(payload, meeting_id)
-        persist_transcript_index(utterances, meeting_id)
+        with timed_stage("transcript_index") as index_stage:
+            payload = json.loads(
+                storage.path_for("transcript", "meeting_transcript_ready.json")
+                .read_text(encoding="utf-8")
+            )
+            utterances = build_transcript_index(payload, meeting_id)
+            persist_transcript_index(utterances, meeting_id)
+            index_stage.detail["utterances"] = len(utterances)
     except Exception as exc:
         logger.exception("Post-transcript stage 'index' failed for %s", meeting_id)
         raise PostTranscriptStageError("index", exc) from exc
     try:
-        frontend_path = storage.path_for("transcript", "frontend_transcript.json")
-        TopicSegmenter(output_dir=str(storage.intelligence)).process(str(frontend_path))
+        with timed_stage("topic_segmentation") as topic_stage:
+            frontend_path = storage.path_for("transcript", "frontend_transcript.json")
+            segmenter = TopicSegmenter(output_dir=str(storage.intelligence))
+            segmenter.process(str(frontend_path))
+            _describe_topics(topic_stage, segmenter)
     except Exception as exc:
         logger.exception("Post-transcript stage 'topics' failed for %s", meeting_id)
         raise PostTranscriptStageError("topics", exc) from exc
     try:
-        stats = run_extraction(meeting_id, mode=mode)
+        with timed_stage("extraction") as extraction_stage:
+            stats = run_extraction(meeting_id, mode=mode)
+            _describe_extraction(extraction_stage, stats)
         logger.info(
             "Extraction progress for %s: accepted=%d dropped=%d",
             meeting_id, stats.get("accepted", 0), stats.get("dropped", 0),
@@ -850,6 +932,40 @@ def run_post_transcript_stages(meeting_id: str, mode: str | None = None) -> dict
     except Exception as exc:
         logger.exception("Post-transcript stage 'extraction' failed for %s", meeting_id)
         raise PostTranscriptStageError("extraction", exc) from exc
+
+
+def _describe_topics(handle, segmenter) -> None:
+    """Topic count, and an explicit fallback when LLM titles were not used."""
+    mode = getattr(segmenter, "title_mode", "extractive")
+    handle.detail["title_mode"] = mode
+    if mode != "llm":
+        return
+    counts = getattr(segmenter, "title_counts", None) or {}
+    handle.detail["llm_titles"] = counts.get("llm", 0)
+    handle.detail["extractive_title_fallbacks"] = counts.get("fallback", 0)
+    reason = getattr(segmenter, "title_fallback_reason", None)
+    if reason or counts.get("fallback"):
+        handle.status = "fallback"
+        handle.detail["title_fallback_reason"] = str(
+            reason or f"{counts.get('fallback')} LLM title(s) rejected by the word check"
+        )[:300]
+
+
+def _describe_extraction(handle, stats: dict) -> None:
+    """Which extractor produced the claims, and what the LLM cost."""
+    keys = (
+        "status", "mode_requested", "mode_used", "extractor_version", "accepted", "dropped",
+        "llm_provider", "llm_model", "llm_windows", "llm_requests", "llm_provider_seconds",
+        "llm_cache_hits", "llm_attempts",
+    )
+    handle.detail.update({k: stats[k] for k in keys if stats.get(k) is not None})
+    if stats.get("fallback_reason"):
+        handle.detail["fallback_reason"] = str(stats["fallback_reason"])[:300]
+    if stats.get("status") == "failed":
+        handle.status = "failed"
+        handle.detail["reason"] = str(stats.get("reason") or "")[:300]
+    elif stats.get("mode_requested") == "llm" and stats.get("mode_used") != "llm":
+        handle.status = "fallback"
 
 
 _run_post_transcript_stages = run_post_transcript_stages
@@ -896,6 +1012,14 @@ def run_recorded_pipeline(
                 f"{content_hash}|{track_key}".encode("utf-8")
             ).hexdigest()
 
+    # The ASR settings are part of the key: a transcript made with another
+    # language, prompt, pause split or model must not be reused after the
+    # configuration changes (an upload once reused an auto-detected "ml"
+    # transcript after WHISPER_LANGUAGE=en was set).
+    content_hash = hashlib.sha256(
+        f"{content_hash}|{asr_settings_key()}".encode("utf-8")
+    ).hexdigest()
+
     hash_seconds = round(
         time.time()
         - hash_started,
@@ -938,7 +1062,7 @@ def run_recorded_pipeline(
 
     with _CACHE_LOCK:
 
-        cache_hit = _cache_is_complete(
+        cache_hit = _content_cache_enabled() and _cache_is_complete(
             content_hash
         )
 
@@ -1086,92 +1210,112 @@ def run_recorded_pipeline(
 
     with _PIPELINE_LOCK:
 
-        process = subprocess.Popen(
-            command,
-            cwd=str(PROJECT_ROOT),
-            env=cmd_env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            bufsize=1,
-        )
+        if speech_pipeline_mode() == "inprocess":
+            try:
+                _run_speech_pipeline_inprocess(meeting_id, input_file)
+            except Exception as error:
+                error_message = f"{type(error).__name__}: {error}"
+                _write_json(
+                    status_file,
+                    {
+                        "file_id": meeting_id,
+                        "status": "failed",
+                        "started_at": started_at,
+                        "finished_at": time.time(),
+                        "content_hash": content_hash,
+                        "cache_hit": False,
+                        "speech_pipeline": "inprocess",
+                        "error": error_message,
+                    }
+                )
+                raise RecordedPipelineError(error_message) from error
+        else:
+            process = subprocess.Popen(
+                command,
+                cwd=str(PROJECT_ROOT),
+                env=cmd_env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                bufsize=1,
+            )
 
-        output_lines = []
+            output_lines = []
 
-        if process.stdout is not None:
+            if process.stdout is not None:
 
-            for line in process.stdout:
+                for line in process.stdout:
 
-                output_lines.append(
-                    line
+                    output_lines.append(
+                        line
+                    )
+
+                    print(
+                        line,
+                        end="",
+                        flush=True
+                    )
+
+            return_code = (
+                process.wait()
+            )
+
+            combined_output = (
+                "".join(
+                    output_lines
+                ).strip()
+            )
+
+            # ----------------------------------------------------
+            # Pipeline failure
+            # ----------------------------------------------------
+
+            if return_code != 0:
+
+                error_message = (
+                    combined_output
+                    or
+                    "Recorded pipeline failed."
                 )
 
-                print(
-                    line,
-                    end="",
-                    flush=True
+                _write_json(
+                    status_file,
+                    {
+                        "file_id":
+                            meeting_id,
+
+                        "status":
+                            "failed",
+
+                        "started_at":
+                            started_at,
+
+                        "finished_at":
+                            time.time(),
+
+                        "return_code":
+                            return_code,
+
+                        "content_hash":
+                            content_hash,
+
+                        "cache_hit":
+                            False,
+
+                        "error":
+                            error_message
+                    }
                 )
 
-        return_code = (
-            process.wait()
-        )
+                raise RecordedPipelineError(
+                    error_message
+                )
 
-        combined_output = (
-            "".join(
-                output_lines
-            ).strip()
-        )
-
-        # ----------------------------------------------------
-        # Pipeline failure
-        # ----------------------------------------------------
-
-        if return_code != 0:
-
-            error_message = (
-                combined_output
-                or
-                "Recorded pipeline failed."
-            )
-
-            _write_json(
-                status_file,
-                {
-                    "file_id":
-                        meeting_id,
-
-                    "status":
-                        "failed",
-
-                    "started_at":
-                        started_at,
-
-                    "finished_at":
-                        time.time(),
-
-                    "return_code":
-                        return_code,
-
-                    "content_hash":
-                        content_hash,
-
-                    "cache_hit":
-                        False,
-
-                    "error":
-                        error_message
-                }
-            )
-
-            raise RecordedPipelineError(
-                error_message
-            )
-
-        # ----------------------------------------------------
-        # Snapshot shared output into this meeting folder
-        # ----------------------------------------------------
+            # ----------------------------------------------------
+            # Snapshot shared output into this meeting folder
+            # ----------------------------------------------------
 
         copied = _snapshot_outputs(
             meeting_id
@@ -1257,7 +1401,10 @@ def run_recorded_pipeline(
 
         with _CACHE_LOCK:
 
+            # ENABLE_PIPELINE_CACHE=false: neither reuse nor save results.
             cache_saved = (
+                _content_cache_enabled()
+                and
                 _save_results_to_cache(
                     meeting_id,
                     content_hash

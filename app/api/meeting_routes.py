@@ -6,7 +6,9 @@ import json
 import re
 import shutil
 
-from fastapi import APIRouter, BackgroundTasks, File, HTTPException, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Request, UploadFile
+
+from app.core import auth
 from fastapi.responses import FileResponse, JSONResponse
 
 from reportlab.lib import colors
@@ -47,6 +49,8 @@ from app.services.verification.claims_view import build_claims_view
 router = APIRouter(
     prefix="/api",
     tags=["Meetings"],
+    # Phase 7: a signed-in user, and membership of the meeting in the path.
+    dependencies=[Depends(auth.require_meeting_access)],
 )
 
 
@@ -54,7 +58,7 @@ router = APIRouter(
 # PROJECT PATHS
 # ============================================================
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from app.core import config
 from app.core.config import STORAGE_ROOT
 from app.core.storage import MeetingStorage, is_valid_meeting_id
@@ -283,6 +287,7 @@ def clean_text(
 async def upload_meeting(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
+    request: Request = None,
 ):
     """
     Upload a meeting recording and immediately queue the full pipeline.
@@ -363,6 +368,11 @@ async def upload_meeting(
     except Exception:
         pass  # DB write failures must not block upload response
 
+    # The uploader owns the meeting (Phase 7).
+    uploader = getattr(request.state, "user", None) if request is not None else None
+    if uploader:
+        _db.add_meeting_member(file_id, uploader["user_id"], "owner")
+
     # When JOB_RUNNER is worker, only enqueue without starting inline BackgroundTasks
     if (getattr(config, "JOB_RUNNER", "inline") or "inline").strip().lower() != "worker":
         background_tasks.add_task(run_pipeline, file_id, destination)
@@ -384,10 +394,16 @@ async def upload_meeting(
 # ASYNC JOB STATUS  (new, stable URL)
 # ============================================================
 
+# Live rooms older than this that never ended are treated as abandoned, not listed as live.
+LIVE_LISTING_HOURS = 12
+
+
 @router.get("/meetings")
-def list_meetings():
-    """List previously processed meetings that have indexed utterances."""
+def list_meetings(request: Request):
+    """List previously processed meetings that have indexed utterances (the user's own)."""
     _db.init_db()
+    user = getattr(request.state, "user", None)
+    allowed = set(_db.get_member_meeting_ids(user["user_id"])) if auth.auth_required() and user else None
     with _db.get_conn() as conn:
         rows = conn.execute(
             """
@@ -405,10 +421,39 @@ def list_meetings():
                     SELECT COUNT(*)
                     FROM claims c
                     WHERE c.meeting_id = m.meeting_id
-                ) AS claim_count
+                ) AS claim_count,
+                -- Phase 8 dashboard fields; all NULL when unknown, never guessed.
+                (
+                    SELECT MAX(u.end)
+                    FROM utterances u
+                    WHERE u.meeting_id = m.meeting_id
+                ) AS duration_seconds,
+                (
+                    SELECT COUNT(DISTINCT COALESCE(u.speaker_name, u.speaker_id))
+                    FROM utterances u
+                    WHERE u.meeting_id = m.meeting_id
+                ) AS speaker_count,
+                (
+                    SELECT r.draft_status
+                    FROM review_drafts r
+                    WHERE r.meeting_id = m.meeting_id
+                ) AS review_status,
+                (
+                    SELECT MAX(s.approved_at)
+                    FROM approved_snapshots s
+                    WHERE s.meeting_id = m.meeting_id
+                ) AS approved_at,
+                j.state AS job_state,
+                j.stage AS job_stage,
+                j.error AS job_error,
+                lm.status AS live_status,
+                lm.created_at AS live_started_at,
+                lm.room_name AS live_room_name
             FROM meetings m
-            WHERE m.filename IS NOT NULL
-              AND m.filename <> 'synthetic.wav'
+            LEFT JOIN jobs j ON j.meeting_id = m.meeting_id
+            LEFT JOIN live_meetings lm ON lm.meeting_id = m.meeting_id
+            WHERE (m.filename IS NOT NULL OR m.status IN ('scheduled', 'cancelled'))
+              AND COALESCE(m.filename, '') <> 'synthetic.wav'
               AND m.meeting_id NOT LIKE 'background-%'
               AND m.meeting_id NOT LIKE 'mismatch-%'
               AND m.meeting_id NOT LIKE 'cache-check-%'
@@ -419,11 +464,27 @@ def list_meetings():
             LIMIT 50
             """
         ).fetchall()
-    return [
+    # A meeting without utterances is listed only while its job is queued,
+    # running or failed, so the dashboard can show processing and failures.
+    # Phase 8.3: scheduled and cancelled meetings, and rooms opened in the last
+    # LIVE_LISTING_HOURS that have not ended, are listed too.
+    live_since = (datetime.utcnow() - timedelta(hours=LIVE_LISTING_HOURS)).isoformat()
+    listed = [
         dict(row)
         for row in rows
-        if row["utterance_count"] > 0
+        if (row["utterance_count"] > 0 or row["job_state"] in ("queued", "running", "failed")
+            or row["status"] in ("scheduled", "cancelled")
+            or (row["live_status"] == "active" and (row["live_started_at"] or "") >= live_since))
+        and (allowed is None or row["meeting_id"] in allowed)
     ]
+    schedules = _db.get_scheduled_meetings([m["meeting_id"] for m in listed])
+    for item in listed:
+        schedule = schedules.get(item["meeting_id"])
+        item["schedule"] = None if schedule is None else {
+            key: schedule[key] for key in ("title", "agenda", "scheduled_start_utc", "timezone",
+                                           "duration_minutes", "room_name", "status", "invitee_count")
+        }
+    return listed
 
 
 @router.get("/meetings/{meeting_id}/status")
@@ -454,7 +515,10 @@ def get_meeting_status(meeting_id: str):
                 "updated_at": meeting.get("created_at"),
             }
         raise HTTPException(status_code=404, detail="No status found for this meeting.")
-    return job.model_dump()
+    from app.core.stage_timings import timings_view
+
+    # stage_timings is an added field; existing fields are unchanged (Phase 5).
+    return {**job.model_dump(), "stage_timings": timings_view(meeting_id)}
 
 
 # ============================================================
@@ -490,7 +554,104 @@ def get_meeting_transcript(meeting_id: str):
             status_code=404,
             detail="Transcript index not found. Processing may still be in progress.",
         )
-    return [u.model_dump() for u in utterances]
+    # Phase 8: `text` is what the reviewer approved; `asr_text` keeps the
+    # speech-to-text output whenever the two differ.
+    corrections = _db.get_active_transcript_corrections(meeting_id)
+    out = []
+    for u in utterances:
+        row = u.model_dump()
+        fix = corrections.get(u.utt_id)
+        row["corrected"] = fix is not None
+        row["asr_text"] = fix["asr_text"] if fix else u.text
+        row["correction"] = (
+            {key: fix[key] for key in ("correction_id", "reviewer", "reason", "created_at")}
+            if fix else None
+        )
+        out.append(row)
+    return out
+
+
+class TranscriptCorrectionRequest(BaseModel):
+    text: str
+    reason: Optional[str] = None
+    reviewer: Optional[str] = None
+
+
+_ACTIVE_JOB_STATES = ("queued", "running")
+
+
+@router.put("/meetings/{meeting_id}/transcript/{utt_id}")
+def correct_transcript_utterance(
+    meeting_id: str,
+    utt_id: str,
+    request: TranscriptCorrectionRequest,
+    http_request: Request,
+):
+    """
+    Correct the text of one utterance (Phase 8).
+
+    The ASR text is kept; the correction is stored with reviewer, reason and
+    time, and logged in the review audit history. Verification results that
+    predate the correction are held for review until verification runs again,
+    and approval is refused until then. Nothing is replaced automatically.
+    """
+    validate_file_id(meeting_id)
+    reviewer = auth.reviewer_identity(http_request, request.reviewer)
+    if _db.get_meeting(meeting_id) is None:
+        raise HTTPException(status_code=404, detail="Meeting not found.")
+    job = _db.get_job_status(meeting_id)
+    if job is not None and job.state in _ACTIVE_JOB_STATES:
+        raise HTTPException(
+            status_code=409,
+            detail="The meeting is still being processed. Correct the transcript when processing finishes.",
+        )
+    draft = _db.get_review_draft(meeting_id)
+    if draft and draft["draft_status"] == "approved":
+        raise HTTPException(
+            status_code=409,
+            detail="Cannot correct the transcript of approved minutes. Please reopen review first.",
+        )
+    if len(request.text or "") > 4000:
+        raise HTTPException(status_code=422, detail="Corrected text is too long (4000 characters at most).")
+    try:
+        correction = _db.record_transcript_correction(
+            meeting_id,
+            utt_id,
+            request.text,
+            reviewer=reviewer,
+            reason=(request.reason or "").strip() or None,
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    storage = MeetingStorage(meeting_id)
+    # The retrieval index embeds utterance text and is reused by utterance
+    # count, so it must be rebuilt; minutes built from the old text are stale.
+    _remove_files((
+        storage.path_for("verification", "retrieval/spans.json"),
+        storage.path_for("verification", "retrieval/embeddings.npy"),
+        *_stale_mom_files(storage),
+    ))
+    view = build_claims_view(meeting_id)
+    return {
+        "correction": correction,
+        "utterance": next(
+            (row for row in get_meeting_transcript(meeting_id) if row["utt_id"] == utt_id),
+            None,
+        ),
+        "transcript": view["transcript"],
+    }
+
+
+@router.get("/meetings/{meeting_id}/transcript-corrections")
+def get_transcript_corrections(meeting_id: str):
+    """Complete correction history (every edit, including reverts), oldest first."""
+    validate_file_id(meeting_id)
+    if _db.get_meeting(meeting_id) is None:
+        raise HTTPException(status_code=404, detail="Meeting not found.")
+    return {"meeting_id": meeting_id, "corrections": _db.get_transcript_corrections(meeting_id)}
 
 
 # ============================================================
@@ -693,6 +854,25 @@ def _decision_item(claim: dict) -> dict:
     }
 
 
+_SPOKEN_DEADLINE_KINDS = ("event_anchored", "recurring", "relative", "absolute")
+
+
+def display_due(resolved, text, kind=None, reviewer_set=False):
+    """
+    The due date shown in minutes (Phase 8.3). A resolved date, or wording the
+    resolver recognised (e.g. "before the demo") or a reviewer typed, is shown
+    as is. Wording the resolver could not read is never presented as a
+    deadline: it is labelled unresolved.
+    """
+    if resolved:
+        return resolved
+    if not text:
+        return None
+    if reviewer_set or kind in _SPOKEN_DEADLINE_KINDS:
+        return text
+    return f"Unresolved: \"{text}\""
+
+
 def _action_item(claim: dict) -> dict:
     evidence = claim.get("evidence") or []
     return {
@@ -700,7 +880,7 @@ def _action_item(claim: dict) -> dict:
         "task": claim["text"],
         "owner": claim.get("owner"),
         "owner_type": claim.get("owner_type"),
-        "dueDate": claim.get("deadline_resolved") or claim.get("deadline_text"),
+        "dueDate": display_due(claim.get("deadline_resolved"), claim.get("deadline_text"), claim.get("deadline_type")),
         "deadline_text": claim.get("deadline_text"),
         "deadline_resolved": claim.get("deadline_resolved"),
         "source_start": evidence[0]["start"] if evidence else None,
@@ -1068,12 +1248,14 @@ def update_review_item_endpoint(
     meeting_id: str,
     item_id: str,
     request: ReviewItemUpdate,
+    http_request: Request,
 ):
     """
     Update a decision or action item in the review draft.
     Records field-level diffs in the review audit log.
     Rejects changes if the draft is currently approved (must be reopened first).
     """
+    request.reviewer = auth.reviewer_identity(http_request, request.reviewer)
     validate_file_id(meeting_id)
     draft = _db.init_review_draft(meeting_id)
     if draft["draft_status"] == "approved":
@@ -1105,11 +1287,13 @@ def update_review_item_endpoint(
 def add_review_item_endpoint(
     meeting_id: str,
     request: ReviewItemCreate,
+    http_request: Request,
 ):
     """
     Add a new human-curated decision or action item to the review draft.
     Rejects additions if the draft is currently approved.
     """
+    request.reviewer = auth.reviewer_identity(http_request, request.reviewer)
     validate_file_id(meeting_id)
     draft = _db.init_review_draft(meeting_id)
     if draft["draft_status"] == "approved":
@@ -1136,6 +1320,26 @@ def add_review_item_endpoint(
     }
 
 
+_DIARIZATION_LABEL = re.compile(r"SPEAKER_\d+|SPEAKER_UNKNOWN|UNKNOWN")
+
+
+def speaker_link(utterance) -> str:
+    """
+    How the speaker of an utterance is known (Phase 8.3): "participant" for a
+    named LiveKit participant track, "unnamed" for a diarization label from a
+    mixed recording. Unnamed labels are never linked to an account.
+    """
+    if utterance.speaker_name and not _DIARIZATION_LABEL.fullmatch(str(utterance.speaker_id or "")):
+        return "participant"
+    return "unnamed"
+
+
+def short_verifier_name(verification: dict) -> str:
+    """A readable verifier label; the full model identifiers stay in JSON."""
+    config_version = (verification or {}).get("config_version") or "fusion-v1"
+    return f"Text match + NLI ({str(config_version).replace('-provisional', '')})"
+
+
 def build_evidence_appendix(
     meeting_id: str,
     mom: dict,
@@ -1145,10 +1349,18 @@ def build_evidence_appendix(
     Build a deterministic evidence appendix array grounding each item's decisions
     and actions in verbatim utterances from the immutable database.
 
-    - Excluded items do not appear in the appendix.
+    - Every row says what the item is (item_text), how it ended up
+      (outcome: confirmed | held_for_review | rejected) and why (reasons).
+      Held and rejected items keep their evidence visible; they are never
+      shown as confirmed.
+    - Items excluded by the reviewer do not appear (they are listed in
+      excluded_from_mom).
     - Reviewer-added items with no cited utterances appear with evidence_role: "none"
       and quote: "Reviewer-added; no transcript evidence".
-    - Sorted deterministically: by item order, then by utterance start time.
+    - speaker_link is "participant" (named participant track) or "unnamed"
+      (diarization label, not linked to any account).
+    - Sorted deterministically: confirmed, held, rejected; by item order, then
+      by utterance start time.
     """
     utterances = _db.get_utterances(meeting_id, db_path=db_path)
     utt_map = {u.utt_id: u for u in utterances}
@@ -1162,61 +1374,60 @@ def build_evidence_appendix(
         "semantic": sem_ver,
         "thresholds": thresh,
     }
+    verifier = short_verifier_name(v_info)
 
     appendix = []
 
-    # Gather items deterministically: decisions first, then actions
+    # Gather items deterministically: confirmed decisions, confirmed actions,
+    # then held and rejected items.
     items_to_process = []
     for d in mom.get("decisions", []):
         if not (d.get("excluded") or d.get("is_excluded")):
-            items_to_process.append(("decision", d))
+            items_to_process.append(("decision", d, "confirmed"))
 
     for a in mom.get("action_items", []):
         if not (a.get("excluded") or a.get("is_excluded")):
-            items_to_process.append(("action", a))
+            items_to_process.append(("action", a, "confirmed"))
 
-    for item_type, item in items_to_process:
+    for h in mom.get("needs_review") or []:
+        items_to_process.append((h.get("claim_type") or "action", h, "held_for_review"))
+
+    for r in mom.get("rejected_from_mom") or []:
+        items_to_process.append((r.get("claim_type") or "action", r, "rejected"))
+
+    for item_type, item, outcome in items_to_process:
         item_id = item.get("claim_id") or item.get("item_id")
-        item_status = item.get("review_status") or item.get("verification_status") or "verified"
-        verification_label = item.get("verification_status") or "verified"
+        verification_label = item.get("verification_status") or item.get("status") or (
+            "verified" if outcome == "confirmed" else outcome)
+        item_status = item.get("review_status") or verification_label
         evidence_ids = item.get("evidence_ids") or []
-
-        if not evidence_ids:
-            appendix.append({
-                "item_id": item_id,
-                "item_type": item_type,
-                "item_status": item_status,
-                "utt_id": None,
-                "speaker": None,
-                "start_s": None,
-                "end_s": None,
-                "start_label": None,
-                "end_label": None,
-                "quote": "Reviewer-added; no transcript evidence",
-                "evidence_role": "none",
-                "verification_label": verification_label,
-                "verifier_versions": verifier_versions,
-            })
-            continue
+        base = {
+            "item_id": item_id,
+            "item_type": item_type,
+            "item_text": item.get("text") or item.get("task"),
+            "item_status": item_status,
+            "outcome": outcome,
+            "verification_label": verification_label,
+            "reasons": list(item.get("warnings") or item.get("reasons") or []),
+            "verifier": verifier,
+            "verifier_versions": verifier_versions,
+        }
 
         cited_utts = [utt_map[uid] for uid in evidence_ids if uid in utt_map]
         cited_utts.sort(key=lambda u: (u.start, u.end, u.utt_id))
 
         if not cited_utts:
             appendix.append({
-                "item_id": item_id,
-                "item_type": item_type,
-                "item_status": item_status,
+                **base,
                 "utt_id": None,
                 "speaker": None,
+                "speaker_link": None,
                 "start_s": None,
                 "end_s": None,
                 "start_label": None,
                 "end_label": None,
                 "quote": "Reviewer-added; no transcript evidence",
                 "evidence_role": "none",
-                "verification_label": verification_label,
-                "verifier_versions": verifier_versions,
             })
             continue
 
@@ -1226,36 +1437,47 @@ def build_evidence_appendix(
             else:
                 role = "evidence"
 
-            start_s = round(u.start, 2)
-            end_s = round(u.end, 2)
             s_min, s_rem = divmod(int(round(u.start)), 60)
             e_min, e_rem = divmod(int(round(u.end)), 60)
-            start_label = f"{s_min:02d}:{s_rem:02d}"
-            end_label = f"{e_min:02d}:{e_rem:02d}"
-
             appendix.append({
-                "item_id": item_id,
-                "item_type": item_type,
-                "item_status": item_status,
+                **base,
                 "utt_id": u.utt_id,
                 "speaker": u.speaker_name or u.speaker_id or "SPEAKER_UNKNOWN",
-                "start_s": start_s,
-                "end_s": end_s,
-                "start_label": start_label,
-                "end_label": end_label,
+                "speaker_link": speaker_link(u),
+                "start_s": round(u.start, 2),
+                "end_s": round(u.end, 2),
+                "start_label": f"{s_min:02d}:{s_rem:02d}",
+                "end_label": f"{e_min:02d}:{e_rem:02d}",
                 "quote": u.text,
                 "evidence_role": role,
-                "verification_label": verification_label,
-                "verifier_versions": verifier_versions,
             })
 
     return appendix
 
 
+def _timed_on_demand(stage: str):
+    """Record MoM / PDF generation time against the meeting's latest run (Phase 5)."""
+    import functools
+
+    def decorate(fn):
+        @functools.wraps(fn)
+        def wrapper(meeting_id, *args, **kwargs):
+            from app.core.stage_timings import on_demand_stage
+
+            with on_demand_stage(str(meeting_id), stage):
+                return fn(meeting_id, *args, **kwargs)
+
+        return wrapper
+
+    return decorate
+
+
 @router.post("/meetings/{meeting_id}/approve")
+@_timed_on_demand("minutes_generation")
 def approve_meeting_review(
     meeting_id: str,
     request: ApproveReviewRequest,
+    http_request: Request,
 ):
     """
     Explicitly approve and lock the Minutes of Meeting.
@@ -1263,6 +1485,7 @@ def approve_meeting_review(
     in the audit log, and generates the approved PDF artifact.
     Idempotent: re-approving an already-approved draft returns the current snapshot.
     """
+    request.reviewer = auth.reviewer_identity(http_request, request.reviewer)
     validate_file_id(meeting_id)
     if not request.reviewer or not request.reviewer.strip():
         raise HTTPException(status_code=422, detail="Reviewer name is required.")
@@ -1282,6 +1505,13 @@ def approve_meeting_review(
 
     storage = get_storage(meeting_id)
     view = build_claims_view(meeting_id)
+    if view["transcript"]["stale_claims"]:
+        # Phase 8: never approve claims verified against words a reviewer has
+        # since corrected.
+        raise HTTPException(
+            status_code=409,
+            detail="The transcript was corrected after verification. Run verification again before approving.",
+        )
     claims_by_id = {c["claim_id"]: c for c in view["claims"]}
     utterances = _db.get_utterances(meeting_id)
     utts_by_id = {u.utt_id: u for u in utterances}
@@ -1299,7 +1529,9 @@ def approve_meeting_review(
 
     decisions = []
     action_items = []
-    excluded_items = []
+    excluded_items = []   # excluded by the reviewer
+    held_items = []       # not confirmed: held for review
+    rejected_items = []   # rejected by verification or the reviewer
 
     for it in items:
         if it.get("is_excluded"):
@@ -1325,48 +1557,78 @@ def approve_meeting_review(
             status_label = orig["verification"]["final"]["label"] if orig else "unverified"
             is_exportable = orig["exportable"] if orig else False
 
+        reasons = orig["verification"]["final"]["reasons"] if orig and orig.get("verification") else []
+        has_deadline = bool(it.get("deadline_resolved") or it.get("deadline_text"))
         warnings = [
-            r["message"] for r in (orig["verification"]["final"]["reasons"] if orig and orig.get("verification") else [])
+            r["message"] for r in reasons
             if r.get("severity") == "warning"
+            # A reviewer who supplied the deadline resolved this warning.
+            and not (r.get("code") == "no_deadline" and has_deadline and (is_edited or is_added))
         ]
 
-        if it["item_type"] == "decision":
-            if is_exportable:
-                decisions.append({
+        if not is_exportable:
+            # Not confirmed. A reviewer exclusion, a rejection and an item held
+            # for review are different outcomes and are reported separately.
+            if status_label == "rejected" or it.get("review_status") == "rejected":
+                rejected_items.append(it)
+            else:
+                held_items.append({
                     "claim_id": it["item_id"],
+                    "claim_type": it["item_type"],
                     "text": it["text"],
-                    "state": it.get("state") or "accepted",
-                    "speaker": spk,
-                    "timestamp": tstamp,
-                    "verification_status": status_label,
+                    "state": it.get("state"),
+                    "status": status_label if not (is_edited or is_added) else "not_accepted",
+                    "reasons": [
+                        r["message"] for r in reasons if r.get("severity") in ("review", "reject")
+                    ] or (["A decision proposal that was not accepted."] if it.get("state") not in (None, "accepted") else []),
                     "evidence_ids": evidence_ids,
-                    "warnings": warnings,
-                    "review_status": it.get("review_status"),
+                    "speaker": spk,
                 })
-            else:
-                excluded_items.append(it)
+            continue
+
+        if it["item_type"] == "decision":
+            decisions.append({
+                "claim_id": it["item_id"],
+                "text": it["text"],
+                "state": it.get("state") or "accepted",
+                "speaker": spk,
+                "timestamp": tstamp,
+                "verification_status": status_label,
+                "evidence_ids": evidence_ids,
+                "warnings": warnings,
+                "review_status": it.get("review_status"),
+            })
         elif it["item_type"] == "action":
-            if is_exportable:
-                action_items.append({
-                    "claim_id": it["item_id"],
-                    "task": it["text"],
-                    "owner": it.get("owner") or "Not assigned",
-                    "owner_type": it.get("owner_type") or "unassigned",
-                    "dueDate": it.get("deadline_resolved") or it.get("deadline_text") or "Not specified",
-                    "speaker": spk,
-                    "timestamp": tstamp,
-                    "verification_status": status_label,
-                    "evidence_ids": evidence_ids,
-                    "warnings": warnings,
-                    "review_status": it.get("review_status"),
-                })
-            else:
-                excluded_items.append(it)
+            action_items.append({
+                "claim_id": it["item_id"],
+                "task": it["text"],
+                "owner": it.get("owner") or "Not assigned",
+                "owner_type": it.get("owner_type") or "unassigned",
+                "dueDate": display_due(
+                    it.get("deadline_resolved"),
+                    it.get("deadline_text"),
+                    (orig or {}).get("deadline_type"),
+                    # A deadline the reviewer typed is the reviewer's decision.
+                    reviewer_set=(is_edited or is_added)
+                    and it.get("deadline_text") != (orig or {}).get("deadline_text"),
+                ) or "Not specified",
+                "speaker": spk,
+                "timestamp": tstamp,
+                "verification_status": status_label,
+                "evidence_ids": evidence_ids,
+                "warnings": warnings,
+                "review_status": it.get("review_status"),
+            })
 
     follow_ups = [
         f"Deadline not specified for '{item['task']}'."
         for item in action_items
         if not item.get("dueDate") or item.get("dueDate") == "Not specified"
+    ]
+    follow_ups += [
+        f"Deadline unclear for '{item['task']}': {item['dueDate']}."
+        for item in action_items
+        if str(item.get("dueDate") or "").startswith("Unresolved")
     ]
     follow_ups += [
         f"Owner not assigned for '{item['task']}'."
@@ -1379,16 +1641,33 @@ def approve_meeting_review(
         "meeting_title": draft.get("meeting_title") or "Meeting Minutes",
         "meeting_date": None,
         "duration_seconds": round(duration, 2),
-        "language": _meeting_language(storage, utterances),
+        **_meeting_language_info(storage, utterances),
         "participants": participants,
-        "summary": draft.get("summary") or build_summary(topics, decisions, action_items, len(excluded_items), extraction),
+        "summary": draft.get("summary") or build_summary(topics, decisions, action_items, len(held_items), extraction),
         "summary_method": "reviewer_approved" if draft.get("summary") else "deterministic_overview",
         "discussion_points": build_discussion_points(topics),
         "llm_discussion_summary": _llm_discussion_summary(storage, extraction, utterances),
         "decisions": decisions,
         "action_items": action_items,
-        "needs_review": [],
-        "excluded_from_mom": [{"claim_id": ex["item_id"], "text": ex["text"]} for ex in excluded_items],
+        # Held items are shown as such, never silently dropped (Phase 8.1).
+        "needs_review": held_items,
+        "excluded_from_mom": [
+            {"claim_id": ex["item_id"], "claim_type": ex["item_type"], "text": ex["text"]} for ex in excluded_items
+        ],
+        "rejected_from_mom": [
+            {
+                "claim_id": r["item_id"],
+                "claim_type": r["item_type"],
+                "text": r["text"],
+                "evidence_ids": r.get("evidence_ids") or [],
+                "reasons": [
+                    x["message"] for x in (
+                        (claims_by_id.get(r.get("original_claim_id")) or {}).get("verification", {}).get("final", {}).get("reasons") or []
+                    ) if x.get("severity") in ("review", "reject")
+                ],
+            }
+            for r in rejected_items
+        ],
         "follow_ups": follow_ups,
         "extraction": _extraction_block(extraction),
         "verification": {
@@ -1401,6 +1680,10 @@ def approve_meeting_review(
             "model_version": (verification_run or {}).get("model_version"),
             "confirmed_decisions": len(decisions),
             "reliable_action_items": len(action_items),
+            "decisions_with_warnings": sum(1 for d in decisions if d["warnings"]),
+            "action_items_with_warnings": sum(1 for a in action_items if a["warnings"]),
+            "held_for_review": len(held_items),
+            "rejected": len(rejected_items),
             "excluded_items": len(excluded_items),
         },
         "status": "approved",
@@ -1419,7 +1702,15 @@ def approve_meeting_review(
     write_json(storage.root / "mom.json", mom)
     pdf_path = build_pdf(meeting_id, mom)
 
+    # Phase 9: approved action items become commitments in the owner's ledger.
+    from app.services.ledger import commitment_ledger
+
+    commitments_recorded = commitment_ledger.record_commitments(
+        meeting_id, mom, commitment_ledger.ledger_owner(meeting_id)
+    )
+
     return {
+        "commitments_recorded": commitments_recorded,
         "status": "approved",
         "message": "Minutes of Meeting approved and locked successfully.",
         "snapshot_id": snapshot["snapshot_id"],
@@ -1435,11 +1726,13 @@ def approve_meeting_review(
 def reopen_meeting_review(
     meeting_id: str,
     request: ReopenReviewRequest,
+    http_request: Request,
 ):
     """
     Reopen an approved meeting review for further corrections.
     Preserves previously approved snapshot rows in approved_snapshots.
     """
+    request.reviewer = auth.reviewer_identity(http_request, request.reviewer)
     validate_file_id(meeting_id)
     if not request.reviewer or not request.reviewer.strip():
         raise HTTPException(status_code=422, detail="Reviewer name is required.")
@@ -1495,6 +1788,85 @@ def export_mom_json(meeting_id: str, preview: bool = False):
         status_code=409,
         detail="MoM has not been approved yet. Approve minutes before exporting, or pass ?preview=true to preview.",
     )
+
+
+@router.delete("/meetings/{meeting_id}")
+def delete_meeting_endpoint(meeting_id: str, http_request: Request):
+    """
+    Permanently delete a meeting and all derived data (owner only when sign-in
+    is on). Refused while it is being processed or recorded.
+    """
+    from app.services.meeting_deletion import DeletionRefused, delete_meeting
+
+    validate_file_id(meeting_id)
+    auth.require_owner(http_request, meeting_id)
+    if _db.get_meeting(meeting_id) is None:
+        raise HTTPException(status_code=404, detail="Meeting not found.")
+    try:
+        return delete_meeting(meeting_id)
+    except DeletionRefused as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+# ============================================================
+# COMMITMENT LEDGER (Phase 9)
+# ============================================================
+
+class CommitmentReviewRequest(BaseModel):
+    status: str
+    note: Optional[str] = None
+    reviewer: Optional[str] = None
+
+
+@router.get("/commitments")
+def list_ledger(request: Request):
+    """The signed-in user's commitment ledger with each commitment's history."""
+    from app.services.ledger import commitment_ledger
+
+    user = getattr(request.state, "user", None)
+    owner = user["user_id"] if (auth.auth_required() and user) else None
+    return {"commitments": commitment_ledger.list_commitments(owner)}
+
+
+@router.get("/meetings/{meeting_id}/commitments")
+def get_meeting_commitments(meeting_id: str):
+    """Commitments created by this meeting and proposals for earlier ones."""
+    from app.services.ledger import commitment_ledger
+
+    validate_file_id(meeting_id)
+    owner = commitment_ledger.ledger_owner(meeting_id)
+    created = [c for c in commitment_ledger.list_commitments(owner) if c["source_meeting_id"] == meeting_id]
+    return {"created_here": created, "follow_ups": commitment_ledger.meeting_follow_ups(meeting_id)}
+
+
+@router.post("/meetings/{meeting_id}/commitments/propose")
+def propose_commitment_updates(meeting_id: str):
+    """Check the ledger's outstanding commitments against this meeting (proposals only)."""
+    from app.services.ledger import commitment_ledger
+
+    validate_file_id(meeting_id)
+    try:
+        commitment_ledger.propose_updates(meeting_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"follow_ups": commitment_ledger.meeting_follow_ups(meeting_id)}
+
+
+@router.post("/meetings/{meeting_id}/commitments/{commitment_id}/review")
+def review_commitment_update(meeting_id: str, commitment_id: str, payload: CommitmentReviewRequest,
+                             http_request: Request):
+    """A reviewer confirms or corrects a proposal; only this changes a commitment's status."""
+    from app.services.ledger import commitment_ledger
+
+    validate_file_id(meeting_id)
+    reviewer = auth.reviewer_identity(http_request, payload.reviewer)
+    try:
+        result = commitment_ledger.review_update(meeting_id, commitment_id, payload.status, reviewer, payload.note)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {**result, "follow_ups": commitment_ledger.meeting_follow_ups(meeting_id)}
 
 
 @router.get("/meetings/{meeting_id}/audio")
@@ -1751,19 +2123,45 @@ def build_summary(
 # ============================================================
 
 def _meeting_language(storage: MeetingStorage, utterances) -> str | None:
+    return _meeting_language_info(storage, utterances)["language"]
+
+
+def _meeting_language_info(storage: MeetingStorage, utterances) -> dict:
+    """
+    The meeting language with its source (Phase 8.1).
+
+    language_source is "configured" when WHISPER_LANGUAGE fixed the decoding
+    language, "detected" when Whisper chose it, and None for transcripts made
+    before the source was recorded. segment_languages lists what Whisper
+    reported per utterance, so a mislabelled detection (e.g. "ml" for English
+    speech) stays visible instead of being presented as fact.
+    """
+    from app.services.transcription.language_utils import language_name
+
+    language, source = None, None
     for path in (
         storage.path_for("transcript", "frontend_transcript.json"),
         storage.root / "frontend_transcript.json",
     ):
         if path.exists():
             try:
-                language = json.loads(path.read_text(encoding="utf-8")).get("language")
+                payload = json.loads(path.read_text(encoding="utf-8"))
+                language = payload.get("language") or None
+                source = payload.get("language_source") or None
                 if language:
-                    return language
+                    break
             except (OSError, json.JSONDecodeError, AttributeError):
                 pass
     tags = [tag for u in utterances for tag in (u.lang_tags or [])]
-    return max(set(tags), key=tags.count) if tags else None
+    counts = {tag: tags.count(tag) for tag in sorted(set(tags))}
+    if not language and counts:
+        language, source = max(counts, key=counts.get), "detected"
+    return {
+        "language": language,
+        "language_name": language_name(language) if language else None,
+        "language_source": source,
+        "segment_languages": counts if len(counts) > 1 else {},
+    }
 
 
 def _llm_identity(extraction: dict) -> dict:
@@ -1790,6 +2188,8 @@ def _extraction_block(extraction: dict) -> dict:
         "degraded_extraction": bool(extraction.get("fallback_reason")),
         "reason": extraction.get("reason"),
         "extractor_version": extraction.get("extractor_version"),
+        # Phase 8.3: the extractor actually used and why, in one sentence.
+        "fallback_note": extraction_fallback_note(extraction),
         **_llm_identity(extraction),
     }
 
@@ -1835,6 +2235,7 @@ def _llm_discussion_summary(storage: MeetingStorage, extraction: dict, utterance
     }
 
 
+@_timed_on_demand("minutes_generation")
 def create_mom(
     file_id: str,
 ):
@@ -1885,7 +2286,19 @@ def create_mom(
         for c in claims
         if not c["exportable"] and c["verification"]["final"]["label"] != "rejected"
     ]
-    rejected_count = sum(1 for c in claims if c["verification"]["final"]["label"] == "rejected")
+    rejected = [
+        {
+            "claim_id": c["claim_id"],
+            "claim_type": c["claim_type"],
+            "text": c["text"],
+            "status": "rejected",
+            "reasons": [r["message"] for r in c["verification"]["final"]["reasons"] if r.get("severity") in ("review", "reject")],
+            "evidence_ids": c["evidence_ids"],
+        }
+        for c in claims
+        if c["verification"]["final"]["label"] == "rejected"
+    ]
+    rejected_count = len(rejected)
 
     utterances = _db.get_utterances(file_id)
     duration = max((u.end for u in utterances), default=0.0)
@@ -1902,6 +2315,11 @@ def create_mom(
         if not item.get("dueDate")
     ]
     follow_ups += [
+        f"Deadline unclear for '{item['task']}': {item['dueDate']}."
+        for item in action_items
+        if str(item.get("dueDate") or "").startswith("Unresolved")
+    ]
+    follow_ups += [
         f"Owner not assigned for '{item['task']}'."
         for item in action_items
         if not item.get("owner")
@@ -1913,7 +2331,7 @@ def create_mom(
         "meeting_title": "Meeting Minutes",
         "meeting_date": None,
         "duration_seconds": round(duration, 2),
-        "language": _meeting_language(storage, utterances),
+        **_meeting_language_info(storage, utterances),
         "participants": participants,
         "summary": build_summary(topics, decisions, action_items, len(needs_review), extraction),
         "summary_method": "deterministic_overview",
@@ -1921,6 +2339,7 @@ def create_mom(
         "decisions": decisions,
         "action_items": action_items,
         "needs_review": needs_review,
+        "rejected_from_mom": rejected,
         "follow_ups": follow_ups,
         "extraction": _extraction_block(extraction),
         "llm_discussion_summary": _llm_discussion_summary(storage, extraction, utterances),
@@ -1985,6 +2404,48 @@ def safe_pdf(
     )
 
 
+_EXTRACTOR_NAMES = {
+    "hybrid": "the local hybrid extractor (rules + dialogue model)",
+    "rules": "the local rule-based extractor",
+    "learned": "the local dialogue model",
+}
+
+
+def extraction_fallback_note(extraction: dict) -> str | None:
+    """
+    One sentence naming the extractor actually used and why, when a requested
+    LLM extraction did not run (Phase 8.3). None for a normal run.
+    """
+    requested = extraction.get("mode_requested")
+    used = extraction.get("mode_used")
+    reason = extraction.get("fallback_reason")
+    if not reason and (not requested or requested == used):
+        return None
+    used_name = _EXTRACTOR_NAMES.get(str(used), f"the {used} extractor" if used else "no extractor")
+    asked = "The LLM extraction" if requested == "llm" else f"The requested {requested} extraction"
+    note = f"{asked} did not run; items were extracted by {used_name}"
+    return note + (f". Reason: {reason}" if reason else ".")
+
+
+def format_language(mom: dict) -> str:
+    """'English (en)' plus how it was chosen; 'Not specified' when unknown."""
+    code = mom.get("language")
+    if not code:
+        return "Not specified"
+    name = mom.get("language_name")
+    if not name:
+        from app.services.transcription.language_utils import language_name
+
+        name = language_name(code)
+    label = f"{name} ({code})" if name and not name.startswith("Other") else str(code)
+    source = mom.get("language_source")
+    if source == "configured":
+        return f"{label}, set"
+    if source == "detected":
+        return f"{label}, detected"
+    return label
+
+
 def format_duration(
     seconds,
 ) -> str:
@@ -2037,6 +2498,7 @@ def format_duration(
 # PDF GENERATION
 # ============================================================
 
+@_timed_on_demand("pdf_export")
 def build_pdf(
     file_id: str,
     mom: dict,
@@ -2125,13 +2587,13 @@ def build_pdf(
     decisions = mom.get("decisions") or []
     actions = mom.get("action_items") or []
     verification = mom.get("verification") or {}
-    language = safe_pdf(mom.get("language") or "Not specified")
+    language = safe_pdf(format_language(mom))
 
     # KPI cards
     metrics = [
         ("DURATION", format_duration(mom.get("duration_seconds"))),
         ("LANGUAGE", language),
-        ("PARTICIPANTS", f"{len(participants)} speakers" if participants else "Not specified"),
+        ("SPEAKERS", f"{len(participants)} speaker{'' if len(participants) == 1 else 's'}" if participants else "Not specified"),
         ("DECISIONS", f"{len(decisions)} confirmed"),
     ]
     metric_cells = []
@@ -2155,6 +2617,12 @@ def build_pdf(
 
     # Participants
     participant_text = "  •  ".join(safe_pdf(x) for x in participants) or "Not specified"
+    if participants and all(re.fullmatch(r"SPEAKER_\d+", str(p)) for p in participants):
+        # Diarization labels from a mixed recording are not people's names.
+        participant_text += (
+            "<br/><font color='#B45309' size='7.5'>Unnamed speaker labels from diarization of a mixed "
+            "recording; they are not linked to accounts, and attribution may be uncertain.</font>"
+        )
     participant_box = Table([[
         Paragraph("<b>Participants</b>", small_style),
         Paragraph(participant_text, small_style),
@@ -2169,6 +2637,23 @@ def build_pdf(
         ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
     ]))
     story.append(participant_box)
+
+    # Extraction fallback: stated up front, never presented as LLM output.
+    fallback_note = extraction_fallback_note(mom.get("extraction") or {})
+    if fallback_note:
+        fallback_box = Table([[Paragraph(
+            f"<b>Extraction fallback.</b> {safe_pdf(fallback_note)}", body_style,
+        )]], colWidths=[159 * mm])
+        fallback_box.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, -1), AMBER_LIGHT),
+            ("BOX", (0, 0), (-1, -1), 0.6, colors.HexColor("#FDE68A")),
+            ("LINEBEFORE", (0, 0), (0, -1), 2.5, AMBER),
+            ("LEFTPADDING", (0, 0), (-1, -1), 8),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+            ("TOPPADDING", (0, 0), (-1, -1), 6),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+        ]))
+        story.extend([Spacer(1, 6), fallback_box])
 
     # Executive summary
     story.append(Paragraph("Executive Summary", heading_style))
@@ -2229,7 +2714,10 @@ def build_pdf(
     llm_summary = mom.get("llm_discussion_summary") or {}
     if llm_summary.get("points"):
         story.append(Paragraph("Discussion Summary (LLM, cited, not verified)", heading_style))
-        story.append(Paragraph(safe_pdf(llm_summary.get("note") or ""), small_style))
+        story.append(Paragraph(safe_pdf(
+            (llm_summary.get("note") or "")
+            + " It reports what was said; only the confirmed sections below are decisions or commitments of record."
+        ), small_style))
         for point in llm_summary["points"]:
             refs = ", ".join(point.get("evidence") or [])
             span = f"{format_duration(point.get('start'))}–{format_duration(point.get('end'))}" if point.get("start") is not None else ""
@@ -2323,20 +2811,31 @@ def build_pdf(
         ]))
         story.append(action_table)
     else:
-        empty_action = Table([[
-            Paragraph("✓", ParagraphStyle(
-                "NoActionCheck", parent=body_style,
-                fontName="Helvetica-Bold", fontSize=12, textColor=GREEN,
-            )),
-            Paragraph(
+        held_actions = [x for x in (mom.get("needs_review") or []) if x.get("claim_type") == "action"]
+        if held_actions:
+            # Not "nothing found": candidates exist but are not confirmed.
+            empty_mark, empty_color, empty_bg, empty_border = "!", AMBER, AMBER_LIGHT, colors.HexColor("#FDE68A")
+            empty_text = (
+                "<b>No action items are confirmed.</b><br/>"
+                f"<font color='#475569'>{len(held_actions)} candidate action item(s) are held for review "
+                "(listed below) and are not tasks of record.</font>"
+            )
+        else:
+            empty_mark, empty_color, empty_bg, empty_border = "✓", GREEN, GREEN_LIGHT, colors.HexColor("#A7F3D0")
+            empty_text = (
                 "<b>No reliable action items detected.</b><br/>"
-                "<font color='#475569'>No sufficiently supported task assignment was included in the verified MoM.</font>",
-                body_style,
-            ),
+                "<font color='#475569'>No sufficiently supported task assignment was included in the verified MoM.</font>"
+            )
+        empty_action = Table([[
+            Paragraph(empty_mark, ParagraphStyle(
+                "NoActionCheck", parent=body_style,
+                fontName="Helvetica-Bold", fontSize=12, textColor=empty_color,
+            )),
+            Paragraph(empty_text, body_style),
         ]], colWidths=[10 * mm, 149 * mm])
         empty_action.setStyle(TableStyle([
-            ("BACKGROUND", (0, 0), (-1, -1), GREEN_LIGHT),
-            ("BOX", (0, 0), (-1, -1), 0.6, colors.HexColor("#A7F3D0")),
+            ("BACKGROUND", (0, 0), (-1, -1), empty_bg),
+            ("BOX", (0, 0), (-1, -1), 0.6, empty_border),
             ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
             ("LEFTPADDING", (0, 0), (-1, -1), 7),
             ("RIGHTPADDING", (0, 0), (-1, -1), 7),
@@ -2426,79 +2925,102 @@ def build_pdf(
     if appendix is None:
         appendix = build_evidence_appendix(file_id, mom)
 
-    if appendix:
+    excluded = mom.get("excluded_from_mom") or []
+    if appendix or excluded:
         story.append(Spacer(1, 10))
         story.append(Paragraph("Evidence Appendix", heading_style))
-        story.append(Paragraph(
-            "Verbatim transcript evidence grounding confirmed decisions and action items.",
-            small_style,
-        ))
+        story.append(Paragraph(safe_pdf(
+            "Each item with its cited transcript evidence, outcome and verification status. Held and rejected "
+            "items are shown for transparency and are not decisions or tasks of record. "
+            f"Verifier: {short_verifier_name(verification)}; model identifiers are in the JSON export."
+        ), small_style))
         story.append(Spacer(1, 6))
 
-        appendix_col_widths = [18 * mm, 16 * mm, 22 * mm, 24 * mm, 56 * mm, 20 * mm, 18 * mm]
+        outcome_labels = {
+            "confirmed": ("Confirmed", GREEN, GREEN_LIGHT),
+            "held_for_review": ("Held for review (not confirmed)", AMBER, AMBER_LIGHT),
+            "rejected": ("Rejected", colors.HexColor("#B91C1C"), colors.HexColor("#FEF2F2")),
+        }
+        item_head_style = ParagraphStyle(
+            "AppendixItemHead", parent=small_style, fontName="Helvetica-Bold", fontSize=8.5, leading=11,
+            textColor=DARK,
+        )
         app_header_style = ParagraphStyle(
             "AppendixHeader", parent=small_style,
-            fontName="Helvetica-Bold", textColor=colors.white, fontSize=7.5, leading=9,
+            fontName="Helvetica-Bold", textColor=SLATE, fontSize=7.5, leading=9,
         )
         app_cell_style = ParagraphStyle(
             "AppendixCell", parent=small_style,
-            fontName="Helvetica", textColor=DARK, fontSize=7.5, leading=9.5,
+            fontName="Helvetica", textColor=DARK, fontSize=8, leading=10,
         )
         app_quote_style = ParagraphStyle(
             "AppendixQuote", parent=small_style,
-            fontName="Helvetica-Oblique", textColor=DARK, fontSize=7.5, leading=9.5,
+            fontName="Helvetica-Oblique", textColor=DARK, fontSize=8, leading=10.5,
         )
 
-        app_rows = [[
-            Paragraph("Item", app_header_style),
-            Paragraph("Utterance", app_header_style),
-            Paragraph("Speaker", app_header_style),
-            Paragraph("Time", app_header_style),
-            Paragraph("Quote", app_header_style),
-            Paragraph("Verification", app_header_style),
-            Paragraph("Verifier", app_header_style),
-        ]]
-
+        groups = []
         for row in appendix:
-            item_lbl = str(row.get("item_id") or "")
-            if len(item_lbl) > 12:
-                item_lbl = item_lbl[:10] + "…"
-            utt_lbl = str(row.get("utt_id") or "—")
-            spk_lbl = str(row.get("speaker") or "—")
-            t_lbl = (
-                f"{row.get('start_label')}–{row.get('end_label')}"
-                if row.get("start_label")
-                else "—"
+            if not groups or groups[-1][0] != row.get("item_id"):
+                groups.append((row.get("item_id"), []))
+            groups[-1][1].append(row)
+
+        for _, rows in groups:
+            first = rows[0]
+            label, tone, tone_bg = outcome_labels.get(first.get("outcome") or "confirmed", outcome_labels["confirmed"])
+            kind = "Decision" if first.get("item_type") == "decision" else "Action item"
+            status = str(first.get("verification_label") or "").replace("_", " ")
+            head = (
+                f"<font color='{tone.hexval().replace('0x', '#')}'>{safe_pdf(label)}</font> · "
+                f"{safe_pdf(kind)} · <font color='#475569'>{safe_pdf(status)}</font><br/>"
+                f"{safe_pdf(first.get('item_text') or '')}"
             )
-            q_text = safe_pdf(row.get("quote") or "")
-            v_lbl = safe_pdf(row.get("verification_label") or "")
-            ver_versions = row.get("verifier_versions") or {}
-            v_ver = safe_pdf(ver_versions.get("semantic") or ver_versions.get("deterministic") or "v1")
+            for reason in first.get("reasons") or []:
+                head += f"<br/><font color='#B45309' size='7.5'>⚠ {safe_pdf(reason)}</font>"
 
-            app_rows.append([
-                Paragraph(safe_pdf(item_lbl), app_cell_style),
-                Paragraph(safe_pdf(utt_lbl), app_cell_style),
-                Paragraph(safe_pdf(spk_lbl), app_cell_style),
-                Paragraph(safe_pdf(t_lbl), app_cell_style),
-                Paragraph(q_text, app_quote_style),
-                Paragraph(v_lbl, app_cell_style),
-                Paragraph(v_ver, app_cell_style),
-            ])
+            evidence_rows = [[
+                Paragraph("Utterance", app_header_style),
+                Paragraph("Speaker", app_header_style),
+                Paragraph("Time", app_header_style),
+                Paragraph("Quote", app_header_style),
+            ]]
+            for row in rows:
+                if row.get("utt_id"):
+                    link = "participant" if row.get("speaker_link") == "participant" else "unnamed label"
+                    speaker = f"{safe_pdf(row.get('speaker'))}<br/><font color='#475569' size='7'>{link}</font>"
+                    when = f"{row.get('start_label')}–{row.get('end_label')}"
+                else:
+                    speaker, when = "—", "—"
+                evidence_rows.append([
+                    Paragraph(safe_pdf(row.get("utt_id") or "—"), app_cell_style),
+                    Paragraph(speaker, app_cell_style),
+                    Paragraph(safe_pdf(when), app_cell_style),
+                    Paragraph(safe_pdf(row.get("quote") or ""), app_quote_style),
+                ])
+            evidence_table = Table(evidence_rows, colWidths=[17 * mm, 34 * mm, 20 * mm, 88 * mm])
+            evidence_table.setStyle(TableStyle([
+                ("LINEBELOW", (0, 0), (-1, 0), 0.5, BORDER),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 4),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+                ("TOPPADDING", (0, 0), (-1, -1), 3),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+            ]))
+            block = Table([[Paragraph(head, item_head_style)], [evidence_table]], colWidths=[159 * mm])
+            block.setStyle(TableStyle([
+                ("BACKGROUND", (0, 0), (-1, 0), tone_bg),
+                ("BOX", (0, 0), (-1, -1), 0.6, BORDER),
+                ("LINEBEFORE", (0, 0), (0, -1), 2.5, tone),
+                ("LEFTPADDING", (0, 0), (-1, -1), 6),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+                ("TOPPADDING", (0, 0), (-1, -1), 5),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+            ]))
+            story.extend([KeepTogether([block]), Spacer(1, 5)])
 
-        app_table = Table(app_rows, colWidths=appendix_col_widths, repeatRows=1)
-        app_table.setStyle(TableStyle([
-            ("BACKGROUND", (0, 0), (-1, 0), NAVY),
-            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, LIGHT]),
-            ("GRID", (0, 0), (-1, -1), 0.5, BORDER),
-            ("VALIGN", (0, 0), (-1, -1), "TOP"),
-            ("LEFTPADDING", (0, 0), (-1, -1), 4),
-            ("RIGHTPADDING", (0, 0), (-1, -1), 4),
-            ("TOPPADDING", (0, 0), (-1, -1), 4),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
-        ]))
-        story.append(app_table)
+        if excluded:
+            story.append(Paragraph("<b>Excluded by the reviewer</b> (not part of the minutes)", small_style))
+            for item in excluded:
+                story.append(Paragraph(f"• {safe_pdf(item.get('text'))}", small_style))
 
     story.extend([
         Spacer(1, 10),
@@ -2557,12 +3079,35 @@ def build_pdf(
 # GENERATE MOM
 # ============================================================
 
+def _approved_mom(meeting_id: str) -> Optional[dict]:
+    """The approved snapshot's MoM while the review is approved, else None."""
+    draft = _db.get_review_draft(meeting_id)
+    if not draft or draft["draft_status"] != "approved":
+        return None
+    snapshot = _db.get_latest_approved_snapshot(meeting_id)
+    return dict(snapshot["mom_payload"]) if snapshot else None
+
+
 @router.post(
     "/generate-mom/{file_id}"
 )
 def generate_mom(
     file_id: str,
 ):
+
+    # Phase 8: while the minutes are approved, the approved snapshot is the
+    # minutes. Rebuilding a draft here would overwrite the approved PDF with
+    # held claims.
+    approved = _approved_mom(file_id)
+    if approved is not None:
+        pdf_path = build_pdf(file_id, approved)
+        return {
+            "message": "Approved Minutes of Meeting",
+            "file_id": file_id,
+            "mom": approved,
+            "pdf_file": pdf_path.name,
+            "status": "approved_snapshot",
+        }
 
     mom = create_mom(
         file_id
@@ -2606,8 +3151,12 @@ def download_mom(
     storage = get_storage(file_id)
     snapshot = _db.get_latest_approved_snapshot(file_id)
     pdf_path = storage.path_for("mom", "Meet2MoM-Meeting-Minutes.pdf")
+    approved = _approved_mom(file_id)
 
-    if snapshot is not None:
+    if approved is not None:
+        # Always the approved snapshot, never a PDF left by a draft run.
+        pdf_path = build_pdf(file_id, approved)
+    elif snapshot is not None:
         if not pdf_path.exists():
             pdf_path = build_pdf(file_id, snapshot["mom_payload"])
     else:

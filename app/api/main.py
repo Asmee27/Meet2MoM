@@ -26,6 +26,14 @@ async def lifespan(_app: FastAPI):
             db.fail_interrupted_inline_jobs()
     except Exception:
         logging.getLogger("main").exception("Recording/job recovery failed at startup")
+    try:
+        # Phase 8.4: send queued email (and retries) from this process unless
+        # EMAIL_DISPATCH says the worker does it, or nothing should send.
+        from app.services.email.outbox import start_background_dispatcher
+
+        start_background_dispatcher()
+    except Exception:
+        logging.getLogger("main").exception("Email dispatcher did not start")
     yield
     await get_recording_manager().shutdown()
 
@@ -53,6 +61,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+from app.api.auth_routes import router as auth_router  # noqa: E402
+from app.api.schedule_routes import router as schedule_router  # noqa: E402
+from app.api.email_routes import router as email_router  # noqa: E402
+
+app.include_router(auth_router)
+app.include_router(schedule_router)
+app.include_router(email_router)
 app.include_router(meeting_router)
 app.include_router(live_router)
 

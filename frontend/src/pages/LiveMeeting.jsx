@@ -6,6 +6,8 @@ import {
 } from "livekit-client";
 import { useMeetingFlow } from "../context/MeetingFlowContext";
 import {
+  acceptInvitation,
+  createInvitation,
   createLiveRoom,
   endLiveRoom,
   getLiveConfig,
@@ -17,6 +19,12 @@ import {
   updateLiveConsent,
 } from "../services/api";
 import "./LiveMeeting.css";
+import StageTimings from "../components/StageTimings";
+import { useAuth } from "../components/AuthGate";
+
+// LiveKit protocol DisconnectReason.DUPLICATE_IDENTITY (enum value 2): another
+// connection with the same identity replaced this one.
+const DUPLICATE_IDENTITY_REASON = 2;
 
 // ============================================================================
 // Server-side recording helpers (Phase 4.2)
@@ -419,36 +427,47 @@ function LocalParticipantTile({ room, name, isHost, consented, isSpeaking, micEn
 // Main LiveMeeting Component with Real LiveKit WebRTC Integration
 // ============================================================================
 
-export default function LiveMeeting() {
+// `defaults` (Phase 8.3): { roomName, topic } when the host starts a
+// scheduled meeting or reopens a live room from the meeting list.
+export default function LiveMeeting({ defaults = null } = {}) {
   const {
     setMeetingMode,
     loadExistingMeeting,
   } = useMeetingFlow();
 
-  // URL Query Parameter check (e.g. ?room=sprint-planning-8492)
-  const initialRoomParam = (() => {
+  const { user: signedInUser, authRequired } = useAuth();
+
+  // Invite links: ?room=<code>&invite=<token>. Read once at mount so later
+  // URL updates can never drop the invitation before it is accepted.
+  const [{ initialRoomParam, initialInvite }] = useState(() => {
     try {
-      return new URLSearchParams(window.location.search).get("room") || "";
+      const params = new URLSearchParams(window.location.search);
+      return { initialRoomParam: params.get("room") || "", initialInvite: params.get("invite") || "" };
     } catch {
-      return "";
+      return { initialRoomParam: "", initialInvite: "" };
     }
-  })();
+  });
+  const inviteTokenRef = useRef(initialInvite);
 
   // View States: "create" | "room" | "ended"
   const [viewState, setViewState] = useState("create");
 
   // Create / Join Configuration
-  const [isJoinMode, setIsJoinMode] = useState(Boolean(initialRoomParam));
+  const [isJoinMode, setIsJoinMode] = useState(Boolean(initialRoomParam || initialInvite));
   const [roomCode, setRoomCode] = useState(
-    initialRoomParam || `livekit-m2m-${Math.floor(1000 + Math.random() * 9000)}`
+    initialRoomParam || defaults?.roomName || `livekit-m2m-${Math.floor(1000 + Math.random() * 9000)}`
   );
   const [topic, setTopic] = useState(
-    initialRoomParam ? `Live Meeting: ${initialRoomParam}` : "Engineering Sync & Sprint Planning"
+    initialRoomParam
+      ? `Live Meeting: ${initialRoomParam}`
+      : defaults?.topic || "Engineering Sync & Sprint Planning"
   );
   const [displayName, setDisplayName] = useState(
     initialRoomParam ? "Guest Participant" : "Alex Morgan (Host)"
   );
-  const [isHost, setIsHost] = useState(!initialRoomParam);
+  // The role requested follows the form (create = host, join = participant);
+  // once connected, the server's answer in the token response is used.
+  const [isHost, setIsHost] = useState(!(initialRoomParam || initialInvite));
   const [language, setLanguage] = useState("en");
   // Consent is opt-in: nothing is pre-ticked on the participant's behalf.
   const [hasConsented, setHasConsented] = useState(false);
@@ -561,8 +580,24 @@ export default function LiveMeeting() {
     }
   }, [viewState, recState?.status, meetingId, loadExistingMeeting]);
 
-  const handleCopyInvite = () => {
-    const inviteUrl = `${window.location.origin}/?room=${encodeURIComponent(roomCode)}`;
+  const handleCopyInvite = async () => {
+    let inviteUrl = `${window.location.origin}/?room=${encodeURIComponent(liveRoomRef.current || roomCode)}`;
+    // Phase 7: with sign-in on, the link carries a single-meeting invitation.
+    // Without sign-in the plain room link is used.
+    if (meetingId) {
+      try {
+        const invitation = await createInvitation(meetingId);
+        if (invitation?.token) {
+          inviteUrl += `&invite=${encodeURIComponent(invitation.token)}`;
+        }
+      } catch (err) {
+        if (authRequired) {
+          // A plain link would not admit anyone; say so instead of copying it.
+          setRecError(err?.message || "Only the meeting host can create an invite link.");
+          return;
+        }
+      }
+    }
     if (navigator.clipboard) {
       navigator.clipboard.writeText(inviteUrl).catch(() => {});
     }
@@ -575,37 +610,88 @@ export default function LiveMeeting() {
   // --------------------------------------------------------------------------
   const handleStartOrJoinRoom = async (e) => {
     if (e) e.preventDefault();
+    // A second click while a join is in flight, or while connected, must not
+    // create another connection with the same identity.
+    if (isConnecting || (roomRef.current && roomRef.current.state !== "disconnected")) return;
     setConnectionError("");
     setPermissionError("");
     setIsConnecting(true);
 
     try {
-      // 1. If host and room does not exist, notify backend room creation
+      let roomToJoin = roomCode.trim();
+
+      // 1. Creating a meeting: register the room. A room code owned by another
+      // account cannot be taken over; everything else continues to the token.
       if (isHost) {
         try {
           await createLiveRoom({
-            room_name: roomCode,
+            room_name: roomToJoin,
             title: topic,
             host_name: displayName,
           });
         } catch (err) {
+          if (err?.status === 409) {
+            throw new Error(
+              err?.message && !/another meeting owner/.test(err.message)
+                ? err.message
+                : `Room code “${roomToJoin}” already belongs to another host's meeting. Choose a different code, or use “Have a Room Code? Join” with that host's invite link.`
+            );
+          }
+          if (err?.status === 410) throw new Error(err.message || "This scheduled meeting was cancelled.");
           console.warn("createLiveRoom warning (continuing with join token):", err);
         }
       }
 
-      // 2. Request authenticated JWT access token from FastAPI backend
+      // 1b. Phase 7: a guest with an invitation becomes a member of that
+      // meeting first, and joins the room the invitation belongs to.
+      if (!isHost && inviteTokenRef.current) {
+        let accepted;
+        try {
+          accepted = await acceptInvitation(inviteTokenRef.current);
+        } catch (err) {
+          throw new Error(
+            err?.status === 404
+              ? "This invitation link is invalid or has expired. Ask the host to copy a new invite link."
+              : err?.status === 401
+                ? "Sign in first, then open the invite link again."
+                : err?.message || "The invitation could not be accepted."
+          );
+        }
+        if (accepted?.room_name && accepted.room_name !== roomToJoin) {
+          roomToJoin = accepted.room_name;
+          setRoomCode(accepted.room_name);
+        }
+      }
+
+      // 2. Request authenticated JWT access token from FastAPI backend.
+      // With sign-in on, the server chooses identity, name and host role.
       // The join-form consent tick is recorded server-side as an explicit grant.
-      const tokenResponse = await getLiveToken({
-        room_name: roomCode,
-        participant_name: displayName,
-        participant_identity: stableIdentity(roomCode),
-        is_host: isHost,
-        metadata: {
-          consented: hasConsented,
-          topic: topic,
-          role: isHost ? "host" : "participant",
-        },
-      });
+      let tokenResponse;
+      try {
+        tokenResponse = await getLiveToken({
+          room_name: roomToJoin,
+          participant_name: displayName,
+          participant_identity: stableIdentity(roomToJoin),
+          is_host: isHost,
+          metadata: {
+            consented: hasConsented,
+            topic: topic,
+            role: isHost ? "host" : "participant",
+          },
+        });
+      } catch (err) {
+        if (err?.status === 403 && !isHost) {
+          throw new Error(
+            "You are not a member of this meeting yet. Open the invite link the host copied from the meeting room; the room code alone does not grant access."
+          );
+        }
+        if (err?.status === 404) {
+          throw new Error(
+            `No meeting is active with room code “${roomToJoin}”. Check the code, or ask the host to start the meeting first.`
+          );
+        }
+        throw err;
+      }
 
       const { token, livekit_url: serverUrl } = tokenResponse;
 
@@ -613,8 +699,11 @@ export default function LiveMeeting() {
         throw new Error("Backend did not return a valid LiveKit token or server URL.");
       }
       tokenRef.current = token;
-      liveRoomRef.current = tokenResponse.room_name || roomCode;
+      liveRoomRef.current = tokenResponse.room_name || roomToJoin;
       setMeetingId(tokenResponse.meeting_id || "");
+      // The server decides who hosts (the meeting owner) and the shown name.
+      if (typeof tokenResponse.is_host === "boolean") setIsHost(tokenResponse.is_host);
+      if (tokenResponse.participant_name) setDisplayName(tokenResponse.participant_name);
       if (typeof tokenResponse.consented === "boolean") {
         setHasConsented(tokenResponse.consented);
       }
@@ -644,8 +733,18 @@ export default function LiveMeeting() {
 
       room.on(RoomEvent.Disconnected, (reason) => {
         setConnectionState("disconnected");
-        setViewState("ended");
         console.log("LiveKit disconnected:", reason);
+        if (reason === DUPLICATE_IDENTITY_REASON) {
+          // LiveKit allows one connection per identity: the same account
+          // joined from another tab or device and this tab was replaced.
+          roomRef.current = null;
+          setConnectionError(
+            "This account joined the meeting from another tab or device, so this tab was disconnected. To join as a second participant, sign in with a different account in a separate browser or private window."
+          );
+          setViewState("create");
+          return;
+        }
+        setViewState("ended");
       });
 
       // Event: Remote Participants
@@ -867,11 +966,32 @@ export default function LiveMeeting() {
                 type="button"
                 className="lm-topbar-btn"
                 style={{ fontSize: "11px", padding: "4px 8px" }}
-                onClick={() => setIsJoinMode(!isJoinMode)}
+                onClick={() => {
+                  const joining = !isJoinMode;
+                  setIsJoinMode(joining);
+                  // Joining never requests the host role.
+                  setIsHost(!joining);
+                  setConnectionError("");
+                }}
               >
                 {isJoinMode ? "Switch to Create Room" : "Have a Room Code? Join"}
               </button>
             </div>
+          </div>
+
+          {/* Who you will be in this meeting, before connecting. */}
+          <div className={`lm-role-notice ${isJoinMode ? "is-guest" : "is-host"}`} data-testid="role-notice">
+            <strong>{isJoinMode ? "You are joining as a participant." : "You will host this meeting."}</strong>{" "}
+            {isJoinMode
+              ? inviteTokenRef.current
+                ? "Your invitation is applied when you join. The meeting's host is the account that created it; if the host is already in the room, you join alongside them."
+                : authRequired
+                  ? "With sign-in on, open the invite link the host copied from the meeting room. A room code alone does not grant access."
+                  : "Enter the room code the host shared."
+              : "You can copy an invite link for guests once the meeting has started."}
+            {authRequired && signedInUser && (
+              <span className="lm-role-account"> Signed in as {signedInUser.display_name} ({signedInUser.email}).</span>
+            )}
           </div>
 
           {/* LiveKit Cloud Setup Notice */}
@@ -1043,6 +1163,10 @@ export default function LiveMeeting() {
                 type="button"
                 className="lm-copy-btn"
                 onClick={handleCopyInvite}
+                // With sign-in on, a working link carries an invitation, which
+                // exists only once the meeting has been created.
+                disabled={authRequired && !meetingId}
+                title={authRequired && !meetingId ? "Start the meeting first; then copy the invite link from the room." : undefined}
               >
                 {copyFeedback ? "✓ Link Copied!" : "Copy Invite Link"}
               </button>
@@ -1147,13 +1271,15 @@ export default function LiveMeeting() {
               )
             )}
 
-            <button
-              type="button"
-              className="lm-topbar-btn"
-              onClick={handleCopyInvite}
-            >
-              {copyFeedback ? "✓ Copied!" : "📋 Copy Invite Link"}
-            </button>
+            {(isHost || !authRequired) && (
+              <button
+                type="button"
+                className="lm-topbar-btn"
+                onClick={handleCopyInvite}
+              >
+                {copyFeedback ? "✓ Copied!" : "📋 Copy Invite Link"}
+              </button>
+            )}
 
             <span
               className="lm-badge"
@@ -1233,16 +1359,20 @@ export default function LiveMeeting() {
                   Waiting for participants to join...
                 </div>
                 <div style={{ color: "#94a3b8", fontSize: "13px", maxWidth: "300px" }}>
-                  Share the invite link with a peer in another browser window to connect via real LiveKit WebRTC.
+                  {isHost || !authRequired
+                    ? "Share the invite link. Each guest opens it in their own browser (or a private window) and signs in with their own account."
+                    : "You are in the room. Others appear here when they join."}
                 </div>
-                <button
-                  type="button"
-                  className="lm-topbar-btn"
-                  onClick={handleCopyInvite}
-                  style={{ marginTop: "4px" }}
-                >
-                  {copyFeedback ? "✓ Copied!" : "📋 Copy Invite Link"}
-                </button>
+                {(isHost || !authRequired) && (
+                  <button
+                    type="button"
+                    className="lm-topbar-btn"
+                    onClick={handleCopyInvite}
+                    style={{ marginTop: "4px" }}
+                  >
+                    {copyFeedback ? "✓ Copied!" : "📋 Copy Invite Link"}
+                  </button>
+                )}
               </div>
             )}
           </main>
@@ -1554,6 +1684,7 @@ export default function LiveMeeting() {
           {processing.error && (
             <div className="lm-rec-notice error" style={{ marginTop: "10px" }}>{processing.error}</div>
           )}
+          <StageTimings timings={processing.stage_timings} />
         </div>
       )}
 

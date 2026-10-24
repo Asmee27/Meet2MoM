@@ -18,6 +18,22 @@ from app.core import config
 from app.services.intelligence.topic_segmenter import TopicSegmenter, WORD_TOKEN_PATTERN
 
 
+def _llm_client(monkeypatch, title=None, error=None):
+    """A mock limited to LLMClient's real API: calling a method it lacks fails."""
+    from app.core.llm_client import LLMClient
+
+    client = MagicMock(spec=LLMClient)
+    if error is not None:
+        client.complete_json.side_effect = error
+    else:
+        client.complete_json.return_value = {"title": title}
+    monkeypatch.setattr("app.core.llm_client.LLMClient", lambda: client)
+    monkeypatch.setattr(
+        "app.services.intelligence.extraction_pipeline.llm_unavailable_reason", lambda client=None: None
+    )
+    return client
+
+
 @pytest.fixture()
 def segmenter(monkeypatch):
     monkeypatch.setattr("app.services.intelligence.topic_segmenter.SENTENCE_TRANSFORMERS_AVAILABLE", False)
@@ -124,13 +140,12 @@ def test_llm_mode_accepted_when_constrained(segmenter, monkeypatch):
 
     text = "We should prioritize the frontend design system overhaul."
     # Mock LLM returning valid verbatim words
-    mock_client = MagicMock()
-    mock_client.complete.return_value = "Frontend Design System"
-    monkeypatch.setattr("app.core.llm_client.LLMClient", lambda: mock_client)
+    mock_client = _llm_client(monkeypatch, title="Frontend Design System")
 
     label, method = segmenter.generate_topic_label(text, return_method=True)
     assert method == "llm"
     assert label == "Frontend Design System"
+    mock_client.complete_json.assert_called_once()
 
 
 def test_llm_mode_rejected_when_hallucinating(segmenter, monkeypatch):
@@ -139,12 +154,86 @@ def test_llm_mode_rejected_when_hallucinating(segmenter, monkeypatch):
 
     text = "We should prioritize the frontend redesign."
     # Mock LLM returning hallucinated words ('Roadmap' and 'Strategy' are not in text)
-    mock_client = MagicMock()
-    mock_client.complete.return_value = "Frontend Roadmap Strategy"
-    monkeypatch.setattr("app.core.llm_client.LLMClient", lambda: mock_client)
+    _llm_client(monkeypatch, title="Frontend Roadmap Strategy")
 
     label, method = segmenter.generate_topic_label(text, return_method=True)
     assert method in ("extractive", "tfidf_fallback")
     # Rejected title words must not be present
     assert "Roadmap" not in label
     assert "Strategy" not in label
+
+
+
+# ---------------------------------------------------------------------------
+# Phase 5: the LLM title path uses the real client API and every fallback is
+# explicit (recorded on the topic and reported to the topics stage).
+# ---------------------------------------------------------------------------
+
+def test_llm_titles_use_the_real_client_interface():
+    from app.core.llm_client import LLMClient
+
+    assert hasattr(LLMClient, "complete_json")
+    assert not hasattr(LLMClient, "complete")          # the old call could never work
+
+
+def test_unavailable_llm_falls_back_with_a_recorded_reason(segmenter, monkeypatch):
+    monkeypatch.setattr(config, "TOPIC_TITLES", "llm")
+    monkeypatch.setattr(
+        "app.services.intelligence.extraction_pipeline.llm_unavailable_reason",
+        lambda client=None: "LLM_PROVIDER=gemini has no API key configured",
+    )
+    segments = [{"speaker": "A", "text": "We should prioritize the frontend design system overhaul.",
+                 "start": 0.0, "end": 3.0}]
+    entry = segmenter.create_topic(0, segments)
+    assert entry["title_method"] in ("extractive", "tfidf_fallback")
+    assert "no API key" in entry["title_fallback_reason"]
+    assert "no API key" in segmenter.title_fallback_reason
+    assert segmenter.title_counts == {"llm": 0, "fallback": 1}
+
+
+def test_provider_error_stops_further_title_requests(segmenter, monkeypatch):
+    from app.core.llm_client import LLMClientError
+
+    monkeypatch.setattr(config, "TOPIC_TITLES", "llm")
+    client = _llm_client(monkeypatch, error=LLMClientError("LLM request timed out after 60s (2 attempts)."))
+    for text in ("We should prioritize the frontend design system overhaul.",
+                 "The quarterly budget review covers marketing spend."):
+        label, method = segmenter.generate_topic_label(text, return_method=True)
+        assert method in ("extractive", "tfidf_fallback") and label
+    assert client.complete_json.call_count == 1          # no request after the failure
+    assert "timed out" in segmenter.title_fallback_reason
+
+
+def test_rejected_llm_title_is_explained_on_the_topic(segmenter, monkeypatch):
+    monkeypatch.setattr(config, "TOPIC_TITLES", "llm")
+    _llm_client(monkeypatch, title="Frontend Roadmap Strategy")
+    segments = [{"speaker": "A", "text": "We should prioritize the frontend redesign.", "start": 0.0, "end": 3.0}]
+    entry = segmenter.create_topic(0, segments)
+    assert entry["title_fallback_reason"] == "LLM title rejected: uses words not in the topic's utterances"
+
+
+def test_extractive_default_makes_no_llm_call(segmenter, monkeypatch):
+    monkeypatch.setattr(config, "TOPIC_TITLES", "extractive")
+    client = _llm_client(monkeypatch, title="Frontend Design System")
+    segments = [{"speaker": "A", "text": "We should prioritize the frontend design system overhaul.",
+                 "start": 0.0, "end": 3.0}]
+    entry = segmenter.create_topic(0, segments)
+    assert "title_fallback_reason" not in entry
+    client.complete_json.assert_not_called()
+
+
+def test_topics_stage_reports_title_fallback():
+    from app.core.stage_timings import StageHandle
+    from app.services.pipeline.recorded_pipeline_adapter import _describe_topics
+
+    class Seg:
+        title_mode = "llm"
+        title_counts = {"llm": 2, "fallback": 1}
+        title_fallback_reason = None
+
+    h = StageHandle()
+    _describe_topics(h, Seg())
+    assert h.status == "fallback" and "1 LLM title(s) rejected" in h.detail["title_fallback_reason"]
+    Seg.title_mode, h2 = "extractive", StageHandle()
+    _describe_topics(h2, Seg())
+    assert h2.status is None

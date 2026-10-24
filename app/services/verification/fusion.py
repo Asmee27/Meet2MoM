@@ -14,6 +14,7 @@ When evidence is insufficient the result is "review", not a guess.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Optional
 
@@ -302,7 +303,18 @@ def _claim_reasons(claim: dict[str, Any], semantic: dict[str, Any], cited: list[
             ))
 
     deadline_text = payload.get("deadline_text")
-    if not deadline_text:
+    names = [owner] + [getattr(u, a, None) for u in cited for a in ("speaker_name", "speaker_id")]
+    trailing = unrecognized_deadline_phrase(payload.get("text") or "", names) if not deadline_text else None
+    if trailing:
+        # The task wording ends like a deadline ("... by Twitter") that is not
+        # a date. It is not treated as one; a reviewer checks the audio.
+        reasons.append(Reason(
+            "deadline_unrecognized", "warning",
+            f"The task ends with \"{trailing}\", which is not a recognisable date or deadline, so the deadline is "
+            "unknown. If the words were misheard, correct the transcript against the audio.",
+            [u.utt_id for u in cited],
+        ))
+    elif not deadline_text:
         reasons.append(Reason("no_deadline", "warning", "No deadline was stated."))
     else:
         if not payload.get("deadline_resolved"):
@@ -316,6 +328,40 @@ def _claim_reasons(claim: dict[str, Any], semantic: dict[str, Any], cited: list[
                 f"The evidence does not clearly support the deadline \"{deadline_text}\" (entailment {per_hyp['deadline']:.2f}).",
             ))
     return reasons
+
+
+# "by <word>" at the end of a task that names a means, not a time.
+_MEANS_WORDS = {
+    "email", "mail", "e-mail", "phone", "post", "hand", "courier", "chat", "message", "slack",
+    "teams", "whatsapp", "text", "call", "me", "you", "us", "them", "him", "her", "myself", "yourself",
+}
+_TRAILING_DEADLINE = re.compile(
+    r"\b(by|before|until|till)\s+((?:the\s+)?[A-Za-z][\w'-]*(?:\s+[A-Za-z][\w'-]*)?)\s*[.!?]*\s*$",
+    re.IGNORECASE,
+)
+
+
+def unrecognized_deadline_phrase(text: str, known_names: Iterable[str] = ()) -> Optional[str]:
+    """
+    The trailing "by X" phrase of a task when X is not a recognisable deadline
+    (e.g. an ASR mishearing such as "by Twitter"), else None. Recognised dates,
+    weekdays, relative and event-anchored deadlines, means ("by email") and
+    people known in the meeting ("approved by Priya") return None.
+    """
+    from datetime import date
+
+    from app.services.intelligence.deadline_resolver import resolve_deadline
+
+    match = _TRAILING_DEADLINE.search(str(text or ""))
+    if not match:
+        return None
+    words = match.group(2).lower().split()
+    names = {n.lower() for name in known_names if name for n in str(name).split()}
+    if words and (words[-1] in _MEANS_WORDS or words[0] in _MEANS_WORDS or words[-1] in names):
+        return None
+    phrase = f"{match.group(1)} {match.group(2)}"
+    _, kind, _ = resolve_deadline(phrase, date.today())
+    return phrase if kind == "none" else None
 
 
 def fuse(

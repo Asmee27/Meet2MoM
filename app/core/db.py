@@ -163,7 +163,7 @@ def init_db(db_path: Optional[Path | str] = None) -> None:
 # Migrations only ADD tables/indexes; they never rewrite or drop existing
 # data. Each step is idempotent (IF NOT EXISTS) and bumps user_version.
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 9
 
 _MIGRATION_V1 = """
 CREATE TABLE IF NOT EXISTS extraction_runs (
@@ -363,6 +363,234 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_recording_one_active
 """
 
 
+# Phase 5: per-stage processing timings, one row per stage of each run.
+# status: running | completed | failed | skipped | cached | fallback.
+# duration_seconds is NULL unless the stage actually ran (never a fake 0).
+_MIGRATION_V4 = """
+CREATE TABLE IF NOT EXISTS processing_stage_timings (
+    meeting_id        TEXT NOT NULL,
+    run_id            TEXT NOT NULL,
+    stage             TEXT NOT NULL,
+    parent_stage      TEXT,
+    seq               INTEGER NOT NULL,
+    status            TEXT NOT NULL CHECK (status IN
+                      ('running', 'completed', 'failed', 'skipped', 'cached', 'fallback')),
+    started_at        TEXT,
+    finished_at       TEXT,
+    duration_seconds  REAL,
+    detail            TEXT,
+    PRIMARY KEY (meeting_id, run_id, stage),
+    FOREIGN KEY (meeting_id) REFERENCES meetings(meeting_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_stage_timings_meeting
+    ON processing_stage_timings(meeting_id, run_id, seq);
+"""
+
+
+# Phase 7: accounts, sessions, meeting membership and invitations.
+# Session and invitation tokens are stored only as SHA-256 hashes.
+_MIGRATION_V5 = """
+CREATE TABLE IF NOT EXISTS users (
+    user_id        TEXT PRIMARY KEY,
+    email          TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    display_name   TEXT NOT NULL,
+    password_hash  TEXT NOT NULL,
+    created_at     TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS sessions (
+    token_hash  TEXT PRIMARY KEY,
+    user_id     TEXT NOT NULL,
+    created_at  TEXT NOT NULL,
+    expires_at  TEXT NOT NULL,
+    FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS meeting_members (
+    meeting_id  TEXT NOT NULL,
+    user_id     TEXT NOT NULL,
+    role        TEXT NOT NULL CHECK (role IN ('owner', 'member')),
+    added_at    TEXT NOT NULL,
+    PRIMARY KEY (meeting_id, user_id),
+    FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_meeting_members_user ON meeting_members(user_id);
+
+CREATE TABLE IF NOT EXISTS meeting_invitations (
+    token_hash  TEXT PRIMARY KEY,
+    meeting_id  TEXT NOT NULL,
+    created_by  TEXT NOT NULL,
+    created_at  TEXT NOT NULL,
+    expires_at  TEXT NOT NULL,
+    FOREIGN KEY (created_by) REFERENCES users(user_id) ON DELETE CASCADE
+);
+"""
+
+
+# Phase 9: evidence-linked commitment ledger. A commitment is created only
+# from a human-approved action item; its status changes only when a reviewer
+# confirms or corrects a proposal (commitment_updates keeps the history).
+_MIGRATION_V6 = """
+CREATE TABLE IF NOT EXISTS commitments (
+    commitment_id      TEXT PRIMARY KEY,
+    ledger_owner_id    TEXT,
+    source_meeting_id  TEXT NOT NULL,
+    source_item_id     TEXT NOT NULL,
+    text               TEXT NOT NULL,
+    assignee           TEXT,
+    assignee_user_id   TEXT,
+    deadline           TEXT,
+    evidence_ids       TEXT NOT NULL DEFAULT '[]',
+    status             TEXT NOT NULL CHECK (status IN ('open', 'done', 'delayed')),
+    created_at         TEXT NOT NULL,
+    updated_at         TEXT NOT NULL,
+    UNIQUE (source_meeting_id, source_item_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_commitments_owner ON commitments(ledger_owner_id, status);
+
+CREATE TABLE IF NOT EXISTS commitment_updates (
+    update_id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    commitment_id     TEXT NOT NULL,
+    meeting_id        TEXT NOT NULL,
+    proposed_status   TEXT NOT NULL CHECK (proposed_status IN ('done', 'delayed', 'no_update')),
+    evidence_ids      TEXT NOT NULL DEFAULT '[]',
+    scores            TEXT,
+    method            TEXT,
+    review_status     TEXT NOT NULL DEFAULT 'proposed'
+                      CHECK (review_status IN ('proposed', 'confirmed', 'corrected')),
+    final_status      TEXT CHECK (final_status IN ('done', 'delayed', 'no_update')),
+    reviewer          TEXT,
+    note              TEXT,
+    created_at        TEXT NOT NULL,
+    reviewed_at       TEXT,
+    UNIQUE (commitment_id, meeting_id),
+    FOREIGN KEY (commitment_id) REFERENCES commitments(commitment_id) ON DELETE CASCADE
+);
+"""
+
+
+# Phase 8: reviewer corrections of transcript text. Append-only history; the
+# ASR text in `utterances` is never overwritten. asr_text records the text the
+# correction was made against, so a reprocessed transcript (same utt_id, new
+# text) is never shown with a correction meant for different words.
+_MIGRATION_V7 = """
+CREATE TABLE IF NOT EXISTS transcript_corrections (
+    correction_id   INTEGER PRIMARY KEY AUTOINCREMENT,
+    meeting_id      TEXT NOT NULL,
+    utt_id          TEXT NOT NULL,
+    asr_text        TEXT NOT NULL,
+    previous_text   TEXT NOT NULL,
+    corrected_text  TEXT NOT NULL,
+    reviewer        TEXT,
+    reason          TEXT,
+    created_at      TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_transcript_corrections_meeting
+    ON transcript_corrections(meeting_id, utt_id, correction_id);
+"""
+
+
+
+# Phase 8.3: scheduled meetings and their invitees. A scheduled meeting is a
+# normal meetings row (status 'scheduled') owned through meeting_members; the
+# schedule row holds the intended time and the reserved room code. Invitees
+# are tracked per email; their tokens live in meeting_invitations (hash only),
+# so revoking a link deletes its row and the link stops working.
+_MIGRATION_V8 = """
+CREATE TABLE IF NOT EXISTS scheduled_meetings (
+    meeting_id           TEXT PRIMARY KEY,
+    title                TEXT NOT NULL,
+    agenda               TEXT,
+    scheduled_start_utc  TEXT NOT NULL,
+    timezone             TEXT NOT NULL,
+    duration_minutes     INTEGER,
+    room_name            TEXT NOT NULL UNIQUE,
+    status               TEXT NOT NULL CHECK (status IN ('scheduled', 'started', 'cancelled')),
+    created_by           TEXT NOT NULL,
+    request_id           TEXT,
+    created_at           TEXT NOT NULL,
+    cancelled_at         TEXT,
+    UNIQUE (created_by, request_id),
+    FOREIGN KEY (meeting_id) REFERENCES meetings(meeting_id)
+);
+
+CREATE TABLE IF NOT EXISTS meeting_invitees (
+    invitee_id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    meeting_id        TEXT NOT NULL,
+    email             TEXT NOT NULL COLLATE NOCASE,
+    status            TEXT NOT NULL CHECK (status IN ('pending', 'accepted', 'revoked')),
+    token_hash        TEXT,
+    delivery          TEXT NOT NULL DEFAULT 'manual',
+    accepted_user_id  TEXT,
+    created_at        TEXT NOT NULL,
+    updated_at        TEXT NOT NULL,
+    UNIQUE (meeting_id, email),
+    FOREIGN KEY (meeting_id) REFERENCES meetings(meeting_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_meeting_invitees_token ON meeting_invitees(token_hash);
+"""
+
+
+# Phase 8.4: transactional email. email_outbox is the queue and the delivery
+# record: one row per message, unique per idempotency key, so a repeated
+# request never queues the same email twice. Rows hold no link tokens; links
+# are issued when the message is sent and only their hashes are stored.
+# email_events keeps the provider's delivery events per message.
+_MIGRATION_V9 = """
+CREATE TABLE IF NOT EXISTS email_outbox (
+    outbox_id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    idempotency_key      TEXT NOT NULL UNIQUE,
+    kind                 TEXT NOT NULL CHECK (kind IN ('invitation', 'minutes')),
+    meeting_id           TEXT NOT NULL,
+    recipient_email      TEXT NOT NULL,
+    recipient_name       TEXT,
+    recipient_user_id    TEXT,
+    invitee_id           INTEGER,
+    minutes_version      INTEGER,
+    attach_pdf           INTEGER NOT NULL DEFAULT 0,
+    status               TEXT NOT NULL,
+    provider             TEXT,
+    provider_message_id  TEXT,
+    attempts             INTEGER NOT NULL DEFAULT 0,
+    next_attempt_at      TEXT,
+    last_error           TEXT,
+    requested_by         TEXT,
+    created_at           TEXT NOT NULL,
+    updated_at           TEXT NOT NULL,
+    claimed_at           TEXT,
+    sent_at              TEXT,
+    delivered_at         TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_email_outbox_due ON email_outbox(status, next_attempt_at);
+CREATE INDEX IF NOT EXISTS idx_email_outbox_meeting ON email_outbox(meeting_id, kind);
+CREATE INDEX IF NOT EXISTS idx_email_outbox_message ON email_outbox(provider_message_id);
+
+CREATE TABLE IF NOT EXISTS email_events (
+    event_id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    outbox_id     INTEGER NOT NULL,
+    event         TEXT NOT NULL,
+    reason        TEXT,
+    event_ts      TEXT,
+    received_at   TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_email_events_outbox ON email_events(outbox_id);
+"""
+
+
+def _add_column(conn: sqlite3.Connection, table: str, column_def: str) -> None:
+    try:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column_def}")
+    except sqlite3.OperationalError:
+        pass
+
+
 def _migrate(conn: sqlite3.Connection) -> None:
     current = conn.execute("PRAGMA user_version").fetchone()[0]
     if current < 1:
@@ -376,6 +604,42 @@ def _migrate(conn: sqlite3.Connection) -> None:
     if current < 3:
         conn.executescript(_MIGRATION_V3)
         conn.execute("PRAGMA user_version = 3")
+        current = 3
+    if current < 4:
+        conn.executescript(_MIGRATION_V4)
+        conn.execute("PRAGMA user_version = 4")
+        current = 4
+    if current < 5:
+        conn.executescript(_MIGRATION_V5)
+        try:
+            conn.execute("ALTER TABLE meetings ADD COLUMN owner_user_id TEXT")
+        except sqlite3.OperationalError:
+            pass
+        conn.execute("PRAGMA user_version = 5")
+        current = 5
+    if current < 6:
+        conn.executescript(_MIGRATION_V6)
+        conn.execute("PRAGMA user_version = 6")
+        current = 6
+    if current < 7:
+        conn.executescript(_MIGRATION_V7)
+        conn.execute("PRAGMA user_version = 7")
+        current = 7
+    if current < 8:
+        conn.executescript(_MIGRATION_V8)
+        conn.execute("PRAGMA user_version = 8")
+        current = 8
+    if current < 9:
+        conn.executescript(_MIGRATION_V9)
+        # An invitation token can belong to one invitee and one channel
+        # ("copy" link or "email"), so re-issuing one never breaks the other.
+        _add_column(conn, "meeting_invitations", "invitee_id INTEGER")
+        _add_column(conn, "meeting_invitations", "channel TEXT")
+        # An account whose email differs from the invited address waits here
+        # until the host approves it (never treated as the same person).
+        _add_column(conn, "meeting_invitees", "approval_user_id TEXT")
+        _add_column(conn, "meeting_invitees", "approval_requested_at TEXT")
+        conn.execute("PRAGMA user_version = 9")
 
 
 def get_schema_version(db_path: Optional[Path | str] = None) -> int:
@@ -562,10 +826,15 @@ def get_utterances(
             (meeting_id,),
         )
         rows = cursor.fetchall()
+        corrected = _active_correction_texts(conn, meeting_id)
 
     result = []
     for r in rows:
         lang_tags = json.loads(r["lang_tags"]) if r["lang_tags"] else []
+        text = r["text"]
+        latest = corrected.get(r["utt_id"])
+        if latest and latest["asr_text"] == text:
+            text = latest["corrected_text"]
         conf_src = r["conf_source"] if "conf_source" in r.keys() and r["conf_source"] is not None else "missing"
         result.append(
             Utterance(
@@ -575,7 +844,7 @@ def get_utterances(
                 end=r["end"],
                 speaker_id=r["speaker_id"],
                 speaker_name=r["speaker_name"],
-                text=r["text"],
+                text=text,
                 lang_tags=lang_tags,
                 script=r["script"],
                 asr_conf=r["asr_conf"],
@@ -588,6 +857,156 @@ def get_utterances(
             )
         )
     return result
+
+
+# ---------------------------------------------------------------------------
+# Transcript corrections (Phase 8)
+# ---------------------------------------------------------------------------
+
+def _active_correction_texts(conn: sqlite3.Connection, meeting_id: str) -> Dict[str, Dict[str, Any]]:
+    """Latest correction per utterance (applied only while asr_text still matches)."""
+    try:
+        rows = conn.execute(
+            """
+            SELECT * FROM transcript_corrections
+            WHERE meeting_id = ?
+            ORDER BY correction_id ASC
+            """,
+            (meeting_id,),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        # Database not migrated to v7 yet: there are no corrections.
+        return {}
+    return {r["utt_id"]: dict(r) for r in rows}
+
+
+def get_transcript_corrections(
+    meeting_id: str,
+    db_path: Optional[Path | str] = None,
+) -> List[Dict[str, Any]]:
+    """Full correction history of a meeting, oldest first."""
+    init_db(db_path)
+    with get_conn(db_path) as conn:
+        rows = conn.execute(
+            "SELECT * FROM transcript_corrections WHERE meeting_id = ? ORDER BY correction_id ASC",
+            (meeting_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def get_active_transcript_corrections(
+    meeting_id: str,
+    db_path: Optional[Path | str] = None,
+) -> Dict[str, Dict[str, Any]]:
+    """
+    utt_id -> latest correction for utterances whose shown text differs from
+    the ASR text. A correction back to the ASR wording is not active.
+    """
+    init_db(db_path)
+    with get_conn(db_path) as conn:
+        latest = _active_correction_texts(conn, meeting_id)
+        asr = {
+            r["utt_id"]: r["text"]
+            for r in conn.execute(
+                "SELECT utt_id, text FROM utterances WHERE meeting_id = ?", (meeting_id,)
+            )
+        }
+    return {
+        utt_id: row
+        for utt_id, row in latest.items()
+        if asr.get(utt_id) == row["asr_text"] and row["corrected_text"] != row["asr_text"]
+    }
+
+
+def latest_transcript_correction_at(
+    meeting_id: str,
+    db_path: Optional[Path | str] = None,
+) -> Optional[str]:
+    """
+    Time of the most recent correction made against the current ASR text, or
+    None. A correction back to the ASR wording counts too: it also changed the
+    text the verifier last saw.
+    """
+    init_db(db_path)
+    with get_conn(db_path) as conn:
+        try:
+            row = conn.execute(
+                """
+                SELECT MAX(c.created_at)
+                FROM transcript_corrections c
+                JOIN utterances u ON u.meeting_id = c.meeting_id AND u.utt_id = c.utt_id
+                WHERE c.meeting_id = ? AND u.text = c.asr_text
+                """,
+                (meeting_id,),
+            ).fetchone()
+        except sqlite3.OperationalError:
+            return None
+    return row[0] if row else None
+
+
+def record_transcript_correction(
+    meeting_id: str,
+    utt_id: str,
+    corrected_text: str,
+    reviewer: Optional[str] = None,
+    reason: Optional[str] = None,
+    db_path: Optional[Path | str] = None,
+) -> Dict[str, Any]:
+    """
+    Record a reviewer's correction of one utterance and an audit event.
+    Raises LookupError for an unknown utterance and ValueError for empty or
+    unchanged text.
+    """
+    init_db(db_path)
+    new_text = (corrected_text or "").strip()
+    if not new_text:
+        raise ValueError("Corrected text cannot be empty.")
+    with get_conn(db_path) as conn:
+        row = conn.execute(
+            "SELECT text FROM utterances WHERE meeting_id = ? AND utt_id = ?",
+            (meeting_id, utt_id),
+        ).fetchone()
+        if row is None:
+            raise LookupError("Utterance not found.")
+        asr_text = row["text"]
+        latest = _active_correction_texts(conn, meeting_id).get(utt_id)
+        previous = latest["corrected_text"] if latest and latest["asr_text"] == asr_text else asr_text
+        if new_text == previous:
+            raise ValueError("The corrected text is the same as the current text.")
+        created_at = _now_iso()
+        cursor = conn.execute(
+            """
+            INSERT INTO transcript_corrections (
+                meeting_id, utt_id, asr_text, previous_text, corrected_text,
+                reviewer, reason, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (meeting_id, utt_id, asr_text, previous, new_text, reviewer, reason, created_at),
+        )
+        correction_id = cursor.lastrowid
+    record_audit_event(
+        meeting_id,
+        "transcript_corrected",
+        item_id=utt_id,
+        field_name="text",
+        old_value=previous,
+        new_value=new_text,
+        reason=reason,
+        reviewer_id=reviewer,
+        timestamp=created_at,
+        db_path=db_path,
+    )
+    return {
+        "correction_id": correction_id,
+        "meeting_id": meeting_id,
+        "utt_id": utt_id,
+        "asr_text": asr_text,
+        "previous_text": previous,
+        "corrected_text": new_text,
+        "reviewer": reviewer,
+        "reason": reason,
+        "created_at": created_at,
+    }
 
 
 def get_claims_with_evidence(
@@ -2372,3 +2791,641 @@ def fail_interrupted_inline_jobs(
                 [(mid,) for mid in ids],
             )
     return ids
+
+
+# ---------------------------------------------------------------------------
+# Phase 5: processing stage timings
+# ---------------------------------------------------------------------------
+
+STAGE_STATUSES = ("running", "completed", "failed", "skipped", "cached", "fallback")
+
+
+def upsert_stage_timing(
+    meeting_id: str,
+    run_id: str,
+    stage: str,
+    status: str,
+    *,
+    seq: int,
+    parent_stage: Optional[str] = None,
+    started_at: Optional[str] = None,
+    finished_at: Optional[str] = None,
+    duration_seconds: Optional[float] = None,
+    detail: Optional[Dict[str, Any]] = None,
+    db_path: Optional[Path | str] = None,
+) -> None:
+    """Insert or update one stage of one processing run."""
+    if status not in STAGE_STATUSES:
+        raise ValueError(f"Unknown stage status: {status}")
+    with get_conn(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO processing_stage_timings (
+                meeting_id, run_id, stage, parent_stage, seq, status,
+                started_at, finished_at, duration_seconds, detail
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(meeting_id, run_id, stage) DO UPDATE SET
+                parent_stage = excluded.parent_stage,
+                status = excluded.status,
+                started_at = COALESCE(excluded.started_at, processing_stage_timings.started_at),
+                finished_at = excluded.finished_at,
+                duration_seconds = excluded.duration_seconds,
+                detail = excluded.detail
+            """,
+            (
+                meeting_id, run_id, stage, parent_stage, seq, status,
+                started_at, finished_at,
+                None if duration_seconds is None else round(float(duration_seconds), 3),
+                json.dumps(detail, ensure_ascii=False) if detail else None,
+            ),
+        )
+
+
+def latest_stage_run_id(meeting_id: str, db_path: Optional[Path | str] = None) -> Optional[str]:
+    """The run id of the most recent processing run (run ids sort by start time)."""
+    with get_conn(db_path) as conn:
+        row = conn.execute(
+            "SELECT MAX(run_id) AS run_id FROM processing_stage_timings WHERE meeting_id = ?",
+            (meeting_id,),
+        ).fetchone()
+    return row["run_id"] if row and row["run_id"] else None
+
+
+def get_stage_timings(
+    meeting_id: str,
+    run_id: Optional[str] = None,
+    db_path: Optional[Path | str] = None,
+) -> List[Dict[str, Any]]:
+    """Stages of one run (the latest by default), in execution order."""
+    run_id = run_id or latest_stage_run_id(meeting_id, db_path=db_path)
+    if not run_id:
+        return []
+    with get_conn(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT * FROM processing_stage_timings
+            WHERE meeting_id = ? AND run_id = ?
+            ORDER BY seq, started_at
+            """,
+            (meeting_id, run_id),
+        ).fetchall()
+    out = []
+    for row in rows:
+        item = dict(row)
+        item["detail"] = json.loads(item["detail"]) if item["detail"] else {}
+        out.append(item)
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Phase 7: users, sessions, membership, invitations
+# ---------------------------------------------------------------------------
+
+def create_user(user_id: str, email: str, display_name: str, password_hash: str,
+                db_path: Optional[Path | str] = None) -> bool:
+    """False when the email is already registered."""
+    try:
+        with get_conn(db_path) as conn:
+            conn.execute(
+                "INSERT INTO users (user_id, email, display_name, password_hash, created_at) VALUES (?, ?, ?, ?, ?)",
+                (user_id, email.strip().lower(), display_name.strip(), password_hash, _now_iso()),
+            )
+        return True
+    except sqlite3.IntegrityError:
+        return False
+
+
+def get_user_by_email(email: str, db_path: Optional[Path | str] = None) -> Optional[Dict[str, Any]]:
+    with get_conn(db_path) as conn:
+        row = conn.execute("SELECT * FROM users WHERE email = ?", (email.strip().lower(),)).fetchone()
+    return dict(row) if row else None
+
+
+def get_user(user_id: str, db_path: Optional[Path | str] = None) -> Optional[Dict[str, Any]]:
+    with get_conn(db_path) as conn:
+        row = conn.execute("SELECT * FROM users WHERE user_id = ?", (user_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def create_session(token_hash: str, user_id: str, expires_at: str,
+                   db_path: Optional[Path | str] = None) -> None:
+    with get_conn(db_path) as conn:
+        conn.execute(
+            "INSERT INTO sessions (token_hash, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)",
+            (token_hash, user_id, _now_iso(), expires_at),
+        )
+
+
+def get_session_user(token_hash: str, now_iso: str,
+                     db_path: Optional[Path | str] = None) -> Optional[Dict[str, Any]]:
+    with get_conn(db_path) as conn:
+        row = conn.execute(
+            """
+            SELECT u.user_id, u.email, u.display_name FROM sessions s
+            JOIN users u ON u.user_id = s.user_id
+            WHERE s.token_hash = ? AND s.expires_at > ?
+            """,
+            (token_hash, now_iso),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def delete_session(token_hash: str, db_path: Optional[Path | str] = None) -> None:
+    with get_conn(db_path) as conn:
+        conn.execute("DELETE FROM sessions WHERE token_hash = ?", (token_hash,))
+
+
+def add_meeting_member(meeting_id: str, user_id: str, role: str,
+                       db_path: Optional[Path | str] = None) -> None:
+    """Idempotent; never downgrades an owner."""
+    with get_conn(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO meeting_members (meeting_id, user_id, role, added_at) VALUES (?, ?, ?, ?)
+            ON CONFLICT(meeting_id, user_id) DO UPDATE SET
+                role = CASE WHEN meeting_members.role = 'owner' THEN 'owner' ELSE excluded.role END
+            """,
+            (meeting_id, user_id, role, _now_iso()),
+        )
+        if role == "owner":
+            conn.execute(
+                "UPDATE meetings SET owner_user_id = ? WHERE meeting_id = ? AND owner_user_id IS NULL",
+                (user_id, meeting_id),
+            )
+
+
+def get_meeting_owner_ids(meeting_id: str, db_path: Optional[Path | str] = None) -> List[str]:
+    """Owners of a meeting: meetings.owner_user_id and any 'owner' membership."""
+    with get_conn(db_path) as conn:
+        row = conn.execute("SELECT owner_user_id FROM meetings WHERE meeting_id = ?", (meeting_id,)).fetchone()
+        owners = [r["user_id"] for r in conn.execute(
+            "SELECT user_id FROM meeting_members WHERE meeting_id = ? AND role = 'owner' ORDER BY added_at",
+            (meeting_id,),
+        )]
+    if row and row["owner_user_id"] and row["owner_user_id"] not in owners:
+        owners.insert(0, row["owner_user_id"])
+    return owners
+
+
+def get_member_role(meeting_id: str, user_id: str, db_path: Optional[Path | str] = None) -> Optional[str]:
+    with get_conn(db_path) as conn:
+        row = conn.execute(
+            "SELECT role FROM meeting_members WHERE meeting_id = ? AND user_id = ?", (meeting_id, user_id)
+        ).fetchone()
+    return row["role"] if row else None
+
+
+def get_member_meeting_ids(user_id: str, db_path: Optional[Path | str] = None) -> List[str]:
+    with get_conn(db_path) as conn:
+        rows = conn.execute("SELECT meeting_id FROM meeting_members WHERE user_id = ?", (user_id,)).fetchall()
+    return [r["meeting_id"] for r in rows]
+
+
+def create_invitation(token_hash: str, meeting_id: str, created_by: str, expires_at: str,
+                      invitee_id: Optional[int] = None, channel: Optional[str] = None,
+                      db_path: Optional[Path | str] = None) -> None:
+    with get_conn(db_path) as conn:
+        if invitee_id is not None and channel:
+            # One live token per invitee and channel: a new one replaces the old.
+            conn.execute("DELETE FROM meeting_invitations WHERE invitee_id = ? AND channel = ?", (invitee_id, channel))
+        conn.execute(
+            "INSERT INTO meeting_invitations (token_hash, meeting_id, created_by, created_at, expires_at, "
+            "invitee_id, channel) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (token_hash, meeting_id, created_by, _now_iso(), expires_at, invitee_id, channel),
+        )
+
+
+def get_invitation(token_hash: str, now_iso: str,
+                   db_path: Optional[Path | str] = None) -> Optional[Dict[str, Any]]:
+    with get_conn(db_path) as conn:
+        row = conn.execute(
+            "SELECT * FROM meeting_invitations WHERE token_hash = ? AND expires_at > ?", (token_hash, now_iso)
+        ).fetchone()
+    return dict(row) if row else None
+
+
+# ---------------------------------------------------------------------------
+# Scheduled meetings (Phase 8.3)
+# ---------------------------------------------------------------------------
+
+def create_scheduled_meeting(meeting_id: str, *, title: str, agenda: Optional[str], scheduled_start_utc: str,
+                             timezone_name: str, duration_minutes: Optional[int], room_name: str,
+                             owner_id: str, request_id: Optional[str],
+                             db_path: Optional[Path | str] = None) -> None:
+    """The meetings row (status 'scheduled'), the schedule and the owner, in one transaction."""
+    now = _now_iso()
+    with get_conn(db_path) as conn:
+        conn.execute(
+            "INSERT INTO meetings (meeting_id, filename, duration, created_at, status, owner_user_id) "
+            "VALUES (?, NULL, NULL, ?, 'scheduled', ?)",
+            (meeting_id, now, owner_id),
+        )
+        conn.execute(
+            """
+            INSERT INTO scheduled_meetings (meeting_id, title, agenda, scheduled_start_utc, timezone,
+                duration_minutes, room_name, status, created_by, request_id, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 'scheduled', ?, ?, ?)
+            """,
+            (meeting_id, title, agenda, scheduled_start_utc, timezone_name, duration_minutes, room_name,
+             owner_id, request_id, now),
+        )
+        conn.execute(
+            "INSERT INTO meeting_members (meeting_id, user_id, role, added_at) VALUES (?, ?, 'owner', ?)",
+            (meeting_id, owner_id, now),
+        )
+
+
+def get_scheduled_meeting(meeting_id: str, db_path: Optional[Path | str] = None) -> Optional[Dict[str, Any]]:
+    with get_conn(db_path) as conn:
+        row = conn.execute("SELECT * FROM scheduled_meetings WHERE meeting_id = ?", (meeting_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def get_scheduled_meetings(meeting_ids: List[str], db_path: Optional[Path | str] = None) -> Dict[str, Dict[str, Any]]:
+    if not meeting_ids:
+        return {}
+    marks = ",".join("?" * len(meeting_ids))
+    with get_conn(db_path) as conn:
+        rows = conn.execute(
+            f"""
+            SELECT s.*, (SELECT COUNT(*) FROM meeting_invitees i
+                         WHERE i.meeting_id = s.meeting_id AND i.status != 'revoked') AS invitee_count
+            FROM scheduled_meetings s WHERE s.meeting_id IN ({marks})
+            """,
+            meeting_ids,
+        ).fetchall()
+    return {r["meeting_id"]: dict(r) for r in rows}
+
+
+def find_scheduled_by_request(owner_id: str, request_id: str,
+                              db_path: Optional[Path | str] = None) -> Optional[Dict[str, Any]]:
+    with get_conn(db_path) as conn:
+        row = conn.execute(
+            "SELECT * FROM scheduled_meetings WHERE created_by = ? AND request_id = ?", (owner_id, request_id),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def get_scheduled_by_room(room_name: str, db_path: Optional[Path | str] = None) -> Optional[Dict[str, Any]]:
+    with get_conn(db_path) as conn:
+        row = conn.execute("SELECT * FROM scheduled_meetings WHERE room_name = ?", (room_name,)).fetchone()
+    return dict(row) if row else None
+
+
+def cancel_scheduled_meeting(meeting_id: str, db_path: Optional[Path | str] = None) -> bool:
+    """Cancel a meeting that has not started; revokes every invitation link. False if it was not 'scheduled'."""
+    now = _now_iso()
+    with get_conn(db_path) as conn:
+        cursor = conn.execute(
+            "UPDATE scheduled_meetings SET status = 'cancelled', cancelled_at = ? "
+            "WHERE meeting_id = ? AND status = 'scheduled'",
+            (now, meeting_id),
+        )
+        if not cursor.rowcount:
+            return False
+        conn.execute("UPDATE meetings SET status = 'cancelled' WHERE meeting_id = ?", (meeting_id,))
+        conn.execute("DELETE FROM meeting_invitations WHERE meeting_id = ?", (meeting_id,))
+        conn.execute(
+            "UPDATE meeting_invitees SET status = 'revoked', token_hash = NULL, updated_at = ? "
+            "WHERE meeting_id = ? AND status = 'pending'",
+            (now, meeting_id),
+        )
+    return True
+
+
+def add_invitee(meeting_id: str, email: str, db_path: Optional[Path | str] = None) -> Optional[int]:
+    """Insert a pending invitee; None if this email is already invited (a revoked one is re-opened)."""
+    now = _now_iso()
+    with get_conn(db_path) as conn:
+        row = conn.execute(
+            "SELECT invitee_id, status FROM meeting_invitees WHERE meeting_id = ? AND email = ?", (meeting_id, email),
+        ).fetchone()
+        if row:
+            if row["status"] != "revoked":
+                return None
+            conn.execute("UPDATE meeting_invitees SET status = 'pending', accepted_user_id = NULL, updated_at = ? "
+                         "WHERE invitee_id = ?", (now, row["invitee_id"]))
+            return int(row["invitee_id"])
+        cursor = conn.execute(
+            "INSERT INTO meeting_invitees (meeting_id, email, status, created_at, updated_at) "
+            "VALUES (?, ?, 'pending', ?, ?)",
+            (meeting_id, email, now, now),
+        )
+        return int(cursor.lastrowid)
+
+
+def list_invitees(meeting_id: str, db_path: Optional[Path | str] = None) -> List[Dict[str, Any]]:
+    with get_conn(db_path) as conn:
+        rows = conn.execute(
+            "SELECT * FROM meeting_invitees WHERE meeting_id = ? ORDER BY invitee_id", (meeting_id,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_invitee(meeting_id: str, invitee_id: int, db_path: Optional[Path | str] = None) -> Optional[Dict[str, Any]]:
+    with get_conn(db_path) as conn:
+        row = conn.execute(
+            "SELECT * FROM meeting_invitees WHERE meeting_id = ? AND invitee_id = ?", (meeting_id, invitee_id),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def set_invitee_token(invitee_id: int, new_hash: str, db_path: Optional[Path | str] = None) -> None:
+    """Point an invitee at a new link; the previous link is revoked."""
+    with get_conn(db_path) as conn:
+        row = conn.execute("SELECT token_hash FROM meeting_invitees WHERE invitee_id = ?", (invitee_id,)).fetchone()
+        if row and row["token_hash"]:
+            conn.execute("DELETE FROM meeting_invitations WHERE token_hash = ?", (row["token_hash"],))
+        conn.execute("UPDATE meeting_invitees SET token_hash = ?, updated_at = ? WHERE invitee_id = ?",
+                     (new_hash, _now_iso(), invitee_id))
+
+
+def revoke_invitee(invitee_id: int, db_path: Optional[Path | str] = None) -> None:
+    with get_conn(db_path) as conn:
+        row = conn.execute("SELECT token_hash FROM meeting_invitees WHERE invitee_id = ?", (invitee_id,)).fetchone()
+        if row and row["token_hash"]:
+            conn.execute("DELETE FROM meeting_invitations WHERE token_hash = ?", (row["token_hash"],))
+        conn.execute("DELETE FROM meeting_invitations WHERE invitee_id = ?", (invitee_id,))
+        conn.execute("UPDATE meeting_invitees SET status = 'revoked', token_hash = NULL, approval_user_id = NULL, "
+                     "approval_requested_at = NULL, updated_at = ? WHERE invitee_id = ?", (_now_iso(), invitee_id))
+
+
+def get_invitee_for_token(token_hash: str, db_path: Optional[Path | str] = None) -> Optional[Dict[str, Any]]:
+    """The scheduled-meeting invitee a token belongs to (copy or email link), or None for plain invitations."""
+    with get_conn(db_path) as conn:
+        row = conn.execute(
+            """
+            SELECT i.* FROM meeting_invitees i
+            WHERE i.token_hash = ?
+               OR i.invitee_id = (SELECT invitee_id FROM meeting_invitations WHERE token_hash = ?)
+            """,
+            (token_hash, token_hash),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def mark_invitee_accepted(invitee_id: int, user_id: str, db_path: Optional[Path | str] = None) -> None:
+    """Record which account accepted a tracked invitation."""
+    with get_conn(db_path) as conn:
+        conn.execute(
+            "UPDATE meeting_invitees SET status = 'accepted', accepted_user_id = ?, approval_user_id = NULL, "
+            "approval_requested_at = NULL, updated_at = ? WHERE invitee_id = ? AND status = 'pending'",
+            (user_id, _now_iso(), invitee_id),
+        )
+
+
+def request_invitee_approval(invitee_id: int, user_id: str, db_path: Optional[Path | str] = None) -> None:
+    """An account with a different email opened the link; it waits for the host."""
+    now = _now_iso()
+    with get_conn(db_path) as conn:
+        conn.execute(
+            "UPDATE meeting_invitees SET approval_user_id = ?, approval_requested_at = ?, updated_at = ? "
+            "WHERE invitee_id = ? AND status = 'pending'",
+            (user_id, now, now, invitee_id),
+        )
+
+
+def clear_invitee_approval(invitee_id: int, db_path: Optional[Path | str] = None) -> None:
+    with get_conn(db_path) as conn:
+        conn.execute(
+            "UPDATE meeting_invitees SET approval_user_id = NULL, approval_requested_at = NULL, updated_at = ? "
+            "WHERE invitee_id = ?",
+            (_now_iso(), invitee_id),
+        )
+
+
+# ---------------------------------------------------------------------------
+# Email outbox (Phase 8.4)
+# ---------------------------------------------------------------------------
+
+EMAIL_ACTIVE_STATUSES = ("queued", "sending")
+
+
+def enqueue_email(*, idempotency_key: str, kind: str, meeting_id: str, recipient_email: str,
+                  recipient_name: Optional[str] = None, recipient_user_id: Optional[str] = None,
+                  invitee_id: Optional[int] = None, minutes_version: Optional[int] = None,
+                  attach_pdf: bool = False, requested_by: Optional[str] = None,
+                  db_path: Optional[Path | str] = None) -> tuple[Dict[str, Any], bool]:
+    """Queue one message. Returns (row, created); an existing key returns its row unchanged."""
+    now = _now_iso()
+    with get_conn(db_path) as conn:
+        cursor = conn.execute(
+            """
+            INSERT OR IGNORE INTO email_outbox (idempotency_key, kind, meeting_id, recipient_email, recipient_name,
+                recipient_user_id, invitee_id, minutes_version, attach_pdf, status, next_attempt_at,
+                requested_by, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?)
+            """,
+            (idempotency_key, kind, meeting_id, recipient_email, recipient_name, recipient_user_id, invitee_id,
+             minutes_version, int(bool(attach_pdf)), now, requested_by, now, now),
+        )
+        created = bool(cursor.rowcount)
+        row = conn.execute("SELECT * FROM email_outbox WHERE idempotency_key = ?", (idempotency_key,)).fetchone()
+    return dict(row), created
+
+
+def get_email(outbox_id: int, db_path: Optional[Path | str] = None) -> Optional[Dict[str, Any]]:
+    with get_conn(db_path) as conn:
+        row = conn.execute("SELECT * FROM email_outbox WHERE outbox_id = ?", (outbox_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def list_emails(meeting_id: str, kind: Optional[str] = None,
+                db_path: Optional[Path | str] = None) -> List[Dict[str, Any]]:
+    query = "SELECT * FROM email_outbox WHERE meeting_id = ?"
+    params: list = [meeting_id]
+    if kind:
+        query += " AND kind = ?"
+        params.append(kind)
+    with get_conn(db_path) as conn:
+        rows = conn.execute(query + " ORDER BY outbox_id", params).fetchall()
+    return [dict(r) for r in rows]
+
+
+def latest_invitation_email(invitee_id: int, db_path: Optional[Path | str] = None) -> Optional[Dict[str, Any]]:
+    with get_conn(db_path) as conn:
+        row = conn.execute(
+            "SELECT * FROM email_outbox WHERE kind = 'invitation' AND invitee_id = ? ORDER BY outbox_id DESC LIMIT 1",
+            (invitee_id,),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def count_invitation_emails(invitee_id: int, db_path: Optional[Path | str] = None) -> int:
+    with get_conn(db_path) as conn:
+        return int(conn.execute(
+            "SELECT COUNT(*) FROM email_outbox WHERE kind = 'invitation' AND invitee_id = ?", (invitee_id,),
+        ).fetchone()[0])
+
+
+def claim_due_emails(now_iso: str, limit: int = 20, db_path: Optional[Path | str] = None) -> List[Dict[str, Any]]:
+    """Move due queued messages to 'sending'. A row is claimed by one dispatcher only."""
+    claimed = []
+    with get_conn(db_path) as conn:
+        ids = [r[0] for r in conn.execute(
+            "SELECT outbox_id FROM email_outbox WHERE status = 'queued' AND (next_attempt_at IS NULL "
+            "OR next_attempt_at <= ?) ORDER BY outbox_id LIMIT ?",
+            (now_iso, limit),
+        )]
+        for outbox_id in ids:
+            cursor = conn.execute(
+                "UPDATE email_outbox SET status = 'sending', claimed_at = ?, updated_at = ? "
+                "WHERE outbox_id = ? AND status = 'queued'",
+                (now_iso, now_iso, outbox_id),
+            )
+            if cursor.rowcount:
+                claimed.append(dict(conn.execute("SELECT * FROM email_outbox WHERE outbox_id = ?",
+                                                 (outbox_id,)).fetchone()))
+    return claimed
+
+
+_OUTBOX_FIELDS = ("status", "provider", "provider_message_id", "attempts", "next_attempt_at", "last_error",
+                  "sent_at", "delivered_at", "claimed_at")
+
+
+def update_email(outbox_id: int, only_if_status: Optional[tuple] = None,
+                 db_path: Optional[Path | str] = None, **fields: Any) -> bool:
+    changes = {k: v for k, v in fields.items() if k in _OUTBOX_FIELDS}
+    changes["updated_at"] = _now_iso()
+    sets = ", ".join(f"{k} = ?" for k in changes)
+    query = f"UPDATE email_outbox SET {sets} WHERE outbox_id = ?"
+    params: list = [*changes.values(), outbox_id]
+    if only_if_status:
+        query += f" AND status IN ({','.join('?' * len(only_if_status))})"
+        params.extend(only_if_status)
+    with get_conn(db_path) as conn:
+        return bool(conn.execute(query, params).rowcount)
+
+
+def cancel_queued_emails(meeting_id: str, invitee_id: Optional[int] = None, reason: str = "",
+                         db_path: Optional[Path | str] = None) -> int:
+    query = ("UPDATE email_outbox SET status = 'cancelled', last_error = ?, updated_at = ? "
+             "WHERE meeting_id = ? AND kind = 'invitation' AND status = 'queued'")
+    params: list = [reason, _now_iso(), meeting_id]
+    if invitee_id is not None:
+        query += " AND invitee_id = ?"
+        params.append(invitee_id)
+    with get_conn(db_path) as conn:
+        return conn.execute(query, params).rowcount
+
+
+def fail_stale_sending_emails(before_iso: str, db_path: Optional[Path | str] = None) -> int:
+    """Messages left 'sending' by a stopped process: the provider may or may not have accepted them."""
+    with get_conn(db_path) as conn:
+        return conn.execute(
+            "UPDATE email_outbox SET status = 'failed', last_error = ?, updated_at = ? "
+            "WHERE status = 'sending' AND claimed_at < ?",
+            ("Sending was interrupted; the provider may or may not have accepted this message. "
+             "Check before retrying.", _now_iso(), before_iso),
+        ).rowcount
+
+
+def find_email_by_message_id(message_id: str, db_path: Optional[Path | str] = None) -> Optional[Dict[str, Any]]:
+    with get_conn(db_path) as conn:
+        row = conn.execute("SELECT * FROM email_outbox WHERE provider_message_id = ?", (message_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def record_email_event(outbox_id: int, event: str, reason: Optional[str], event_ts: Optional[str],
+                       db_path: Optional[Path | str] = None) -> None:
+    with get_conn(db_path) as conn:
+        conn.execute(
+            "INSERT INTO email_events (outbox_id, event, reason, event_ts, received_at) VALUES (?, ?, ?, ?, ?)",
+            (outbox_id, event, (reason or "")[:300] or None, event_ts, _now_iso()),
+        )
+
+
+def list_email_events(outbox_ids: List[int], db_path: Optional[Path | str] = None) -> Dict[int, List[Dict[str, Any]]]:
+    if not outbox_ids:
+        return {}
+    marks = ",".join("?" * len(outbox_ids))
+    with get_conn(db_path) as conn:
+        rows = conn.execute(f"SELECT * FROM email_events WHERE outbox_id IN ({marks}) ORDER BY event_id",
+                            outbox_ids).fetchall()
+    out: Dict[int, List[Dict[str, Any]]] = {}
+    for r in rows:
+        out.setdefault(r["outbox_id"], []).append(dict(r))
+    return out
+
+
+def get_approved_snapshot_version(meeting_id: str, version: int,
+                                  db_path: Optional[Path | str] = None) -> Optional[Dict[str, Any]]:
+    with get_conn(db_path) as conn:
+        row = conn.execute("SELECT * FROM approved_snapshots WHERE meeting_id = ? AND version = ?",
+                           (meeting_id, version)).fetchone()
+    if not row:
+        return None
+    res = dict(row)
+    res["mom_payload"] = json.loads(res["mom_payload"]) if res["mom_payload"] else {}
+    return res
+
+
+def list_meeting_members(meeting_id: str, db_path: Optional[Path | str] = None) -> List[Dict[str, Any]]:
+    with get_conn(db_path) as conn:
+        rows = conn.execute(
+            "SELECT m.user_id, m.role, u.email, u.display_name FROM meeting_members m "
+            "JOIN users u ON u.user_id = m.user_id WHERE m.meeting_id = ? ORDER BY m.added_at",
+            (meeting_id,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def update_scheduled_meeting(meeting_id: str, fields: Dict[str, Any], db_path: Optional[Path | str] = None) -> bool:
+    """Edit a meeting that has not started. False if it is no longer 'scheduled'."""
+    allowed = ("title", "agenda", "scheduled_start_utc", "timezone", "duration_minutes")
+    changes = {k: v for k, v in fields.items() if k in allowed}
+    if not changes:
+        return get_scheduled_meeting(meeting_id, db_path=db_path) is not None
+    sets = ", ".join(f"{k} = ?" for k in changes)
+    with get_conn(db_path) as conn:
+        cursor = conn.execute(
+            f"UPDATE scheduled_meetings SET {sets} WHERE meeting_id = ? AND status = 'scheduled'",
+            (*changes.values(), meeting_id),
+        )
+    return bool(cursor.rowcount)
+
+
+def start_scheduled_meeting(meeting_id: str, room_sid: Optional[str] = None,
+                            db_path: Optional[Path | str] = None) -> Optional[Dict[str, Any]]:
+    """
+    Open the live room for a scheduled meeting under the scheduled meeting's ID,
+    so its members and invitations carry over. Returns the live meeting, or
+    None when the meeting is not 'scheduled' (cancelled, or already held).
+    """
+    now = _now_iso()
+    with get_conn(db_path) as conn:
+        schedule = conn.execute(
+            "SELECT * FROM scheduled_meetings WHERE meeting_id = ? AND status = 'scheduled'", (meeting_id,),
+        ).fetchone()
+        if schedule is None:
+            return None
+        conn.execute("UPDATE scheduled_meetings SET status = 'started' WHERE meeting_id = ?", (meeting_id,))
+        conn.execute(
+            "UPDATE meetings SET status = 'live', filename = ? WHERE meeting_id = ?",
+            (f"live-{schedule['room_name']}.wav", meeting_id),
+        )
+        conn.execute(
+            """
+            INSERT INTO live_meetings (meeting_id, room_name, room_sid, title, status, created_at)
+            VALUES (?, ?, ?, ?, 'active', ?)
+            """,
+            (meeting_id, schedule["room_name"], room_sid, schedule["title"], now),
+        )
+    record_live_event(meeting_id, "meeting_created",
+                      detail={"room_name": schedule["room_name"], "scheduled": True}, db_path=db_path)
+    return get_live_meeting(meeting_id, db_path=db_path)
+
+
+def remove_meeting_member(meeting_id: str, user_id: str, db_path: Optional[Path | str] = None) -> None:
+    """Remove a non-owner member (owners are never removed this way)."""
+    with get_conn(db_path) as conn:
+        conn.execute(
+            "DELETE FROM meeting_members WHERE meeting_id = ? AND user_id = ? AND role != 'owner'",
+            (meeting_id, user_id),
+        )
+
+
+
+def delete_invitation_token(token_hash: str, db_path: Optional[Path | str] = None) -> None:
+    with get_conn(db_path) as conn:
+        conn.execute("DELETE FROM meeting_invitations WHERE token_hash = ?", (token_hash,))

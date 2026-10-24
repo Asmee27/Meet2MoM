@@ -181,9 +181,11 @@ Other findings:
 3. Run **exactly one** API process. With `JOB_RUNNER` unset (inline), don't
    start `scripts/worker.py`; it exits with an explanation. Settings are read
    at start-up, so restart the API after editing `.env`.
-4. Check the configuration without processing a meeting:
+4. Check the configuration without processing a meeting. The key is never
+   printed, and `--live` makes one small synthetic request with no retries:
    ```
-   python -c "from app.services.intelligence.extraction_pipeline import llm_unavailable_reason as r; print(r() or 'LLM ready')"
+   python scripts/check_llm.py
+   python scripts/check_llm.py --live
    ```
 
 ## Manual acceptance test (for the tester)
@@ -249,6 +251,4 @@ Test:
 * LLM responses are cached per window, model and prompt version under
   `intelligence/llm_cache/`. Those caches hold transcript text, so a future
   delete-meeting feature must remove them.
-* `TOPIC_TITLES=llm` calls a `complete()` method that `LLMClient` doesn't
-  have, so LLM topic titles silently fall back to extractive titles. This is
-  pre-existing and out of scope here.
+* `TOPIC_TITLES=llm` was fixed in Phase 5 (see `docs/phase-5/PHASE_5_BASELINE.md`).

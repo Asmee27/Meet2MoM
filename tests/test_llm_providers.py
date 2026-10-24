@@ -634,3 +634,139 @@ def test_zero_budget_means_no_overall_deadline():
     client = LLMClient(provider="gemini", api_key="k")
     client.start_budget(0)
     assert client.deadline is None
+
+
+# ---------------------------------------------------------------------------
+# Phase 5: provider wait time, request count and identity in extraction stats
+# ---------------------------------------------------------------------------
+
+def test_extraction_stats_report_the_llm_actually_called(gemini, monkeypatch):
+    install_semantic_fakes(monkeypatch)
+    provider = gemini(gemini_body(GOOD_PAYLOAD))
+    stats = extract(make_meeting(LINES))
+    assert stats["mode_used"] == "llm"
+    assert stats["llm_provider"] == "gemini"
+    assert stats["llm_model"] == llm_module.DEFAULT_GEMINI_MODEL
+    assert stats["llm_requests"] == len(provider.requests) == 1
+    assert stats["llm_provider_seconds"] >= 0 and stats["llm_cache_hits"] == 0
+
+
+def test_fallback_stats_still_report_the_failed_attempts(gemini):
+    gemini(TimeoutError("timed out"))
+    stats = extract(make_meeting(LINES))
+    assert stats["mode_used"] == "rules"
+    assert stats["llm_requests"] == 2 and stats["llm_provider"] == "gemini"
+
+
+def test_provider_wait_excludes_backoff_sleeps(monkeypatch):
+    from types import SimpleNamespace
+
+    ticks = iter([10.0, 13.0, 20.0, 26.5])             # two calls: 3 s and 6.5 s
+    sleeps = []
+    monkeypatch.setattr(llm_module, "time", SimpleNamespace(monotonic=lambda: next(ticks), sleep=sleeps.append))
+    monkeypatch.setattr(config, "LLM_PROVIDER", "gemini")
+    monkeypatch.setattr(config, "LLM_MODEL", "mock-v1")
+    monkeypatch.setattr(config, "GEMINI_API_KEY", FAKE_KEY)
+    error = urllib.error.HTTPError("u", 503, "busy", {}, io.BytesIO(b"busy"))
+    monkeypatch.setattr(llm_module.urllib.request, "urlopen",
+                        FakeProvider(error, gemini_body({"decisions": [], "actions": []})))
+    client = LLMClient()
+    client.complete_json(system="s", user="u")
+    assert sleeps == [1.0]                              # one backoff, not counted as provider time
+    assert client.requests_made == 2
+    assert client.provider_seconds == pytest.approx(9.5)
+
+
+def test_cached_windows_are_counted(gemini, monkeypatch):
+    install_semantic_fakes(monkeypatch)
+    provider = gemini(gemini_body(GOOD_PAYLOAD))
+    mid = make_meeting(LINES)
+    extract(mid)
+    stats = extract(mid)                                # same windows, same model: cache
+    assert stats["llm_cache_hits"] == 1 and stats["llm_requests"] == 0
+    assert len(provider.requests) == 1
+
+
+def test_invalid_model_name_is_never_reported_as_the_model():
+    from app.services.intelligence.extraction_pipeline import _llm_call_stats
+
+    class C:
+        provider, model, requests_made, provider_seconds = "gemini", MERGED_MODEL, 0, 0.0
+
+    stats = _llm_call_stats(C(), {}, 1)
+    assert stats["llm_model"] is None and FAKE_KEY not in json.dumps(stats)
+
+
+# ---------------------------------------------------------------------------
+# Phase 5: scripts/check_llm.py never prints the key
+# ---------------------------------------------------------------------------
+
+def test_check_llm_reports_readiness_without_secrets(gemini, capsys):
+    from scripts import check_llm
+
+    assert check_llm.main([]) == 0
+    out = capsys.readouterr().out
+    assert '"api_key_configured": true' in out and "LLM ready" in out
+    assert FAKE_KEY not in out
+
+
+def test_check_llm_hides_a_malformed_model(gemini, monkeypatch, capsys):
+    from scripts import check_llm
+
+    monkeypatch.setattr(config, "LLM_MODEL", MERGED_MODEL)
+    assert check_llm.main(["--live"]) == 1            # not ready: no request is made
+    out = capsys.readouterr().out
+    assert FAKE_KEY not in out and '"model": null' in out and "Skipping the live request" in out
+
+
+def test_check_llm_live_request_is_one_synthetic_call(gemini, capsys):
+    from scripts import check_llm
+
+    provider = gemini(gemini_body(GOOD_PAYLOAD))
+    assert check_llm.main(["--live", "--timeout", "5"]) == 0
+    out = capsys.readouterr().out
+    assert '"success": true' in out and FAKE_KEY not in out
+    assert len(provider.requests) == 1 and provider.requests[0]["timeout"] == 5.0
+    sent = json.dumps(provider.requests[0]["body"])
+    assert "ship the demo build" in sent                # synthetic text only
+
+
+def test_env_flag_parsing(monkeypatch):
+    from app.core.config import _env_flag
+
+    for value, expected in (("true", True), ("TRUE", True), ("1", True), ("false", False), ("no", False)):
+        monkeypatch.setenv("M2M_FLAG_TEST", value)
+        assert _env_flag("M2M_FLAG_TEST", not expected) is expected
+    monkeypatch.setenv("M2M_FLAG_TEST", "")
+    assert _env_flag("M2M_FLAG_TEST", True) is True
+
+
+# ---------------------------------------------------------------------------
+# Phase 6: every provider attempt is recorded with its outcome
+# ---------------------------------------------------------------------------
+
+def test_attempts_record_a_503_then_success(gemini):
+    error = urllib.error.HTTPError("u", 503, "busy", {}, io.BytesIO(b"busy"))
+    gemini(error, gemini_body({"decisions": [], "actions": []}))
+    client = LLMClient()
+    client.complete_json(system="s", user="u")
+    assert [a["outcome"] for a in client.attempts] == ["http_503", "ok"]
+    assert all(a["seconds"] >= 0 for a in client.attempts)
+
+
+def test_attempts_record_timeouts_and_reach_the_stats(gemini):
+    gemini(TimeoutError("timed out"))
+    stats = extract(make_meeting(LINES))
+    assert stats["mode_used"] == "rules"                       # fallback, never a false success
+    assert [a["outcome"] for a in stats["llm_attempts"]] == ["timeout", "timeout"]
+
+
+def test_a_request_refused_by_configuration_is_not_an_attempt(monkeypatch):
+    monkeypatch.setattr(llm_module.urllib.request, "urlopen", FakeProvider(b"{}"))
+    client = LLMClient(provider="openai", model="m", api_key=None, backoff_delays=[])
+    for attr in ("LLM_API_KEY", "OPENAI_API_KEY"):
+        monkeypatch.setattr(config, attr, None)
+    client.api_key = None
+    with pytest.raises(LLMClientError):
+        client.complete_json("s", "u")
+    assert client.attempts == [] and client.requests_made == 0

@@ -7,13 +7,16 @@ from pathlib import Path
 from uuid import uuid4
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, status
+from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Request, status
+
+from app.core import auth
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from app.core import config
 from app.core import db
 from app.core.jobs import run_pipeline
+from app.core.stage_timings import timings_view
 from app.core.storage import MeetingStorage, is_valid_meeting_id
 from app.services.live.livekit_service import (
     TokenVerificationError,
@@ -251,7 +254,10 @@ def recording_state(meeting: Dict[str, Any]) -> Dict[str, Any]:
         "last_stop_reason": last_stop_reason,
         "segments": [_segment_view(s) for s in segments],
         "artifact": artifact,
-        "processing": job.model_dump(mode="json") if job else None,
+        "processing": (
+            {**job.model_dump(mode="json"), "stage_timings": timings_view(meeting_id)}
+            if job else None
+        ),
         "can_start": (
             meeting["status"] == "active"
             and live is None
@@ -283,18 +289,30 @@ def get_live_config():
 
 
 @router.post("/rooms")
-async def create_room(payload: CreateRoomRequest):
+async def create_room(payload: CreateRoomRequest, request: Request):
     """
     Create or initialize a LiveKit room.
-    Generates a shareable room identifier.
+    Generates a shareable room identifier. With sign-in required, the caller
+    becomes the meeting's owner (and therefore its host).
     """
     _require_configured()
+    user = auth.current_user(request)
 
     room_name = payload.room_name
     if not room_name:
         room_name = f"m2m-{uuid4().hex[:8]}"
     else:
         room_name = sanitize_room_name(room_name)
+
+    # Phase 8.3: a scheduled meeting's room code is reserved. Only its owner
+    # opens it, under the scheduled meeting's ID; nobody can take the code.
+    db.init_db()
+    schedule = db.get_scheduled_by_room(room_name)
+    if schedule is not None:
+        if schedule["status"] == "cancelled":
+            raise HTTPException(status_code=410, detail="This scheduled meeting was cancelled.")
+        if not auth.auth_required() or db.get_member_role(schedule["meeting_id"], user["user_id"]) != "owner":
+            raise HTTPException(status_code=409, detail="This room belongs to another meeting owner.")
 
     try:
         room_info = await create_live_room(
@@ -311,17 +329,33 @@ async def create_room(payload: CreateRoomRequest):
             detail=f"Failed to create LiveKit room: {exc}",
         )
 
-    db.init_db()
+    if schedule is not None:
+        meeting = db.get_active_live_meeting(room_name)
+        if meeting is None:
+            meeting = db.start_scheduled_meeting(schedule["meeting_id"], room_sid=room_info.get("sid"))
+        if meeting is None:
+            raise HTTPException(status_code=409, detail="This scheduled meeting has already taken place.")
+        return {**room_info, "meeting_id": meeting["meeting_id"]}
+
     meeting = db.get_or_create_live_meeting(
         room_name,
         title=payload.title or "Live Meeting",
         room_sid=room_info.get("sid"),
     )
+    if auth.auth_required():
+        # An existing room keeps its owner. (db.get_meeting does not return
+        # owner_user_id, so this check used to pass for everyone and a guest
+        # entering the room code became a second owner, then got "This meeting
+        # already has a host" when requesting a token.)
+        owners = db.get_meeting_owner_ids(meeting["meeting_id"])
+        if owners and user["user_id"] not in owners:
+            raise HTTPException(status_code=409, detail="This room belongs to another meeting owner.")
+        db.add_meeting_member(meeting["meeting_id"], user["user_id"], "owner")
     return {**room_info, "meeting_id": meeting["meeting_id"]}
 
 
 @router.post("/token")
-def create_token(payload: TokenRequest):
+def create_token(payload: TokenRequest, request: Request):
     """
     Generate an authenticated LiveKit participant token.
     Grants publishing, subscription, and data messaging rights.
@@ -333,25 +367,46 @@ def create_token(payload: TokenRequest):
     _require_configured()
 
     clean_room = sanitize_room_name(payload.room_name)
-    identity = payload.participant_identity
-    if not identity:
-        identity = f"user_{uuid4().hex[:6]}"
+    client_meta = dict(payload.metadata or {})
+    requested_consent = client_meta.pop("consented", None)
+    db.init_db()
+
+    if auth.auth_required():
+        # The server chooses identity, name and host role from the session and
+        # the meeting membership; the client's values are ignored.
+        user = auth.current_user(request)
+        meeting = db.get_active_live_meeting(clean_room)
+        if meeting is None:
+            schedule = db.get_scheduled_by_room(clean_room)
+            if schedule and schedule["status"] == "scheduled" and db.get_member_role(
+                    schedule["meeting_id"], user["user_id"]):
+                raise HTTPException(status_code=409, detail="This meeting has not started yet. "
+                                    "Join again once the host has started it.")
+            raise HTTPException(status_code=404, detail="Meeting not found.")
+        role = db.get_member_role(meeting["meeting_id"], user["user_id"])
+        if role is None:
+            raise HTTPException(status_code=403, detail="Ask the host for an invitation to join this meeting.")
+        # Only the primary owner hosts. Meetings damaged by the old create-room
+        # check can list a guest as a second owner; that guest joins as a
+        # participant instead of being refused as a second host.
+        owners = db.get_meeting_owner_ids(meeting["meeting_id"])
+        is_host = role == "owner" and bool(owners) and owners[0] == user["user_id"]
+        identity, name = user["user_id"], user["display_name"]
+    else:
+        identity = payload.participant_identity or f"user_{uuid4().hex[:6]}"
+        name = payload.participant_name.strip() or "Guest Participant"
+        is_host = payload.is_host
+        meeting = db.get_or_create_live_meeting(clean_room, title=client_meta.get("topic"))
     if is_recorder_identity(identity):
         raise HTTPException(status_code=400, detail="Reserved participant identity.")
 
-    name = payload.participant_name.strip() or "Guest Participant"
-    client_meta = dict(payload.metadata or {})
-    requested_consent = client_meta.pop("consented", None)
-
-    db.init_db()
-    meeting = db.get_or_create_live_meeting(clean_room, title=client_meta.get("topic"))
     meeting_id = meeting["meeting_id"]
-    if payload.is_host and not db.claim_live_meeting_host(meeting_id, identity):
+    if is_host and not db.claim_live_meeting_host(meeting_id, identity):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="This meeting already has a host. Join as a participant instead.",
         )
-    db.upsert_live_participant(meeting_id, identity, name=name, is_host=payload.is_host)
+    db.upsert_live_participant(meeting_id, identity, name=name, is_host=is_host)
 
     previously = db.is_participant_consented(meeting_id, identity)
     if requested_consent is True and not previously:
@@ -365,7 +420,7 @@ def create_token(payload: TokenRequest):
             room_name=clean_room,
             identity=identity,
             name=name,
-            is_host=payload.is_host,
+            is_host=is_host,
             metadata={**client_meta, "consented": consented, "meeting_id": meeting_id},
         )
         return {
@@ -374,7 +429,7 @@ def create_token(payload: TokenRequest):
             "room_name": clean_room,
             "participant_identity": identity,
             "participant_name": name,
-            "is_host": payload.is_host,
+            "is_host": is_host,
             "meeting_id": meeting_id,
             "consented": consented,
         }

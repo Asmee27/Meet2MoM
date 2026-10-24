@@ -72,6 +72,23 @@ def resolve_model(provider: str) -> Optional[str]:
     return None
 
 
+def _attempt_outcome(exc: BaseException) -> str:
+    """Short, key-free label for a failed provider attempt."""
+    if isinstance(exc, urllib.error.HTTPError):
+        return f"http_{exc.code}"
+    if isinstance(exc, TimeoutError) or (
+        isinstance(exc, urllib.error.URLError) and isinstance(exc.reason, TimeoutError)
+    ):
+        return "timeout"
+    if isinstance(exc, urllib.error.URLError):
+        return "network_error"
+    if isinstance(exc, LLMOutputError):
+        return "bad_output"
+    if isinstance(exc, LLMClientError):
+        return "not_sent"                 # refused before any request (configuration)
+    return type(exc).__name__
+
+
 def model_name_is_valid(model: str) -> bool:
     """A provider model id: no spaces, '=' or quotes (e.g. two .env lines run together)."""
     return bool(_MODEL_NAME.fullmatch(model or ""))
@@ -185,6 +202,12 @@ class LLMClient:
         self.deadline: Optional[float] = None
         self.budget_seconds: Optional[float] = None
         self._attempt_timeout = self.timeout
+        # Time spent waiting on the provider and number of HTTP requests made,
+        # including failed attempts (reported in extraction stage timings).
+        self.provider_seconds = 0.0
+        self.requests_made = 0
+        # One entry per provider request: {"seconds", "outcome"} (ok, http_503, timeout...).
+        self.attempts: List[Dict[str, Any]] = []
 
         # For "stub" provider in tests
         self.stub_responses: List[Any] = []
@@ -243,6 +266,7 @@ class LLMClient:
         problem = configuration_problem(self.provider, self.api_key, self.model)
         if problem:
             raise LLMClientError(problem)
+        self.requests_made += 1
 
         if self.provider in ("openai", "local"):
             default_base = "https://api.openai.com/v1" if self.provider == "openai" else "http://localhost:11434/v1"
@@ -371,8 +395,22 @@ class LLMClient:
             if remaining is not None and remaining <= 0:
                 raise self._budget_error()
             self._attempt_timeout = self.timeout if remaining is None else min(self.timeout, remaining)
+            call_started = time.monotonic()
+            outcome = "error"
             try:
-                return self._execute_provider_call(system, user, max_tokens)
+                try:
+                    result = self._execute_provider_call(system, user, max_tokens)
+                    outcome = "ok"
+                    return result
+                except BaseException as exc:
+                    outcome = _attempt_outcome(exc)
+                    raise
+                finally:
+                    # Only the wait for the provider, not the backoff sleeps.
+                    waited = time.monotonic() - call_started
+                    self.provider_seconds += waited
+                    if outcome != "not_sent":
+                        self.attempts.append({"seconds": round(waited, 2), "outcome": outcome})
             except urllib.error.HTTPError as e:
                 last_error = e
                 # Retry on 429 and 5xx

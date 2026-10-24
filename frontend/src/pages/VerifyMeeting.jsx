@@ -8,6 +8,10 @@ import {
 import { STATUS_LABELS, formatTimestamp } from "../components/verificationFormat";
 import { getAudioUrl } from "../services/api";
 import "../components/ClaimVerification.css";
+import TranscriptPanel from "../components/TranscriptPanel";
+import { useAuth } from "../components/AuthGate";
+import { Alert, Button, Icon } from "../components/ui";
+import { formatDateTime, formatVersion } from "../format";
 
 const CONFIRMED = ["verified", "verified_with_warning"];
 
@@ -59,7 +63,8 @@ function AuditLogSection({ backendFileId, auditLog, isLoadingAudit, loadAuditLog
 
   function fmtTime(ts) {
     if (!ts) return "";
-    try { return new Date(ts).toLocaleString(); } catch { return ts; }
+    // Stored in UTC without a zone suffix; show local time.
+    return formatDateTime(ts);
   }
 
   return (
@@ -77,10 +82,15 @@ function AuditLogSection({ backendFileId, auditLog, isLoadingAudit, loadAuditLog
             <div className="audit-log-entry" key={i} data-testid="audit-entry">
               <span className="audit-log-action">{entry.action}</span>
               <span className="audit-log-meta">
-                {entry.reviewer ? `${entry.reviewer} · ` : ""}{fmtTime(entry.timestamp)}
+                {entry.reviewer || entry.reviewer_id ? `${entry.reviewer || entry.reviewer_id} · ` : ""}{fmtTime(entry.timestamp)}
               </span>
               {entry.reason && <span className="audit-log-detail">Reason: {entry.reason}</span>}
               {entry.item_id && <span className="audit-log-detail">Item: {entry.item_id}</span>}
+              {entry.action === "transcript_corrected" && (
+                <span className="audit-log-detail audit-log-diff">
+                  <s>{entry.old_value}</s> → {entry.new_value}
+                </span>
+              )}
             </div>
           ))}
         </div>
@@ -165,10 +175,18 @@ function ReviewerBar({
   onApprove,
   isApproving,
   approveError,
+  blockedReason = "",
+  heldCount = 0,
 }) {
   return (
     <div className="reviewer-bar" data-testid="reviewer-bar">
       <p className="reviewer-bar-title">Approve &amp; lock minutes</p>
+      {heldCount > 0 && !blockedReason && (
+        <p className="reviewer-bar-note">
+          {heldCount} held item{heldCount === 1 ? "" : "s"} will appear in the minutes as held for review, not as
+          confirmed.
+        </p>
+      )}
       <div className="reviewer-bar-row">
         <div className="reviewer-bar-field">
           <label>Reviewer name</label>
@@ -196,12 +214,18 @@ function ReviewerBar({
           type="button"
           className="approve-button"
           onClick={onApprove}
-          disabled={isApproving || !reviewerName.trim()}
+          disabled={isApproving || !reviewerName.trim() || Boolean(blockedReason)}
+          aria-describedby={blockedReason ? "approve-blocked" : undefined}
           data-testid="approve-button"
         >
-          {isApproving ? "Approving…" : "✓ Approve & Lock Minutes"}
+          {isApproving ? "Approving…" : "Approve & lock minutes"}
         </button>
       </div>
+      {blockedReason && (
+        <p className="approve-blocked" id="approve-blocked" data-testid="approve-blocked">
+          {blockedReason}
+        </p>
+      )}
       {approveError && (
         <p className="approve-error" role="alert" data-testid="approve-error">
           {approveError}
@@ -329,7 +353,6 @@ export default function VerifyMeeting() {
     backendFileId,
     verificationStage,
     setVerificationStage,
-    verificationProgress,
     automaticCheckComplete,
     verificationData,
     isVerifying,
@@ -362,7 +385,15 @@ export default function VerifyMeeting() {
     approveMeeting,
     reopenMeetingReview,
     loadAuditLog,
+    reverifyMeeting,
   } = useMeetingFlow();
+  const { user } = useAuth();
+  const transcriptRef = useRef(null);
+
+  // Signed in: the server records the account as reviewer, so prefill it.
+  useEffect(() => {
+    if (user?.display_name && !reviewerName) setReviewerName(user.display_name);
+  }, [user, reviewerName, setReviewerName]);
 
   const [approvalNotes, setApprovalNotes] = useState("");
   const [showReopenModal, setShowReopenModal] = useState(false);
@@ -554,13 +585,21 @@ export default function VerifyMeeting() {
                   <span>Deterministic + semantic (retrieval + NLI) verification</span>
                 </div>
                 <strong className="faithfulness-progress-value">
-                  {isVerifying ? "Checking…" : automaticCheckComplete ? "Complete" : `${verificationProgress}%`}
+                  {isVerifying ? "Checking…" : automaticCheckComplete ? "Complete" : verificationError ? "Stopped" : "Waiting"}
                 </strong>
               </div>
-              <div className="faithfulness-progress-track">
+              {/* Phase 8: no invented percentage. The bar is indeterminate
+                  while the server works and full only when it has answered. */}
+              <div
+                className={`faithfulness-progress-track${isVerifying ? " is-indeterminate" : ""}`}
+                role="progressbar"
+                aria-label="Evidence verification"
+                aria-busy={isVerifying || undefined}
+                aria-valuetext={isVerifying ? "Checking" : automaticCheckComplete ? "Complete" : "Not running"}
+              >
                 <div
                   className="faithfulness-progress-fill"
-                  style={{ width: `${verificationProgress}%` }}
+                  style={{ width: automaticCheckComplete ? "100%" : isVerifying ? undefined : "0%" }}
                 />
               </div>
               <div className="faithfulness-progress-status">
@@ -661,30 +700,76 @@ export default function VerifyMeeting() {
   // -------------------------------------------------------------------------
   // STAGE: manual review (Phase 1 + Phase 3)
   // -------------------------------------------------------------------------
-  return (
-    <main className="main-content">
-      <button
-        type="button"
-        className="back-button"
-        onClick={goBack}
-        disabled={
-          isUploading || isTranscribing || isExtracting ||
-          isVerifying || isGeneratingMom || isDownloadingPdf
-        }
-      >
-        <span aria-hidden="true">←</span> Back
-      </button>
+  // Phase 8: claims verified before a transcript correction are held by the
+  // server until verification runs again.
+  const staleCount =
+    verificationData?.transcript?.stale_claims ?? claims.filter((c) => c.verification_stale).length;
 
-      <div className="step-label">STEP 4 · REVIEW</div>
-      <h1>Review claims and their evidence</h1>
-      <p className="page-description">
-        Only confirmed claims go into the minutes. Items that need review
-        stay out until their evidence is fixed; when the verifier found a
-        better evidence span you can accept or reject it here.
-        {isApproved ? " This review has been approved and is locked." : " Edit items and approve below."}
-      </p>
+  const focusEvidence = (uttId) => transcriptRef.current?.focusUtterance(uttId);
+
+  const handleReverify = async () => {
+    try {
+      await reverifyMeeting();
+    } catch {
+      // shown through verificationError
+    }
+  };
+
+  return (
+    <main className="page page--workspace review-workspace" aria-labelledby="review-title">
+      <div className="review-head">
+        <div className="review-head__text">
+          <h2 className="review-title" id="review-title">Review claims and their evidence</h2>
+          <p className="review-head__lead">
+            Only confirmed claims go into the minutes; held items stay out until a reviewer resolves them.
+            {isApproved ? " This review is approved and locked." : ""}
+          </p>
+        </div>
+        <ul className="review-counts" aria-label="Review status">
+          <li className="review-count review-count--held">
+            <Icon name="clock" /> <strong>{enrichedGroups.review.length}</strong> held
+          </li>
+          <li className="review-count review-count--ok">
+            <Icon name="checkCircle" /> <strong>{enrichedGroups.confirmed.length}</strong> confirmed
+          </li>
+          <li className="review-count review-count--rejected">
+            <Icon name="error" /> <strong>{enrichedGroups.rejected.length}</strong> rejected
+          </li>
+          {(verificationData?.transcript?.corrected_utterances?.length || 0) > 0 && (
+            <li className="review-count review-count--edited">
+              <Icon name="pencil" /> <strong>{verificationData.transcript.corrected_utterances.length}</strong> corrected
+            </li>
+          )}
+        </ul>
+      </div>
 
       <RunNotice verificationData={verificationData} />
+
+      {staleCount > 0 && (
+        <Alert
+          tone="warning"
+          title={`Transcript corrected after verification: ${staleCount} claim${staleCount === 1 ? "" : "s"} held`}
+          data-testid="stale-verification"
+          actions={
+            reverifyMeeting && !isApproved && (
+              <Button variant="primary" size="sm" icon="refresh" onClick={handleReverify} loading={isVerifying} disabled={isVerifying}>
+                {isVerifying ? "Verifying…" : "Run verification again"}
+              </Button>
+            )
+          }
+        >
+          <p>
+            A reviewer changed transcript text that these results were computed from. They are not shown as verified
+            and the minutes cannot be approved until verification runs on the corrected transcript.
+          </p>
+        </Alert>
+      )}
+
+      {verificationError && (
+        <Alert tone="danger" title="Verification could not be completed">
+          <p>{verificationError}</p>
+        </Alert>
+      )}
 
       {/* Sticky Audio Toolbar */}
       {hasAudio && backendFileId && (
@@ -726,13 +811,11 @@ export default function VerifyMeeting() {
         <div className="approval-lock-banner" data-testid="approval-lock-banner">
           <div className="approval-lock-info">
             <span className="approval-lock-title">
-              ✓ Approved — {snapshot.version || "v1"}
+              ✓ Approved — {formatVersion(snapshot.version)}
             </span>
             <span className="approval-lock-meta">
               By {snapshot.approved_by || "reviewer"} ·{" "}
-              {snapshot.approved_at
-                ? new Date(snapshot.approved_at).toLocaleString()
-                : ""}
+              {snapshot.approved_at ? formatDateTime(snapshot.approved_at) : ""}
               {snapshot.notes ? ` · "${snapshot.notes}"` : ""}
             </span>
           </div>
@@ -757,6 +840,8 @@ export default function VerifyMeeting() {
         />
       )}
 
+      <div className="review-layout">
+      <div className="review-layout__claims">
       {/* ---- CLAIM SECTIONS ---- */}
       <div className="verify-section" data-testid="needs-review-section">
         <div className="verify-section-header">
@@ -779,6 +864,7 @@ export default function VerifyMeeting() {
               isApproved={isApproved}
               onEdit={editReviewItem}
               onSeek={hasAudio ? handleSeek : undefined}
+              onFocusEvidence={focusEvidence}
             />
           ))
         )}
@@ -805,6 +891,7 @@ export default function VerifyMeeting() {
               isApproved={isApproved}
               onEdit={editReviewItem}
               onSeek={hasAudio ? handleSeek : undefined}
+              onFocusEvidence={focusEvidence}
             />
           ))
         )}
@@ -827,6 +914,7 @@ export default function VerifyMeeting() {
               isApproved={isApproved}
               onEdit={editReviewItem}
               onSeek={hasAudio ? handleSeek : undefined}
+              onFocusEvidence={focusEvidence}
             />
           ))}
         </div>
@@ -864,18 +952,38 @@ export default function VerifyMeeting() {
         loadAuditLog={loadAuditLog}
       />
 
-      {/* ---- REVIEWER BAR (only when not approved) ---- */}
-      {!isApproved && (
-        <ReviewerBar
-          reviewerName={reviewerName}
-          setReviewerName={setReviewerName}
-          approvalNotes={approvalNotes}
-          setApprovalNotes={setApprovalNotes}
-          onApprove={handleApprove}
-          isApproving={isApproving}
-          approveError={approveError}
-        />
-      )}
+      </div>
+
+      <aside className="review-layout__transcript" aria-label="Approval and transcript">
+        {/* ---- REVIEWER BAR (only when not approved): beside the claims, never over them ---- */}
+        {!isApproved && (
+          <ReviewerBar
+            reviewerName={reviewerName}
+            setReviewerName={setReviewerName}
+            approvalNotes={approvalNotes}
+            setApprovalNotes={setApprovalNotes}
+            onApprove={handleApprove}
+            isApproving={isApproving}
+            approveError={approveError}
+            heldCount={enrichedGroups.review.length}
+            blockedReason={
+              staleCount > 0
+                ? "Run verification again before approving: the transcript was corrected after the last check."
+                : ""
+            }
+          />
+        )}
+        {backendFileId && (
+          <TranscriptPanel
+            ref={transcriptRef}
+            meetingId={backendFileId}
+            title="Transcript"
+            editable={!isApproved}
+            lockedReason={isApproved ? "Approved minutes are locked. Reopen the review to correct the transcript." : ""}
+          />
+        )}
+      </aside>
+      </div>
 
       <div className="verify-footer">
         <div className="verification-complete">

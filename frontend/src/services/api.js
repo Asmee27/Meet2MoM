@@ -9,6 +9,52 @@ const defaultBaseUrl =
 export const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL || defaultBaseUrl;
 
+// Phase 7: the session is an HttpOnly cookie, so every API request (and the
+// <audio> / PDF links, which the browser handles itself) must carry cookies.
+if (typeof window !== "undefined" && window.fetch && !window.__m2mCredentialsFetch) {
+  const browserFetch = window.fetch.bind(window);
+  window.fetch = (input, init = {}) => {
+    const url = typeof input === "string" ? input : input?.url || "";
+    if (url.startsWith(API_BASE_URL)) {
+      return browserFetch(input, { credentials: "include", ...init });
+    }
+    return browserFetch(input, init);
+  };
+  window.__m2mCredentialsFetch = true;
+}
+
+async function authRequest(path, { method = "GET", body } = {}) {
+  const res = await fetch(`${API_BASE_URL}${path}`, {
+    method,
+    credentials: "include",
+    headers: body ? { "Content-Type": "application/json" } : undefined,
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  let data = null;
+  try {
+    data = await res.json();
+  } catch {
+    data = null;
+  }
+  if (!res.ok) {
+    const error = new Error(data?.detail || `Request failed (${res.status})`);
+    error.status = res.status;
+    throw error;
+  }
+  return data;
+}
+
+// Accounts (Phase 7). getMe resolves to { auth_required, user } or throws 401.
+export const getMe = () => authRequest("/api/auth/me");
+export const login = (email, password) => authRequest("/api/auth/login", { method: "POST", body: { email, password } });
+export const register = (email, password, display_name) =>
+  authRequest("/api/auth/register", { method: "POST", body: { email, password, display_name } });
+export const logout = () => authRequest("/api/auth/logout", { method: "POST" });
+export const createInvitation = (meetingId) =>
+  authRequest(`/api/auth/meetings/${encodeURIComponent(meetingId)}/invitations`, { method: "POST" });
+export const acceptInvitation = (token) =>
+  authRequest("/api/auth/invitations/accept", { method: "POST", body: { token } });
+
 // ---------------------------------------------------------------------------
 // Health
 // ---------------------------------------------------------------------------
@@ -272,8 +318,12 @@ export async function createLiveRoom(payload = {}) {
   } catch {
     throw new Error(`Cannot connect to backend server at ${API_BASE_URL}. Please ensure the FastAPI backend is running.`);
   }
-  const data = await res.json();
-  if (!res.ok) throw new Error(data?.detail || "Failed to create LiveKit room.");
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const error = new Error(data?.detail || "Failed to create LiveKit room.");
+    error.status = res.status;
+    throw error;
+  }
   return data;
 }
 
@@ -288,8 +338,12 @@ export async function getLiveToken(payload) {
   } catch {
     throw new Error(`Cannot connect to backend server at ${API_BASE_URL}. Please ensure the FastAPI backend is running.`);
   }
-  const data = await res.json();
-  if (!res.ok) throw new Error(data?.detail || "Failed to generate LiveKit join token.");
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const error = new Error(data?.detail || "Failed to generate LiveKit join token.");
+    error.status = res.status;
+    throw error;
+  }
   return data;
 }
 
@@ -388,3 +442,69 @@ export async function processLiveRecording(meetingId, token, { retry = false } =
     fallback: "Failed to start processing.",
   });
 }
+
+// ---------------------------------------------------------------------------
+// Meeting deletion (Phase 10) and commitment ledger (Phase 9)
+// ---------------------------------------------------------------------------
+export const deleteMeeting = (meetingId) =>
+  authRequest(`/api/meetings/${encodeURIComponent(meetingId)}`, { method: "DELETE" });
+export const getMeetingCommitments = (meetingId) =>
+  authRequest(`/api/meetings/${encodeURIComponent(meetingId)}/commitments`);
+export const proposeCommitmentUpdates = (meetingId) =>
+  authRequest(`/api/meetings/${encodeURIComponent(meetingId)}/commitments/propose`, { method: "POST" });
+export const reviewCommitmentUpdate = (meetingId, commitmentId, status, note = "", reviewer = "") =>
+  authRequest(
+    `/api/meetings/${encodeURIComponent(meetingId)}/commitments/${encodeURIComponent(commitmentId)}/review`,
+    { method: "POST", body: { status, note, reviewer } },
+  );
+export const getLedger = () => authRequest("/api/commitments");
+
+// ---------------------------------------------------------------------------
+// Transcript correction (Phase 8). The server keeps the ASR text, audits the
+// change and holds claims verified against the old words until re-verified.
+// ---------------------------------------------------------------------------
+// `reviewer` is used only when sign-in is off; otherwise the server records
+// the signed-in account.
+export const correctTranscriptUtterance = (meetingId, uttId, text, reason = "", reviewer = "") =>
+  authRequest(
+    `/api/meetings/${encodeURIComponent(meetingId)}/transcript/${encodeURIComponent(uttId)}`,
+    { method: "PUT", body: { text, reason, reviewer: reviewer || null } },
+  );
+export const getTranscriptCorrections = (meetingId) =>
+  authRequest(`/api/meetings/${encodeURIComponent(meetingId)}/transcript-corrections`);
+
+// ---------------------------------------------------------------------------
+// Scheduled meetings (Phase 8.3). No email is sent: each invitee's link is
+// returned to the host to share. Copying a link issues a new one and the
+// previous link stops working (only token hashes are stored).
+// ---------------------------------------------------------------------------
+export const scheduleMeeting = (payload) => authRequest("/api/schedule", { method: "POST", body: payload });
+export const getSchedule = (meetingId) => authRequest(`/api/meetings/${encodeURIComponent(meetingId)}/schedule`);
+export const addScheduleInvitees = (meetingId, emails) =>
+  authRequest(`/api/meetings/${encodeURIComponent(meetingId)}/schedule/invitees`, { method: "POST", body: { emails } });
+export const copyInviteeLink = (meetingId, inviteeId) =>
+  authRequest(`/api/meetings/${encodeURIComponent(meetingId)}/schedule/invitees/${inviteeId}/link`, { method: "POST" });
+export const revokeInvitee = (meetingId, inviteeId) =>
+  authRequest(`/api/meetings/${encodeURIComponent(meetingId)}/schedule/invitees/${inviteeId}`, { method: "DELETE" });
+export const cancelScheduledMeeting = (meetingId) =>
+  authRequest(`/api/meetings/${encodeURIComponent(meetingId)}/schedule/cancel`, { method: "POST" });
+
+// ---------------------------------------------------------------------------
+// Email (Phase 8.4). Requests only queue messages; statuses come from the
+// server (queued, sent to provider, delivered, bounced, failed…). In
+// development mode the server sends nothing and says so.
+// ---------------------------------------------------------------------------
+export const getEmailStatus = () => authRequest("/api/email/status");
+export const sendInvitationEmail = (meetingId, inviteeId) =>
+  authRequest(`/api/meetings/${encodeURIComponent(meetingId)}/schedule/invitees/${inviteeId}/email`, { method: "POST" });
+export const approveInviteeAccount = (meetingId, inviteeId, approve) =>
+  authRequest(`/api/meetings/${encodeURIComponent(meetingId)}/schedule/invitees/${inviteeId}/approve-account`,
+    { method: "POST", body: { approve } });
+export const getMinutesEmail = (meetingId) => authRequest(`/api/meetings/${encodeURIComponent(meetingId)}/minutes-email`);
+export const sendMinutesEmail = (meetingId, { recipients, version, attachPdf = false, confirmAttachment = false }) =>
+  authRequest(`/api/meetings/${encodeURIComponent(meetingId)}/minutes-email`, {
+    method: "POST",
+    body: { recipients, version, attach_pdf: attachPdf, confirm_attachment: confirmAttachment },
+  });
+export const retryEmail = (meetingId, outboxId) =>
+  authRequest(`/api/meetings/${encodeURIComponent(meetingId)}/emails/${outboxId}/retry`, { method: "POST" });

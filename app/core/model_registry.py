@@ -50,6 +50,26 @@ def get_hf_pipeline(task: str, model_name: str, **kw):
         return _models[key]
 
 
+def is_loaded(key: str) -> bool:
+    with _lock:
+        return key in _models
+
+
+def get_cached_model(key: str, factory):
+    """
+    Build a model once per process and reuse it (Phase 6). A long-lived worker
+    therefore loads Whisper and pyannote once, not once per meeting.
+    """
+    with _lock:
+        if key not in _models:
+            import time
+
+            started = time.perf_counter()
+            _models[key] = factory()
+            logger.info("Loaded %s in %.2fs", key, time.perf_counter() - started)
+        return _models[key]
+
+
 def clear_models() -> None:
     with _lock:
         _models.clear()

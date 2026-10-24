@@ -13,7 +13,9 @@ import os
 import sys
 
 INPUT_DIR = PROJECT_ROOT / "input"
-STORAGE_ROOT = PROJECT_ROOT / "storage"
+# MEET2MOM_STORAGE_ROOT moves all meeting data and the database (benchmarks,
+# deployments); unset, it is the repository's storage/ folder.
+STORAGE_ROOT = Path(os.getenv("MEET2MOM_STORAGE_ROOT") or (PROJECT_ROOT / "storage")).resolve()
 DB_PATH = STORAGE_ROOT / "meet2mom.db"
 
 # LLM Configuration
@@ -34,6 +36,14 @@ LLM_TIMEOUT_RETRIES = int(os.getenv("LLM_TIMEOUT_RETRIES", "1") or 0)
 # When it runs out, extraction falls back to the local extractor and says so.
 LLM_EXTRACTION_BUDGET_SECONDS = float(os.getenv("LLM_EXTRACTION_BUDGET_SECONDS", "600") or 0)
 EXTRACTOR = os.getenv("EXTRACTOR", "llm").strip().lower()
+
+
+def _env_flag(name: str, default: bool) -> bool:
+    """true/false style setting from the environment; unset or empty keeps the default."""
+    value = (os.getenv(name) or "").strip().lower()
+    if not value:
+        return default
+    return value in ("1", "true", "yes", "on")
 
 
 def get_hf_token() -> str | None:
@@ -145,10 +155,11 @@ DENOISE_LEVEL = 25
 # WHISPER
 # ==========================================================
 
-WHISPER_MODEL = "small"
+# Overridable from .env (Phase 5); the defaults are the benchmarked setup.
+WHISPER_MODEL = os.getenv("WHISPER_MODEL", "small").strip() or "small"
 
-DEVICE = "cpu"
-COMPUTE_TYPE = "int8"
+DEVICE = os.getenv("WHISPER_DEVICE", "cpu").strip() or "cpu"
+COMPUTE_TYPE = os.getenv("WHISPER_COMPUTE_TYPE", "int8").strip() or "int8"
 
 BEAM_SIZE = 5
 RETRY_BEAM_SIZE = 8
@@ -166,9 +177,22 @@ TARGET_LANGUAGES = {
     "mr": "Marathi"
 }
 
-# IMPORTANT:
-# Keep None so Whisper automatically detects language.
-FORCE_LANGUAGE = None
+# WHISPER_LANGUAGE (e.g. en, hi, mr) skips per-track language detection, which
+# costs about 14 s per track on a 2-core laptop (Phase 6 measurement). Leave it
+# empty for automatic detection, e.g. for code-switched meetings.
+FORCE_LANGUAGE = (os.getenv("WHISPER_LANGUAGE") or "").strip().lower() or None
+
+# Whisper initial prompt (Phase 6 transcript-quality fix):
+#   none (default): no prompt
+#   language: a short instruction to keep the spoken language
+#   vocabulary: the language instruction plus TECHNICAL_VOCABULARY and
+#     PARTICIPANT_NAMES (the old behaviour). On a real meeting this replaced an
+#     unclear "by Friday" with "by FFmpeg", a word from the vocabulary list.
+WHISPER_PROMPT = (os.getenv("WHISPER_PROMPT") or "none").strip().lower()
+# Split a decoded Whisper segment where its words are separated by a pause
+# longer than this (seconds). Voice-activity filtering glues separate speech
+# chunks together, so one segment could otherwise span 30 s of silence.
+WHISPER_SPLIT_GAP_SECONDS = float(os.getenv("WHISPER_SPLIT_GAP_SECONDS", "1.5") or 1.5)
 
 
 # ==========================================================
@@ -281,13 +305,13 @@ PROCESSING_REPORT_FILE = (
 # PERFORMANCE / CACHE SETTINGS
 # ==========================================================
 
-ENABLE_PIPELINE_CACHE = True
+ENABLE_PIPELINE_CACHE = _env_flag("ENABLE_PIPELINE_CACHE", True)
 
 # Expensive stages that may be reused when their input
 # recording has not changed.
 CACHE_NORMALIZED_AUDIO = True
-CACHE_TRANSCRIPTION = True
-CACHE_DIARIZATION = True
+CACHE_TRANSCRIPTION = _env_flag("CACHE_TRANSCRIPTION", True)
+CACHE_DIARIZATION = _env_flag("CACHE_DIARIZATION", True)
 
 # Cache information for identifying the processed recording.
 PIPELINE_CACHE_FILE = (
@@ -305,8 +329,25 @@ WORKER_POLL_INTERVAL_SECONDS = float(os.getenv("WORKER_POLL_INTERVAL_SECONDS", "
 WORKER_STALE_TIMEOUT_SECONDS = float(os.getenv("WORKER_STALE_TIMEOUT_SECONDS", "300.0"))
 WORKER_MAX_RETRIES = int(os.getenv("WORKER_MAX_RETRIES", "3"))
 
+# Where the speech pipeline (audio, ASR, speaker attribution) runs (Phase 6):
+#   subprocess: a fresh Python process per meeting (isolated; reloads libraries and models)
+#   inprocess:  inside the job runner, reusing loaded libraries and models
+#   auto:       inprocess inside scripts/worker.py, subprocess in the API process
+SPEECH_PIPELINE = os.getenv("SPEECH_PIPELINE", "auto").strip().lower()
+# Load Whisper, pyannote, embeddings and NLI when the worker starts, so even the
+# first meeting avoids model start-up (only with the in-process speech pipeline).
+WORKER_PRELOAD_MODELS = _env_flag("WORKER_PRELOAD_MODELS", True)
+
+# Accounts and meeting access (Phase 7). On by default: every /api meeting
+# route needs a signed-in member. false = the old open local mode.
+AUTH_REQUIRED = _env_flag("AUTH_REQUIRED", True)
+# Set true when the API is served over HTTPS so the session cookie is Secure.
+SESSION_COOKIE_SECURE = _env_flag("SESSION_COOKIE_SECURE", False)
+
 # Topic title generation mode: "extractive" (default) or "llm"
 TOPIC_TITLES = os.getenv("TOPIC_TITLES", "extractive").strip().lower()
+# Cap on all LLM topic-title requests of one meeting (TOPIC_TITLES=llm).
+TOPIC_TITLE_LLM_BUDGET_SECONDS = float(os.getenv("TOPIC_TITLE_LLM_BUDGET_SECONDS", "60") or 0)
 
 # ==========================================================
 # LIVEKIT SETTINGS (Phase 4 Real Live Meetings)
@@ -315,4 +356,27 @@ TOPIC_TITLES = os.getenv("TOPIC_TITLES", "extractive").strip().lower()
 LIVEKIT_URL = os.getenv("LIVEKIT_URL", "").strip()
 LIVEKIT_API_KEY = os.getenv("LIVEKIT_API_KEY", "").strip()
 LIVEKIT_API_SECRET = os.getenv("LIVEKIT_API_SECRET", "").strip()
-
+
+# ---------------------------------------------------------------------------
+# Transactional email (Phase 8.4)
+# ---------------------------------------------------------------------------
+# console (default): development mode. Nothing is sent; each message is logged
+#   without its links and marked "not sent (development mode)".
+# brevo: Brevo transactional API. Needs BREVO_API_KEY and a sender address
+#   verified in Brevo (EMAIL_SENDER_ADDRESS); see docs/phase-8/PHASE_8_4_EMAIL.md.
+EMAIL_PROVIDER = (os.getenv("EMAIL_PROVIDER") or "console").strip().lower()
+BREVO_API_KEY = os.getenv("BREVO_API_KEY") or None
+BREVO_API_URL = (os.getenv("BREVO_API_URL") or "https://api.brevo.com/v3/smtp/email").strip()
+EMAIL_SENDER_ADDRESS = (os.getenv("EMAIL_SENDER_ADDRESS") or "").strip() or None
+EMAIL_SENDER_NAME = (os.getenv("EMAIL_SENDER_NAME") or "Meet2MoM").strip()
+# Shared secret Brevo sends with delivery webhooks (custom header
+# X-Meet2MoM-Webhook-Token, or "Authorization: Bearer <token>"). Unset: the
+# webhook endpoint is disabled and statuses stop at "sent to provider".
+BREVO_WEBHOOK_TOKEN = os.getenv("BREVO_WEBHOOK_TOKEN") or None
+EMAIL_TIMEOUT_SECONDS = float(os.getenv("EMAIL_TIMEOUT_SECONDS", "15") or 15)
+EMAIL_MAX_ATTEMPTS = int(os.getenv("EMAIL_MAX_ATTEMPTS", "4") or 4)
+# Where queued email is sent from: api (a background thread in the API
+# process), worker (scripts/worker.py), or off (nothing sends; tests).
+EMAIL_DISPATCH = (os.getenv("EMAIL_DISPATCH") or "api").strip().lower()
+# The address people open links on (the frontend), used in emailed links.
+PUBLIC_APP_URL = (os.getenv("PUBLIC_APP_URL") or "http://localhost:5173").strip().rstrip("/")
