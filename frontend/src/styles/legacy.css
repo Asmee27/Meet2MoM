@@ -1537,6 +1537,28 @@ h1, h2, h3, h4 {
   font-family: var(--font-sans);
 }
 
+.lm-role-notice {
+  margin: 0 0 var(--space-5);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--info-border);
+  border-left: 3px solid var(--info);
+  border-radius: var(--radius-md);
+  background: var(--info-soft);
+  color: var(--text);
+  font-size: var(--text-sm);
+  line-height: 1.5;
+}
+
+.lm-role-notice.is-host {
+  border-color: #d4d8fb;
+  border-left-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.lm-role-account {
+  color: var(--text-secondary);
+}
+
 /* The shell's breadcrumb already returns to the meeting list. */
 .shell-main .lm-back-link {
   display: none;
@@ -1562,4 +1584,427 @@ h1, h2, h3, h4 {
 .lm-start-btn:hover:not(:disabled),
 .lm-proceed-btn:hover:not(:disabled) {
   background: var(--accent-hover);
+}
+
+/* ==========================================================================
+   Phase 8.1 polish: denser review workspace, document-style minutes.
+   ========================================================================== */
+
+/* ---- Review header + counts ------------------------------------------- */
+
+.review-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--space-3) var(--space-5);
+}
+
+.review-head__text {
+  min-width: 0;
+  max-width: 640px;
+}
+
+.review-head__lead {
+  margin: 2px 0 0;
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+}
+
+.review-counts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.review-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  background: var(--surface);
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+}
+
+.review-count svg {
+  width: 14px;
+  height: 14px;
+}
+
+.review-count strong {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.review-count--held svg { color: var(--warning); }
+.review-count--ok svg { color: var(--success); }
+.review-count--rejected svg { color: var(--danger); }
+.review-count--edited svg { color: var(--accent); }
+
+/* ---- Layout: claims left, approval + transcript rail right ------------ */
+
+.review-layout {
+  grid-template-columns: minmax(0, 1.25fr) minmax(340px, 0.9fr);
+  gap: var(--space-4);
+}
+
+.review-layout__claims {
+  gap: var(--space-5);
+}
+
+.review-layout__transcript {
+  display: grid;
+  gap: var(--space-3);
+  max-height: calc(100vh - 32px);
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+.review-layout__transcript .transcript-panel {
+  max-height: none;
+  min-height: 0;
+}
+
+.review-layout__transcript .reviewer-bar {
+  position: static;
+  box-shadow: var(--shadow-xs);
+  padding: var(--space-4);
+  gap: var(--space-3);
+}
+
+.review-layout__transcript .reviewer-bar-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-2);
+}
+
+.review-layout__transcript .reviewer-bar-field {
+  min-width: 0;
+}
+
+.review-layout__transcript .reviewer-bar-input {
+  min-width: 0;
+  width: 100%;
+}
+
+.review-layout__transcript .approve-button {
+  grid-column: 1 / -1;
+  width: 100%;
+}
+
+.reviewer-bar-title {
+  margin: 0;
+  font-size: var(--text-md);
+}
+
+.reviewer-bar-note {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+}
+
+@media (max-width: 1100px) {
+  .review-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .review-layout__transcript {
+    max-height: none;
+    grid-template-rows: auto;
+  }
+}
+
+/* ---- Sections ---------------------------------------------------------- */
+
+.verify-section-header {
+  margin-bottom: var(--space-2);
+  padding-bottom: var(--space-2);
+  border-bottom: 1px solid var(--border);
+}
+
+.verify-section-header h2 {
+  font-size: var(--text-md);
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+
+.verify-section-header p {
+  font-size: var(--text-xs);
+}
+
+/* ---- Claim cards: compact, evidence as a quiet list -------------------- */
+
+.claim-card {
+  margin-bottom: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  border-left-width: 3px;
+  border-radius: var(--radius-md);
+}
+
+.claim-card:hover {
+  border-color: var(--border-strong);
+}
+
+.claim-card-verified:hover { border-left-color: var(--success); }
+.claim-card-verified_with_warning:hover,
+.claim-card-review:hover { border-left-color: #d97706; }
+.claim-card-rejected:hover { border-left-color: var(--danger); }
+
+.claim-text {
+  margin: 6px 0 2px;
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.claim-meta {
+  margin: 0 0 var(--space-2);
+  font-size: var(--text-xs);
+}
+
+.transcript-evidence {
+  margin-top: var(--space-2);
+  padding: 0;
+  border: 0;
+  background: none;
+}
+
+.evidence-label {
+  margin-bottom: 4px;
+  font-size: 11px;
+}
+
+.evidence-utterance {
+  display: grid;
+  gap: 1px;
+  padding: 6px 10px;
+  border-left: 2px solid var(--border-strong);
+  background: var(--surface-muted);
+  font-size: var(--text-sm);
+}
+
+.evidence-utterance + .evidence-utterance {
+  margin-top: 4px;
+  border-top: 0;
+}
+
+.claim-reasons-title {
+  margin-top: var(--space-2);
+  font-size: 11px;
+}
+
+.claim-reasons {
+  margin-top: 4px;
+  font-size: var(--text-xs);
+}
+
+.suggested-evidence-card {
+  margin-top: var(--space-2);
+  padding: var(--space-3);
+}
+
+.suggested-evidence-card p {
+  font-size: var(--text-sm);
+}
+
+.claim-card-edit-row {
+  margin-top: var(--space-2);
+}
+
+.edit-button-sm svg {
+  width: 14px;
+  height: 14px;
+}
+
+/* ---- Transcript rows: calmer, edit control appears on hover/focus ------ */
+
+.utt {
+  padding: 10px var(--space-4);
+}
+
+.utt__text {
+  margin-top: 4px;
+  font-size: var(--text-md);
+  color: var(--text);
+}
+
+.utt__edit {
+  opacity: 0;
+  transition: opacity var(--duration-fast);
+}
+
+.utt:hover .utt__edit,
+.utt:focus-within .utt__edit,
+.utt__edit:focus-visible {
+  opacity: 1;
+}
+
+@media (hover: none) {
+  .utt__edit {
+    opacity: 1;
+  }
+}
+
+/* ---- Minutes as a document -------------------------------------------- */
+
+.minutes-page {
+  max-width: 980px;
+}
+
+.minutes-doc {
+  padding: 0;
+  overflow: hidden;
+}
+
+.minutes-doc__header {
+  padding: var(--space-6) var(--space-8);
+  border-bottom: 0;
+  background:
+    linear-gradient(135deg, rgba(79, 70, 229, 0.22), transparent 60%),
+    var(--nav-bg);
+  color: #ffffff;
+}
+
+.minutes-doc__eyebrow {
+  color: #c7cbfa;
+}
+
+.minutes-doc__title {
+  color: #ffffff;
+  font-size: 24px;
+}
+
+.minutes-doc__header .ui-badge--success {
+  --badge-bg: rgba(255, 255, 255, 0.12);
+  --badge-border: rgba(187, 247, 208, 0.45);
+  --badge-fg: #bbf7d0;
+}
+
+.minutes-doc__header .ui-badge--warning {
+  --badge-bg: rgba(255, 255, 255, 0.12);
+  --badge-border: rgba(253, 230, 138, 0.5);
+  --badge-fg: #fde68a;
+}
+
+.minutes-facts {
+  margin: 0;
+  padding: var(--space-4) var(--space-8);
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-muted);
+  gap: var(--space-4);
+}
+
+.minutes-facts dd {
+  font-size: var(--text-md);
+}
+
+.minutes-facts .minutes-sub {
+  display: block;
+  margin-top: 2px;
+  font-weight: 500;
+}
+
+.minutes-doc > .minutes-section,
+.minutes-doc > .minutes-extraction-note,
+.minutes-doc > .minutes-doc__footer {
+  margin-left: var(--space-8);
+  margin-right: var(--space-8);
+}
+
+.minutes-section {
+  margin-top: var(--space-6);
+}
+
+.minutes-section h4 {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+
+.minutes-section > p {
+  color: var(--text);
+  font-size: 15px;
+}
+
+.minutes-list li {
+  font-size: 15px;
+}
+
+.minutes-held-note {
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--warning-border);
+  border-radius: var(--radius-md);
+  background: var(--warning-soft);
+  color: var(--warning);
+  font-weight: 600;
+}
+
+.minutes-doc__footer {
+  margin-bottom: var(--space-6);
+}
+
+@media (max-width: 640px) {
+  .minutes-doc__header,
+  .minutes-facts {
+    padding-left: var(--space-5);
+    padding-right: var(--space-5);
+  }
+
+  .minutes-doc > .minutes-section,
+  .minutes-doc > .minutes-extraction-note,
+  .minutes-doc > .minutes-doc__footer {
+    margin-left: var(--space-5);
+    margin-right: var(--space-5);
+  }
+}
+
+/* ---- Live form: the mode switch must be visible ------------------------ */
+
+.lm-card-header .lm-topbar-btn {
+  padding: 6px 12px !important;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  color: var(--accent-text);
+  font-size: var(--text-sm) !important;
+  font-weight: 600;
+}
+
+.lm-card-header .lm-topbar-btn:hover {
+  background: var(--accent-soft);
+}
+
+/* The row's edit control sits in the corner so it never wraps the header. */
+.utt__head {
+  padding-right: 92px;
+}
+
+.utt__edit {
+  position: absolute;
+  top: 6px;
+  right: var(--space-3);
+  margin-left: 0;
+}
+
+/* On narrow screens metadata wraps; dots at line starts read as stray marks. */
+@media (max-width: 640px) {
+  .ui-meta {
+    gap: 2px var(--space-3);
+  }
+
+  .ui-meta > * + *::before {
+    content: none;
+  }
 }

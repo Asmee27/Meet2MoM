@@ -222,6 +222,24 @@ def _sha256_file(
     return digest.hexdigest()
 
 
+# Bump when transcription output changes for the same settings.
+ASR_PIPELINE_VERSION = "asr-3"
+
+
+def asr_settings_key() -> str:
+    """Everything that changes ASR output for the same recording."""
+    from app.core import config
+
+    return "|".join((
+        ASR_PIPELINE_VERSION,
+        f"model={getattr(config, 'WHISPER_MODEL', '')}",
+        f"compute={getattr(config, 'DEVICE', '')}/{getattr(config, 'COMPUTE_TYPE', '')}",
+        f"language={getattr(config, 'FORCE_LANGUAGE', None) or 'auto'}",
+        f"prompt={getattr(config, 'WHISPER_PROMPT', 'none')}",
+        f"split_gap={getattr(config, 'WHISPER_SPLIT_GAP_SECONDS', None)}",
+    ))
+
+
 def _cache_directory(
     content_hash: str
 ):
@@ -792,7 +810,12 @@ def load_frontend_transcript(
         ).strip()
     )
 
-    language = _detect_language(
+    # A configured WHISPER_LANGUAGE is the language Whisper decoded with, so
+    # it is the meeting language; otherwise the detected one is used.
+    from app.core import config
+
+    forced = getattr(config, "FORCE_LANGUAGE", None)
+    language = forced or _detect_language(
         payload,
         segments
     )
@@ -804,6 +827,9 @@ def load_frontend_transcript(
 
         "language":
             language,
+
+        "language_source":
+            "configured" if forced else "detected",
 
         "segment_count":
             len(
@@ -985,6 +1011,14 @@ def run_recorded_pipeline(
             content_hash = hashlib.sha256(
                 f"{content_hash}|{track_key}".encode("utf-8")
             ).hexdigest()
+
+    # The ASR settings are part of the key: a transcript made with another
+    # language, prompt, pause split or model must not be reused after the
+    # configuration changes (an upload once reused an auto-detected "ml"
+    # transcript after WHISPER_LANGUAGE=en was set).
+    content_hash = hashlib.sha256(
+        f"{content_hash}|{asr_settings_key()}".encode("utf-8")
+    ).hexdigest()
 
     hash_seconds = round(
         time.time()

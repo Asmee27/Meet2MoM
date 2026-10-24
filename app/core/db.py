@@ -2841,6 +2841,19 @@ def add_meeting_member(meeting_id: str, user_id: str, role: str,
             )
 
 
+def get_meeting_owner_ids(meeting_id: str, db_path: Optional[Path | str] = None) -> List[str]:
+    """Owners of a meeting: meetings.owner_user_id and any 'owner' membership."""
+    with get_conn(db_path) as conn:
+        row = conn.execute("SELECT owner_user_id FROM meetings WHERE meeting_id = ?", (meeting_id,)).fetchone()
+        owners = [r["user_id"] for r in conn.execute(
+            "SELECT user_id FROM meeting_members WHERE meeting_id = ? AND role = 'owner' ORDER BY added_at",
+            (meeting_id,),
+        )]
+    if row and row["owner_user_id"] and row["owner_user_id"] not in owners:
+        owners.insert(0, row["owner_user_id"])
+    return owners
+
+
 def get_member_role(meeting_id: str, user_id: str, db_path: Optional[Path | str] = None) -> Optional[str]:
     with get_conn(db_path) as conn:
         row = conn.execute(

@@ -326,8 +326,12 @@ async def create_room(payload: CreateRoomRequest, request: Request):
         room_sid=room_info.get("sid"),
     )
     if auth.auth_required():
-        owner = (db.get_meeting(meeting["meeting_id"]) or {}).get("owner_user_id")
-        if owner and owner != user["user_id"]:
+        # An existing room keeps its owner. (db.get_meeting does not return
+        # owner_user_id, so this check used to pass for everyone and a guest
+        # entering the room code became a second owner, then got "This meeting
+        # already has a host" when requesting a token.)
+        owners = db.get_meeting_owner_ids(meeting["meeting_id"])
+        if owners and user["user_id"] not in owners:
             raise HTTPException(status_code=409, detail="This room belongs to another meeting owner.")
         db.add_meeting_member(meeting["meeting_id"], user["user_id"], "owner")
     return {**room_info, "meeting_id": meeting["meeting_id"]}
@@ -360,7 +364,12 @@ def create_token(payload: TokenRequest, request: Request):
         role = db.get_member_role(meeting["meeting_id"], user["user_id"])
         if role is None:
             raise HTTPException(status_code=403, detail="Ask the host for an invitation to join this meeting.")
-        identity, name, is_host = user["user_id"], user["display_name"], role == "owner"
+        # Only the primary owner hosts. Meetings damaged by the old create-room
+        # check can list a guest as a second owner; that guest joins as a
+        # participant instead of being refused as a second host.
+        owners = db.get_meeting_owner_ids(meeting["meeting_id"])
+        is_host = role == "owner" and bool(owners) and owners[0] == user["user_id"]
+        identity, name = user["user_id"], user["display_name"]
     else:
         identity = payload.participant_identity or f"user_{uuid4().hex[:6]}"
         name = payload.participant_name.strip() or "Guest Participant"

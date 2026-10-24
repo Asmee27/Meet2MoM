@@ -418,7 +418,7 @@ export function ClaimReviewCard({
                 onClick={() => { setEditMode(true); setSaveError(""); }}
                 data-testid="open-edit"
               >
-                ✎ Edit
+                <Icon name="pencil" /> Edit item
               </button>
             </div>
           )}

@@ -563,3 +563,113 @@ describe("Phase 4.2: server-side recording UI", () => {
     );
   });
 });
+
+// ----------------------------------------------------------------------------
+// Phase 8.1: invite links and joining an existing meeting as a guest
+// ----------------------------------------------------------------------------
+describe("Phase 8.1: invited guest joins an existing meeting", () => {
+  const ROOM = "livekit-m2m-4242";
+
+  afterEach(() => {
+    window.history.replaceState(null, "", "/");
+  });
+
+  function signedInAs(name) {
+    api.getMe.mockResolvedValue({
+      auth_required: true,
+      user: { user_id: `u_${name}`, email: `${name}@example.test`, display_name: name },
+    });
+  }
+
+  it("keeps the invite link through start-up and joins the invited room as a participant", async () => {
+    window.history.replaceState(null, "", `/?room=${ROOM}&invite=tok123`);
+    signedInAs("Gus");
+    const accept = vi.spyOn(api, "acceptInvitation").mockResolvedValue({ meeting_id: "mtg-live-1", room_name: ROOM });
+    api.getLiveToken.mockImplementation(async (payload) => ({
+      token: "guest-jwt", livekit_url: "wss://mock.livekit.cloud", room_name: payload.room_name,
+      participant_identity: "u_Gus", participant_name: "Gus", is_host: false, meeting_id: "mtg-live-1", consented: true,
+    }));
+
+    render(<App />);
+
+    expect(await screen.findByText("Join Live Meeting")).toBeTruthy();
+    expect(window.location.search).toContain("invite=tok123");          // not wiped by the router
+    expect(screen.getByTestId("role-notice").textContent).toContain("You are joining as a participant");
+    expect(screen.getByLabelText(/Room Code/i).value).toBe(ROOM);
+
+    fireEvent.click(screen.getByLabelText(/Explicit Recording & MoM Transcription Consent/i));
+    fireEvent.click(screen.getByRole("button", { name: /Join Live Meeting Room/i }));
+
+    await waitFor(() => expect(api.getLiveToken).toHaveBeenCalled());
+    expect(accept).toHaveBeenCalledWith("tok123");
+    expect(api.createLiveRoom).not.toHaveBeenCalled();                  // a guest never "creates" the room
+    expect(api.getLiveToken).toHaveBeenCalledWith(expect.objectContaining({ room_name: ROOM, is_host: false }));
+    await waitFor(() => expect(screen.getAllByRole("button", { name: /Leave Meeting/i }).length).toBeGreaterThan(0));
+    expect(screen.queryByRole("button", { name: /End Meeting/i })).toBeNull();
+  });
+
+  it("joins the room the invitation belongs to, even if another code was typed", async () => {
+    window.history.replaceState(null, "", "/?room=some-other-code&invite=tok123");
+    signedInAs("Gus");
+    vi.spyOn(api, "acceptInvitation").mockResolvedValue({ meeting_id: "mtg-live-1", room_name: ROOM });
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: /Join Live Meeting Room/i }));
+    await waitFor(() =>
+      expect(api.getLiveToken).toHaveBeenCalledWith(expect.objectContaining({ room_name: ROOM })));
+  });
+
+  it("switching the form to Join never requests the host role or creates the room", async () => {
+    render(
+      <MeetingFlowProvider>
+        <LiveMeeting />
+      </MeetingFlowProvider>
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Have a Room Code\? Join/i }));
+    expect(screen.getByTestId("role-notice").textContent).toContain("joining as a participant");
+    fireEvent.change(screen.getByLabelText(/Room Code/i), { target: { value: ROOM } });
+    fireEvent.click(screen.getByRole("button", { name: /Join Live Meeting Room/i }));
+
+    await waitFor(() => expect(api.getLiveToken).toHaveBeenCalled());
+    expect(api.createLiveRoom).not.toHaveBeenCalled();
+    expect(api.getLiveToken).toHaveBeenCalledWith(expect.objectContaining({ room_name: ROOM, is_host: false }));
+  });
+
+  it("explains that a room code alone is not enough when the server refuses", async () => {
+    api.getLiveToken.mockRejectedValue(Object.assign(new Error("Ask the host for an invitation to join this meeting."), { status: 403 }));
+    render(
+      <MeetingFlowProvider>
+        <LiveMeeting />
+      </MeetingFlowProvider>
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Have a Room Code\? Join/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Join Live Meeting Room/i }));
+    expect(await screen.findByText(/not a member of this meeting yet/i)).toBeTruthy();
+    expect(screen.getByText(/room code alone does not grant access/i)).toBeTruthy();
+  });
+
+  it("reports an invalid or expired invitation instead of joining", async () => {
+    window.history.replaceState(null, "", `/?room=${ROOM}&invite=expired`);
+    signedInAs("Gus");
+    vi.spyOn(api, "acceptInvitation").mockRejectedValue(
+      Object.assign(new Error("This invitation is invalid or has expired."), { status: 404 }));
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: /Join Live Meeting Room/i }));
+    expect(await screen.findByText(/invitation link is invalid or has expired/i)).toBeTruthy();
+    expect(api.getLiveToken).not.toHaveBeenCalled();
+  });
+
+  it("uses the server's role: a non-owner who tried to create is shown as participant", async () => {
+    api.getLiveToken.mockImplementation(async () => ({
+      token: "t", livekit_url: "wss://mock.livekit.cloud", room_name: ROOM, participant_identity: "u_x",
+      participant_name: "Gus", is_host: false, meeting_id: "mtg-live-1", consented: false,
+    }));
+    render(
+      <MeetingFlowProvider>
+        <LiveMeeting />
+      </MeetingFlowProvider>
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Create & Start Live Meeting Room/i }));
+    await waitFor(() => expect(screen.getAllByRole("button", { name: /Leave Meeting/i }).length).toBeGreaterThan(0));
+    expect(screen.queryByRole("button", { name: /End Meeting/i })).toBeNull();
+  });
+});

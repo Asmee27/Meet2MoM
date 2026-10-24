@@ -1470,7 +1470,9 @@ def approve_meeting_review(
 
     decisions = []
     action_items = []
-    excluded_items = []
+    excluded_items = []   # excluded by the reviewer
+    held_items = []       # not confirmed: held for review
+    rejected_items = []   # rejected by verification or the reviewer
 
     for it in items:
         if it.get("is_excluded"):
@@ -1496,43 +1498,61 @@ def approve_meeting_review(
             status_label = orig["verification"]["final"]["label"] if orig else "unverified"
             is_exportable = orig["exportable"] if orig else False
 
+        reasons = orig["verification"]["final"]["reasons"] if orig and orig.get("verification") else []
+        has_deadline = bool(it.get("deadline_resolved") or it.get("deadline_text"))
         warnings = [
-            r["message"] for r in (orig["verification"]["final"]["reasons"] if orig and orig.get("verification") else [])
+            r["message"] for r in reasons
             if r.get("severity") == "warning"
+            # A reviewer who supplied the deadline resolved this warning.
+            and not (r.get("code") == "no_deadline" and has_deadline and (is_edited or is_added))
         ]
 
-        if it["item_type"] == "decision":
-            if is_exportable:
-                decisions.append({
+        if not is_exportable:
+            # Not confirmed. A reviewer exclusion, a rejection and an item held
+            # for review are different outcomes and are reported separately.
+            if status_label == "rejected" or it.get("review_status") == "rejected":
+                rejected_items.append(it)
+            else:
+                held_items.append({
                     "claim_id": it["item_id"],
+                    "claim_type": it["item_type"],
                     "text": it["text"],
-                    "state": it.get("state") or "accepted",
-                    "speaker": spk,
-                    "timestamp": tstamp,
-                    "verification_status": status_label,
+                    "state": it.get("state"),
+                    "status": status_label if not (is_edited or is_added) else "not_accepted",
+                    "reasons": [
+                        r["message"] for r in reasons if r.get("severity") in ("review", "reject")
+                    ] or (["A decision proposal that was not accepted."] if it.get("state") not in (None, "accepted") else []),
                     "evidence_ids": evidence_ids,
-                    "warnings": warnings,
-                    "review_status": it.get("review_status"),
+                    "speaker": spk,
                 })
-            else:
-                excluded_items.append(it)
+            continue
+
+        if it["item_type"] == "decision":
+            decisions.append({
+                "claim_id": it["item_id"],
+                "text": it["text"],
+                "state": it.get("state") or "accepted",
+                "speaker": spk,
+                "timestamp": tstamp,
+                "verification_status": status_label,
+                "evidence_ids": evidence_ids,
+                "warnings": warnings,
+                "review_status": it.get("review_status"),
+            })
         elif it["item_type"] == "action":
-            if is_exportable:
-                action_items.append({
-                    "claim_id": it["item_id"],
-                    "task": it["text"],
-                    "owner": it.get("owner") or "Not assigned",
-                    "owner_type": it.get("owner_type") or "unassigned",
-                    "dueDate": it.get("deadline_resolved") or it.get("deadline_text") or "Not specified",
-                    "speaker": spk,
-                    "timestamp": tstamp,
-                    "verification_status": status_label,
-                    "evidence_ids": evidence_ids,
-                    "warnings": warnings,
-                    "review_status": it.get("review_status"),
-                })
-            else:
-                excluded_items.append(it)
+            action_items.append({
+                "claim_id": it["item_id"],
+                "task": it["text"],
+                "owner": it.get("owner") or "Not assigned",
+                "owner_type": it.get("owner_type") or "unassigned",
+                "dueDate": it.get("deadline_resolved") or it.get("deadline_text") or "Not specified",
+                "speaker": spk,
+                "timestamp": tstamp,
+                "verification_status": status_label,
+                "evidence_ids": evidence_ids,
+                "warnings": warnings,
+                "review_status": it.get("review_status"),
+            })
 
     follow_ups = [
         f"Deadline not specified for '{item['task']}'."
@@ -1550,16 +1570,18 @@ def approve_meeting_review(
         "meeting_title": draft.get("meeting_title") or "Meeting Minutes",
         "meeting_date": None,
         "duration_seconds": round(duration, 2),
-        "language": _meeting_language(storage, utterances),
+        **_meeting_language_info(storage, utterances),
         "participants": participants,
-        "summary": draft.get("summary") or build_summary(topics, decisions, action_items, len(excluded_items), extraction),
+        "summary": draft.get("summary") or build_summary(topics, decisions, action_items, len(held_items), extraction),
         "summary_method": "reviewer_approved" if draft.get("summary") else "deterministic_overview",
         "discussion_points": build_discussion_points(topics),
         "llm_discussion_summary": _llm_discussion_summary(storage, extraction, utterances),
         "decisions": decisions,
         "action_items": action_items,
-        "needs_review": [],
+        # Held items are shown as such, never silently dropped (Phase 8.1).
+        "needs_review": held_items,
         "excluded_from_mom": [{"claim_id": ex["item_id"], "text": ex["text"]} for ex in excluded_items],
+        "rejected_from_mom": [{"claim_id": r["item_id"], "text": r["text"]} for r in rejected_items],
         "follow_ups": follow_ups,
         "extraction": _extraction_block(extraction),
         "verification": {
@@ -1572,6 +1594,10 @@ def approve_meeting_review(
             "model_version": (verification_run or {}).get("model_version"),
             "confirmed_decisions": len(decisions),
             "reliable_action_items": len(action_items),
+            "decisions_with_warnings": sum(1 for d in decisions if d["warnings"]),
+            "action_items_with_warnings": sum(1 for a in action_items if a["warnings"]),
+            "held_for_review": len(held_items),
+            "rejected": len(rejected_items),
             "excluded_items": len(excluded_items),
         },
         "status": "approved",
@@ -2011,19 +2037,45 @@ def build_summary(
 # ============================================================
 
 def _meeting_language(storage: MeetingStorage, utterances) -> str | None:
+    return _meeting_language_info(storage, utterances)["language"]
+
+
+def _meeting_language_info(storage: MeetingStorage, utterances) -> dict:
+    """
+    The meeting language with its source (Phase 8.1).
+
+    language_source is "configured" when WHISPER_LANGUAGE fixed the decoding
+    language, "detected" when Whisper chose it, and None for transcripts made
+    before the source was recorded. segment_languages lists what Whisper
+    reported per utterance, so a mislabelled detection (e.g. "ml" for English
+    speech) stays visible instead of being presented as fact.
+    """
+    from app.services.transcription.language_utils import language_name
+
+    language, source = None, None
     for path in (
         storage.path_for("transcript", "frontend_transcript.json"),
         storage.root / "frontend_transcript.json",
     ):
         if path.exists():
             try:
-                language = json.loads(path.read_text(encoding="utf-8")).get("language")
+                payload = json.loads(path.read_text(encoding="utf-8"))
+                language = payload.get("language") or None
+                source = payload.get("language_source") or None
                 if language:
-                    return language
+                    break
             except (OSError, json.JSONDecodeError, AttributeError):
                 pass
     tags = [tag for u in utterances for tag in (u.lang_tags or [])]
-    return max(set(tags), key=tags.count) if tags else None
+    counts = {tag: tags.count(tag) for tag in sorted(set(tags))}
+    if not language and counts:
+        language, source = max(counts, key=counts.get), "detected"
+    return {
+        "language": language,
+        "language_name": language_name(language) if language else None,
+        "language_source": source,
+        "segment_languages": counts if len(counts) > 1 else {},
+    }
 
 
 def _llm_identity(extraction: dict) -> dict:
@@ -2174,7 +2226,7 @@ def create_mom(
         "meeting_title": "Meeting Minutes",
         "meeting_date": None,
         "duration_seconds": round(duration, 2),
-        "language": _meeting_language(storage, utterances),
+        **_meeting_language_info(storage, utterances),
         "participants": participants,
         "summary": build_summary(topics, decisions, action_items, len(needs_review), extraction),
         "summary_method": "deterministic_overview",
@@ -2244,6 +2296,25 @@ def safe_pdf(
             "&gt;",
         )
     )
+
+
+def format_language(mom: dict) -> str:
+    """'English (en)' plus how it was chosen; 'Not specified' when unknown."""
+    code = mom.get("language")
+    if not code:
+        return "Not specified"
+    name = mom.get("language_name")
+    if not name:
+        from app.services.transcription.language_utils import language_name
+
+        name = language_name(code)
+    label = f"{name} ({code})" if name and not name.startswith("Other") else str(code)
+    source = mom.get("language_source")
+    if source == "configured":
+        return f"{label}, set"
+    if source == "detected":
+        return f"{label}, detected"
+    return label
 
 
 def format_duration(
@@ -2387,13 +2458,13 @@ def build_pdf(
     decisions = mom.get("decisions") or []
     actions = mom.get("action_items") or []
     verification = mom.get("verification") or {}
-    language = safe_pdf(mom.get("language") or "Not specified")
+    language = safe_pdf(format_language(mom))
 
     # KPI cards
     metrics = [
         ("DURATION", format_duration(mom.get("duration_seconds"))),
         ("LANGUAGE", language),
-        ("PARTICIPANTS", f"{len(participants)} speakers" if participants else "Not specified"),
+        ("SPEAKERS", f"{len(participants)} speaker{'' if len(participants) == 1 else 's'}" if participants else "Not specified"),
         ("DECISIONS", f"{len(decisions)} confirmed"),
     ]
     metric_cells = []
@@ -2417,6 +2488,12 @@ def build_pdf(
 
     # Participants
     participant_text = "  •  ".join(safe_pdf(x) for x in participants) or "Not specified"
+    if participants and all(re.fullmatch(r"SPEAKER_\d+", str(p)) for p in participants):
+        # Diarization labels from a mixed recording are not people's names.
+        participant_text += (
+            "<br/><font color='#B45309' size='7.5'>Unnamed speaker labels from diarization of a mixed "
+            "recording; they are not linked to accounts, and attribution may be uncertain.</font>"
+        )
     participant_box = Table([[
         Paragraph("<b>Participants</b>", small_style),
         Paragraph(participant_text, small_style),
@@ -2491,7 +2568,10 @@ def build_pdf(
     llm_summary = mom.get("llm_discussion_summary") or {}
     if llm_summary.get("points"):
         story.append(Paragraph("Discussion Summary (LLM, cited, not verified)", heading_style))
-        story.append(Paragraph(safe_pdf(llm_summary.get("note") or ""), small_style))
+        story.append(Paragraph(safe_pdf(
+            (llm_summary.get("note") or "")
+            + " It reports what was said; only the confirmed sections below are decisions or commitments of record."
+        ), small_style))
         for point in llm_summary["points"]:
             refs = ", ".join(point.get("evidence") or [])
             span = f"{format_duration(point.get('start'))}–{format_duration(point.get('end'))}" if point.get("start") is not None else ""
@@ -2585,20 +2665,31 @@ def build_pdf(
         ]))
         story.append(action_table)
     else:
-        empty_action = Table([[
-            Paragraph("✓", ParagraphStyle(
-                "NoActionCheck", parent=body_style,
-                fontName="Helvetica-Bold", fontSize=12, textColor=GREEN,
-            )),
-            Paragraph(
+        held_actions = [x for x in (mom.get("needs_review") or []) if x.get("claim_type") == "action"]
+        if held_actions:
+            # Not "nothing found": candidates exist but are not confirmed.
+            empty_mark, empty_color, empty_bg, empty_border = "!", AMBER, AMBER_LIGHT, colors.HexColor("#FDE68A")
+            empty_text = (
+                "<b>No action items are confirmed.</b><br/>"
+                f"<font color='#475569'>{len(held_actions)} candidate action item(s) are held for review "
+                "(listed below) and are not tasks of record.</font>"
+            )
+        else:
+            empty_mark, empty_color, empty_bg, empty_border = "✓", GREEN, GREEN_LIGHT, colors.HexColor("#A7F3D0")
+            empty_text = (
                 "<b>No reliable action items detected.</b><br/>"
-                "<font color='#475569'>No sufficiently supported task assignment was included in the verified MoM.</font>",
-                body_style,
-            ),
+                "<font color='#475569'>No sufficiently supported task assignment was included in the verified MoM.</font>"
+            )
+        empty_action = Table([[
+            Paragraph(empty_mark, ParagraphStyle(
+                "NoActionCheck", parent=body_style,
+                fontName="Helvetica-Bold", fontSize=12, textColor=empty_color,
+            )),
+            Paragraph(empty_text, body_style),
         ]], colWidths=[10 * mm, 149 * mm])
         empty_action.setStyle(TableStyle([
-            ("BACKGROUND", (0, 0), (-1, -1), GREEN_LIGHT),
-            ("BOX", (0, 0), (-1, -1), 0.6, colors.HexColor("#A7F3D0")),
+            ("BACKGROUND", (0, 0), (-1, -1), empty_bg),
+            ("BOX", (0, 0), (-1, -1), 0.6, empty_border),
             ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
             ("LEFTPADDING", (0, 0), (-1, -1), 7),
             ("RIGHTPADDING", (0, 0), (-1, -1), 7),

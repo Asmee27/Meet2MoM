@@ -318,8 +318,12 @@ export async function createLiveRoom(payload = {}) {
   } catch {
     throw new Error(`Cannot connect to backend server at ${API_BASE_URL}. Please ensure the FastAPI backend is running.`);
   }
-  const data = await res.json();
-  if (!res.ok) throw new Error(data?.detail || "Failed to create LiveKit room.");
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const error = new Error(data?.detail || "Failed to create LiveKit room.");
+    error.status = res.status;
+    throw error;
+  }
   return data;
 }
 
@@ -334,8 +338,12 @@ export async function getLiveToken(payload) {
   } catch {
     throw new Error(`Cannot connect to backend server at ${API_BASE_URL}. Please ensure the FastAPI backend is running.`);
   }
-  const data = await res.json();
-  if (!res.ok) throw new Error(data?.detail || "Failed to generate LiveKit join token.");
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const error = new Error(data?.detail || "Failed to generate LiveKit join token.");
+    error.status = res.status;
+    throw error;
+  }
   return data;
 }
 

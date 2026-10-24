@@ -3,7 +3,7 @@ import "../components/ClaimVerification.css";
 import CommitmentPanel from "../components/CommitmentPanel";
 import { useAuth } from "../components/AuthGate";
 import { Alert, Badge, Button, Icon, SkeletonRows } from "../components/ui";
-import { formatDateTime, formatDuration, formatVersion } from "../format";
+import { formatDateTime, formatDuration, formatLanguage, formatVersion } from "../format";
 
 function Warnings({ items }) {
   if (!items || items.length === 0) return null;
@@ -101,6 +101,7 @@ export default function Summary() {
   if (currentStep !== 5) return null;
 
   const isApproved = reviewData?.draft_status === "approved";
+  const heldActions = (momData?.needs_review || []).filter((x) => x.claim_type === "action").length;
 
   return (
     <main className="page page--workspace minutes-page" aria-labelledby="minutes-title">
@@ -150,7 +151,15 @@ export default function Summary() {
               </div>
               <div>
                 <dt>Language</dt>
-                <dd>{momData.language ? momData.language.toUpperCase() : "Not specified"}</dd>
+                <dd>
+                  {formatLanguage(momData)}
+                  {momData.segment_languages && Object.keys(momData.segment_languages).length > 1 && (
+                    <span className="minutes-sub" data-testid="language-disagreement">
+                      Segments were detected as{" "}
+                      {Object.entries(momData.segment_languages).map(([code, n]) => `${code} (${n})`).join(", ")}.
+                    </span>
+                  )}
+                </dd>
               </div>
               <div>
                 <dt>Date</dt>
@@ -158,8 +167,13 @@ export default function Summary() {
               </div>
               {Array.isArray(momData.participants) && momData.participants.length > 0 && (
                 <div>
-                  <dt>Participants</dt>
-                  <dd>{momData.participants.join(", ")}</dd>
+                  <dt>Speakers</dt>
+                  <dd>
+                    {momData.participants.join(", ")}
+                    {momData.participants.every((p) => /^SPEAKER_\d+$/.test(p)) && (
+                      <span className="minutes-sub">Unnamed diarization labels, not linked to accounts.</span>
+                    )}
+                  </dd>
                 </div>
               )}
             </dl>
@@ -229,6 +243,11 @@ export default function Summary() {
                     </tbody>
                   </table>
                 </div>
+              ) : heldActions > 0 ? (
+                <p className="empty-state-text minutes-held-note" data-testid="actions-held-note">
+                  No action items are confirmed. {heldActions} candidate action item{heldActions === 1 ? " is" : "s are"} held
+                  for review below and {heldActions === 1 ? "is" : "are"} not a task of record.
+                </p>
               ) : (
                 <p className="empty-state-text">No confirmed action items recorded.</p>
               )}
@@ -277,7 +296,10 @@ export default function Summary() {
             {momData.llm_discussion_summary?.points?.length > 0 && (
               <section className="minutes-section">
                 <h4>Discussion Summary (LLM, cited, not verified)</h4>
-                <p className="empty-state-text">{momData.llm_discussion_summary.note}</p>
+                <p className="empty-state-text">
+                  {momData.llm_discussion_summary.note} It reports what was said; only the confirmed sections are
+                  decisions or commitments of record.
+                </p>
                 <ol className="minutes-list">
                   {momData.llm_discussion_summary.points.map((point, index) => (
                     <li key={`${index}-${point.evidence?.[0]}`}>

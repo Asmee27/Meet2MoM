@@ -31,6 +31,18 @@ export function formatClock(seconds) {
   return `${m}:${String(s).padStart(2, "0")}`;
 }
 
+// "English (en), set" / "Malayalam (ml), detected" from the minutes payload.
+// The source is shown only when the pipeline recorded it.
+export function formatLanguage(mom) {
+  const code = mom?.language;
+  if (!code) return "Not specified";
+  const name = mom.language_name && !mom.language_name.startsWith("Other") ? mom.language_name : null;
+  const label = name ? `${name} (${code})` : code;
+  if (mom.language_source === "configured") return `${label}, set`;
+  if (mom.language_source === "detected") return `${label}, detected`;
+  return label;
+}
+
 // Approved snapshot versions are stored as numbers (1, 2, …).
 export function formatVersion(version) {
   if (typeof version === "number") return `v${version}`;

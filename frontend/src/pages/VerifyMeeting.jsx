@@ -10,7 +10,7 @@ import { getAudioUrl } from "../services/api";
 import "../components/ClaimVerification.css";
 import TranscriptPanel from "../components/TranscriptPanel";
 import { useAuth } from "../components/AuthGate";
-import { Alert, Button } from "../components/ui";
+import { Alert, Button, Icon } from "../components/ui";
 import { formatDateTime, formatVersion } from "../format";
 
 const CONFIRMED = ["verified", "verified_with_warning"];
@@ -176,10 +176,17 @@ function ReviewerBar({
   isApproving,
   approveError,
   blockedReason = "",
+  heldCount = 0,
 }) {
   return (
     <div className="reviewer-bar" data-testid="reviewer-bar">
       <p className="reviewer-bar-title">Approve &amp; lock minutes</p>
+      {heldCount > 0 && !blockedReason && (
+        <p className="reviewer-bar-note">
+          {heldCount} held item{heldCount === 1 ? "" : "s"} will appear in the minutes as held for review, not as
+          confirmed.
+        </p>
+      )}
       <div className="reviewer-bar-row">
         <div className="reviewer-bar-field">
           <label>Reviewer name</label>
@@ -710,13 +717,31 @@ export default function VerifyMeeting() {
 
   return (
     <main className="page page--workspace review-workspace" aria-labelledby="review-title">
-      <h2 className="review-title" id="review-title">Review claims and their evidence</h2>
-      <p className="page-description">
-        Only confirmed claims go into the minutes. Items that need review
-        stay out until their evidence is fixed; when the verifier found a
-        better evidence span you can accept or reject it here.
-        {isApproved ? " This review has been approved and is locked." : " Edit items and approve below."}
-      </p>
+      <div className="review-head">
+        <div className="review-head__text">
+          <h2 className="review-title" id="review-title">Review claims and their evidence</h2>
+          <p className="review-head__lead">
+            Only confirmed claims go into the minutes; held items stay out until a reviewer resolves them.
+            {isApproved ? " This review is approved and locked." : ""}
+          </p>
+        </div>
+        <ul className="review-counts" aria-label="Review status">
+          <li className="review-count review-count--held">
+            <Icon name="clock" /> <strong>{enrichedGroups.review.length}</strong> held
+          </li>
+          <li className="review-count review-count--ok">
+            <Icon name="checkCircle" /> <strong>{enrichedGroups.confirmed.length}</strong> confirmed
+          </li>
+          <li className="review-count review-count--rejected">
+            <Icon name="error" /> <strong>{enrichedGroups.rejected.length}</strong> rejected
+          </li>
+          {(verificationData?.transcript?.corrected_utterances?.length || 0) > 0 && (
+            <li className="review-count review-count--edited">
+              <Icon name="pencil" /> <strong>{verificationData.transcript.corrected_utterances.length}</strong> corrected
+            </li>
+          )}
+        </ul>
+      </div>
 
       <RunNotice verificationData={verificationData} />
 
@@ -927,26 +952,27 @@ export default function VerifyMeeting() {
         loadAuditLog={loadAuditLog}
       />
 
-      {/* ---- REVIEWER BAR (only when not approved) ---- */}
-      {!isApproved && (
-        <ReviewerBar
-          reviewerName={reviewerName}
-          setReviewerName={setReviewerName}
-          approvalNotes={approvalNotes}
-          setApprovalNotes={setApprovalNotes}
-          onApprove={handleApprove}
-          isApproving={isApproving}
-          approveError={approveError}
-          blockedReason={
-            staleCount > 0
-              ? "Run verification again before approving: the transcript was corrected after the last check."
-              : ""
-          }
-        />
-      )}
       </div>
 
-      <aside className="review-layout__transcript" aria-label="Transcript">
+      <aside className="review-layout__transcript" aria-label="Approval and transcript">
+        {/* ---- REVIEWER BAR (only when not approved): beside the claims, never over them ---- */}
+        {!isApproved && (
+          <ReviewerBar
+            reviewerName={reviewerName}
+            setReviewerName={setReviewerName}
+            approvalNotes={approvalNotes}
+            setApprovalNotes={setApprovalNotes}
+            onApprove={handleApprove}
+            isApproving={isApproving}
+            approveError={approveError}
+            heldCount={enrichedGroups.review.length}
+            blockedReason={
+              staleCount > 0
+                ? "Run verification again before approving: the transcript was corrected after the last check."
+                : ""
+            }
+          />
+        )}
         {backendFileId && (
           <TranscriptPanel
             ref={transcriptRef}

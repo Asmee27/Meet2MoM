@@ -88,11 +88,17 @@ function MeetingFlow() {
   const pendingStep = useRef(stepFromSlug(initial.current.step));
   const openManualReview = useRef(false);
 
-  // Live-meeting invite links (?room=…) and ?view= links open their screen.
+  // Live-meeting invite links (?room=…&invite=…) and ?view= links open their
+  // screen. Until that mode is applied the URL must not be rewritten: an
+  // early sync would drop ?room and ?invite before the live room reads them.
+  const [routeApplied, setRouteApplied] = useState(
+    () => !(initial.current.room || initial.current.view === "live" || initial.current.view === "upload")
+  );
   useEffect(() => {
     const route = initial.current;
     if (route.room || route.view === "live") setMeetingMode("live");
     else if (route.view === "upload") setMeetingMode("recorded");
+    setRouteApplied(true);
   }, [setMeetingMode]);
 
   useEffect(() => {
@@ -136,7 +142,7 @@ function MeetingFlow() {
   // Reflect the current screen in the URL (push, so Back/Forward work).
   useEffect(() => {
     // While a ?meeting=…&step=… link is being restored, keep its URL.
-    if (booting || pendingStep.current || openManualReview.current) return;
+    if (!routeApplied || booting || pendingStep.current || openManualReview.current) return;
     const search = routeSearch({ page, meetingMode, currentStep, meetingId: backendFileId });
     if (search !== window.location.search) {
       // A bare ?meeting= link only gains its step: no extra history entry.
@@ -144,7 +150,7 @@ function MeetingFlow() {
       const sameEntry = current.meeting && current.meeting === backendFileId && !current.step;
       window.history[sameEntry ? "replaceState" : "pushState"](null, "", `${window.location.pathname}${search}`);
     }
-  }, [booting, page, meetingMode, currentStep, backendFileId]);
+  }, [routeApplied, booting, page, meetingMode, currentStep, backendFileId]);
 
   // Browser Back/Forward: move the app to the screen in the URL.
   useEffect(() => {
