@@ -131,6 +131,10 @@ def _semantic_payload(result: Any, cited_ids: list[str], has_cited_span: bool) -
         "x_core": round(result.x_core, 4),
         "x_core_utt_ids": list(result.x_union_utt_ids),
         "x_core_provenance": result.x_union_provenance,
+        # Contradiction from retrieved utterances about another subject; shown
+        # for transparency, not used to hold the claim.
+        "x_off_topic": round(getattr(result, "x_off_topic", 0.0), 4),
+        "x_off_topic_utt_ids": list(getattr(result, "x_off_topic_utt_ids", [])),
         "content_coverage": round(result.content_coverage, 4),
         "per_hypothesis": {k: round(v, 4) for k, v in result.per_hypothesis.items()},
         "proposed_utt_ids": proposed,
