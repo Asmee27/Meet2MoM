@@ -1,6 +1,7 @@
 import { useMeetingFlow } from "../context/MeetingFlowContext";
 import "../components/ClaimVerification.css";
 import CommitmentPanel from "../components/CommitmentPanel";
+import MinutesEmailPanel from "../components/MinutesEmailPanel";
 import { useAuth } from "../components/AuthGate";
 import { Alert, Badge, Button, Icon, SkeletonRows } from "../components/ui";
 import { formatDateTime, formatDuration, formatLanguage, formatVersion } from "../format";
@@ -82,7 +83,7 @@ function ExportBar({ reviewData, exportStatus, downloadMeetingPdf, isDownloading
 }
 
 export default function Summary() {
-  const { user } = useAuth();
+  const { user, authRequired } = useAuth() || {};
   const {
     currentStep,
     backendFileId,
@@ -134,6 +135,15 @@ export default function Summary() {
             isDownloadingJson={isDownloadingJson}
             jsonExportError={jsonExportError}
           />
+
+          {/* Phase 8.4: email the exact approved version (sign-in only). */}
+          {isApproved && authRequired && backendFileId && (
+            <MinutesEmailPanel
+              key={`${backendFileId}-${reviewData?.latest_approved_snapshot?.version || 0}`}
+              meetingId={backendFileId}
+              shownVersion={reviewData?.latest_approved_snapshot?.version}
+            />
+          )}
 
           {momData.extraction?.fallback_note && (
             <Alert tone="warning" title="Extraction fallback" data-testid="fallback-alert">

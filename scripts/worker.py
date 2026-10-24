@@ -120,6 +120,13 @@ def run_worker_loop(
 
     worker_id = f"worker_{os.getpid()}"
 
+    # Phase 8.4: with EMAIL_DISPATCH=worker, queued email is sent from here,
+    # on its own thread so a long pipeline run never delays it.
+    if not run_once:
+        from app.services.email.outbox import start_background_dispatcher
+
+        start_background_dispatcher(process="worker")
+
     while not _stop_event.is_set():
         job = None
         try:

@@ -163,7 +163,7 @@ def init_db(db_path: Optional[Path | str] = None) -> None:
 # Migrations only ADD tables/indexes; they never rewrite or drop existing
 # data. Each step is idempotent (IF NOT EXISTS) and bumps user_version.
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 _MIGRATION_V1 = """
 CREATE TABLE IF NOT EXISTS extraction_runs (
@@ -535,6 +535,62 @@ CREATE TABLE IF NOT EXISTS meeting_invitees (
 CREATE INDEX IF NOT EXISTS idx_meeting_invitees_token ON meeting_invitees(token_hash);
 """
 
+
+# Phase 8.4: transactional email. email_outbox is the queue and the delivery
+# record: one row per message, unique per idempotency key, so a repeated
+# request never queues the same email twice. Rows hold no link tokens; links
+# are issued when the message is sent and only their hashes are stored.
+# email_events keeps the provider's delivery events per message.
+_MIGRATION_V9 = """
+CREATE TABLE IF NOT EXISTS email_outbox (
+    outbox_id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    idempotency_key      TEXT NOT NULL UNIQUE,
+    kind                 TEXT NOT NULL CHECK (kind IN ('invitation', 'minutes')),
+    meeting_id           TEXT NOT NULL,
+    recipient_email      TEXT NOT NULL,
+    recipient_name       TEXT,
+    recipient_user_id    TEXT,
+    invitee_id           INTEGER,
+    minutes_version      INTEGER,
+    attach_pdf           INTEGER NOT NULL DEFAULT 0,
+    status               TEXT NOT NULL,
+    provider             TEXT,
+    provider_message_id  TEXT,
+    attempts             INTEGER NOT NULL DEFAULT 0,
+    next_attempt_at      TEXT,
+    last_error           TEXT,
+    requested_by         TEXT,
+    created_at           TEXT NOT NULL,
+    updated_at           TEXT NOT NULL,
+    claimed_at           TEXT,
+    sent_at              TEXT,
+    delivered_at         TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_email_outbox_due ON email_outbox(status, next_attempt_at);
+CREATE INDEX IF NOT EXISTS idx_email_outbox_meeting ON email_outbox(meeting_id, kind);
+CREATE INDEX IF NOT EXISTS idx_email_outbox_message ON email_outbox(provider_message_id);
+
+CREATE TABLE IF NOT EXISTS email_events (
+    event_id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    outbox_id     INTEGER NOT NULL,
+    event         TEXT NOT NULL,
+    reason        TEXT,
+    event_ts      TEXT,
+    received_at   TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_email_events_outbox ON email_events(outbox_id);
+"""
+
+
+def _add_column(conn: sqlite3.Connection, table: str, column_def: str) -> None:
+    try:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column_def}")
+    except sqlite3.OperationalError:
+        pass
+
+
 def _migrate(conn: sqlite3.Connection) -> None:
     current = conn.execute("PRAGMA user_version").fetchone()[0]
     if current < 1:
@@ -572,6 +628,18 @@ def _migrate(conn: sqlite3.Connection) -> None:
     if current < 8:
         conn.executescript(_MIGRATION_V8)
         conn.execute("PRAGMA user_version = 8")
+        current = 8
+    if current < 9:
+        conn.executescript(_MIGRATION_V9)
+        # An invitation token can belong to one invitee and one channel
+        # ("copy" link or "email"), so re-issuing one never breaks the other.
+        _add_column(conn, "meeting_invitations", "invitee_id INTEGER")
+        _add_column(conn, "meeting_invitations", "channel TEXT")
+        # An account whose email differs from the invited address waits here
+        # until the host approves it (never treated as the same person).
+        _add_column(conn, "meeting_invitees", "approval_user_id TEXT")
+        _add_column(conn, "meeting_invitees", "approval_requested_at TEXT")
+        conn.execute("PRAGMA user_version = 9")
 
 
 def get_schema_version(db_path: Optional[Path | str] = None) -> int:
@@ -2914,12 +2982,16 @@ def get_member_meeting_ids(user_id: str, db_path: Optional[Path | str] = None) -
 
 
 def create_invitation(token_hash: str, meeting_id: str, created_by: str, expires_at: str,
+                      invitee_id: Optional[int] = None, channel: Optional[str] = None,
                       db_path: Optional[Path | str] = None) -> None:
     with get_conn(db_path) as conn:
+        if invitee_id is not None and channel:
+            # One live token per invitee and channel: a new one replaces the old.
+            conn.execute("DELETE FROM meeting_invitations WHERE invitee_id = ? AND channel = ?", (invitee_id, channel))
         conn.execute(
-            "INSERT INTO meeting_invitations (token_hash, meeting_id, created_by, created_at, expires_at) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (token_hash, meeting_id, created_by, _now_iso(), expires_at),
+            "INSERT INTO meeting_invitations (token_hash, meeting_id, created_by, created_at, expires_at, "
+            "invitee_id, channel) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (token_hash, meeting_id, created_by, _now_iso(), expires_at, invitee_id, channel),
         )
 
 
@@ -3073,18 +3145,229 @@ def revoke_invitee(invitee_id: int, db_path: Optional[Path | str] = None) -> Non
         row = conn.execute("SELECT token_hash FROM meeting_invitees WHERE invitee_id = ?", (invitee_id,)).fetchone()
         if row and row["token_hash"]:
             conn.execute("DELETE FROM meeting_invitations WHERE token_hash = ?", (row["token_hash"],))
-        conn.execute("UPDATE meeting_invitees SET status = 'revoked', token_hash = NULL, updated_at = ? "
-                     "WHERE invitee_id = ?", (_now_iso(), invitee_id))
+        conn.execute("DELETE FROM meeting_invitations WHERE invitee_id = ?", (invitee_id,))
+        conn.execute("UPDATE meeting_invitees SET status = 'revoked', token_hash = NULL, approval_user_id = NULL, "
+                     "approval_requested_at = NULL, updated_at = ? WHERE invitee_id = ?", (_now_iso(), invitee_id))
 
 
-def mark_invitee_accepted(token_hash: str, user_id: str, db_path: Optional[Path | str] = None) -> None:
-    """Record which account opened a tracked invitation link (no effect on plain invitations)."""
+def get_invitee_for_token(token_hash: str, db_path: Optional[Path | str] = None) -> Optional[Dict[str, Any]]:
+    """The scheduled-meeting invitee a token belongs to (copy or email link), or None for plain invitations."""
+    with get_conn(db_path) as conn:
+        row = conn.execute(
+            """
+            SELECT i.* FROM meeting_invitees i
+            WHERE i.token_hash = ?
+               OR i.invitee_id = (SELECT invitee_id FROM meeting_invitations WHERE token_hash = ?)
+            """,
+            (token_hash, token_hash),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def mark_invitee_accepted(invitee_id: int, user_id: str, db_path: Optional[Path | str] = None) -> None:
+    """Record which account accepted a tracked invitation."""
     with get_conn(db_path) as conn:
         conn.execute(
-            "UPDATE meeting_invitees SET status = 'accepted', accepted_user_id = ?, updated_at = ? "
-            "WHERE token_hash = ? AND status = 'pending'",
-            (user_id, _now_iso(), token_hash),
+            "UPDATE meeting_invitees SET status = 'accepted', accepted_user_id = ?, approval_user_id = NULL, "
+            "approval_requested_at = NULL, updated_at = ? WHERE invitee_id = ? AND status = 'pending'",
+            (user_id, _now_iso(), invitee_id),
         )
+
+
+def request_invitee_approval(invitee_id: int, user_id: str, db_path: Optional[Path | str] = None) -> None:
+    """An account with a different email opened the link; it waits for the host."""
+    now = _now_iso()
+    with get_conn(db_path) as conn:
+        conn.execute(
+            "UPDATE meeting_invitees SET approval_user_id = ?, approval_requested_at = ?, updated_at = ? "
+            "WHERE invitee_id = ? AND status = 'pending'",
+            (user_id, now, now, invitee_id),
+        )
+
+
+def clear_invitee_approval(invitee_id: int, db_path: Optional[Path | str] = None) -> None:
+    with get_conn(db_path) as conn:
+        conn.execute(
+            "UPDATE meeting_invitees SET approval_user_id = NULL, approval_requested_at = NULL, updated_at = ? "
+            "WHERE invitee_id = ?",
+            (_now_iso(), invitee_id),
+        )
+
+
+# ---------------------------------------------------------------------------
+# Email outbox (Phase 8.4)
+# ---------------------------------------------------------------------------
+
+EMAIL_ACTIVE_STATUSES = ("queued", "sending")
+
+
+def enqueue_email(*, idempotency_key: str, kind: str, meeting_id: str, recipient_email: str,
+                  recipient_name: Optional[str] = None, recipient_user_id: Optional[str] = None,
+                  invitee_id: Optional[int] = None, minutes_version: Optional[int] = None,
+                  attach_pdf: bool = False, requested_by: Optional[str] = None,
+                  db_path: Optional[Path | str] = None) -> tuple[Dict[str, Any], bool]:
+    """Queue one message. Returns (row, created); an existing key returns its row unchanged."""
+    now = _now_iso()
+    with get_conn(db_path) as conn:
+        cursor = conn.execute(
+            """
+            INSERT OR IGNORE INTO email_outbox (idempotency_key, kind, meeting_id, recipient_email, recipient_name,
+                recipient_user_id, invitee_id, minutes_version, attach_pdf, status, next_attempt_at,
+                requested_by, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?)
+            """,
+            (idempotency_key, kind, meeting_id, recipient_email, recipient_name, recipient_user_id, invitee_id,
+             minutes_version, int(bool(attach_pdf)), now, requested_by, now, now),
+        )
+        created = bool(cursor.rowcount)
+        row = conn.execute("SELECT * FROM email_outbox WHERE idempotency_key = ?", (idempotency_key,)).fetchone()
+    return dict(row), created
+
+
+def get_email(outbox_id: int, db_path: Optional[Path | str] = None) -> Optional[Dict[str, Any]]:
+    with get_conn(db_path) as conn:
+        row = conn.execute("SELECT * FROM email_outbox WHERE outbox_id = ?", (outbox_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def list_emails(meeting_id: str, kind: Optional[str] = None,
+                db_path: Optional[Path | str] = None) -> List[Dict[str, Any]]:
+    query = "SELECT * FROM email_outbox WHERE meeting_id = ?"
+    params: list = [meeting_id]
+    if kind:
+        query += " AND kind = ?"
+        params.append(kind)
+    with get_conn(db_path) as conn:
+        rows = conn.execute(query + " ORDER BY outbox_id", params).fetchall()
+    return [dict(r) for r in rows]
+
+
+def latest_invitation_email(invitee_id: int, db_path: Optional[Path | str] = None) -> Optional[Dict[str, Any]]:
+    with get_conn(db_path) as conn:
+        row = conn.execute(
+            "SELECT * FROM email_outbox WHERE kind = 'invitation' AND invitee_id = ? ORDER BY outbox_id DESC LIMIT 1",
+            (invitee_id,),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def count_invitation_emails(invitee_id: int, db_path: Optional[Path | str] = None) -> int:
+    with get_conn(db_path) as conn:
+        return int(conn.execute(
+            "SELECT COUNT(*) FROM email_outbox WHERE kind = 'invitation' AND invitee_id = ?", (invitee_id,),
+        ).fetchone()[0])
+
+
+def claim_due_emails(now_iso: str, limit: int = 20, db_path: Optional[Path | str] = None) -> List[Dict[str, Any]]:
+    """Move due queued messages to 'sending'. A row is claimed by one dispatcher only."""
+    claimed = []
+    with get_conn(db_path) as conn:
+        ids = [r[0] for r in conn.execute(
+            "SELECT outbox_id FROM email_outbox WHERE status = 'queued' AND (next_attempt_at IS NULL "
+            "OR next_attempt_at <= ?) ORDER BY outbox_id LIMIT ?",
+            (now_iso, limit),
+        )]
+        for outbox_id in ids:
+            cursor = conn.execute(
+                "UPDATE email_outbox SET status = 'sending', claimed_at = ?, updated_at = ? "
+                "WHERE outbox_id = ? AND status = 'queued'",
+                (now_iso, now_iso, outbox_id),
+            )
+            if cursor.rowcount:
+                claimed.append(dict(conn.execute("SELECT * FROM email_outbox WHERE outbox_id = ?",
+                                                 (outbox_id,)).fetchone()))
+    return claimed
+
+
+_OUTBOX_FIELDS = ("status", "provider", "provider_message_id", "attempts", "next_attempt_at", "last_error",
+                  "sent_at", "delivered_at", "claimed_at")
+
+
+def update_email(outbox_id: int, only_if_status: Optional[tuple] = None,
+                 db_path: Optional[Path | str] = None, **fields: Any) -> bool:
+    changes = {k: v for k, v in fields.items() if k in _OUTBOX_FIELDS}
+    changes["updated_at"] = _now_iso()
+    sets = ", ".join(f"{k} = ?" for k in changes)
+    query = f"UPDATE email_outbox SET {sets} WHERE outbox_id = ?"
+    params: list = [*changes.values(), outbox_id]
+    if only_if_status:
+        query += f" AND status IN ({','.join('?' * len(only_if_status))})"
+        params.extend(only_if_status)
+    with get_conn(db_path) as conn:
+        return bool(conn.execute(query, params).rowcount)
+
+
+def cancel_queued_emails(meeting_id: str, invitee_id: Optional[int] = None, reason: str = "",
+                         db_path: Optional[Path | str] = None) -> int:
+    query = ("UPDATE email_outbox SET status = 'cancelled', last_error = ?, updated_at = ? "
+             "WHERE meeting_id = ? AND kind = 'invitation' AND status = 'queued'")
+    params: list = [reason, _now_iso(), meeting_id]
+    if invitee_id is not None:
+        query += " AND invitee_id = ?"
+        params.append(invitee_id)
+    with get_conn(db_path) as conn:
+        return conn.execute(query, params).rowcount
+
+
+def fail_stale_sending_emails(before_iso: str, db_path: Optional[Path | str] = None) -> int:
+    """Messages left 'sending' by a stopped process: the provider may or may not have accepted them."""
+    with get_conn(db_path) as conn:
+        return conn.execute(
+            "UPDATE email_outbox SET status = 'failed', last_error = ?, updated_at = ? "
+            "WHERE status = 'sending' AND claimed_at < ?",
+            ("Sending was interrupted; the provider may or may not have accepted this message. "
+             "Check before retrying.", _now_iso(), before_iso),
+        ).rowcount
+
+
+def find_email_by_message_id(message_id: str, db_path: Optional[Path | str] = None) -> Optional[Dict[str, Any]]:
+    with get_conn(db_path) as conn:
+        row = conn.execute("SELECT * FROM email_outbox WHERE provider_message_id = ?", (message_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def record_email_event(outbox_id: int, event: str, reason: Optional[str], event_ts: Optional[str],
+                       db_path: Optional[Path | str] = None) -> None:
+    with get_conn(db_path) as conn:
+        conn.execute(
+            "INSERT INTO email_events (outbox_id, event, reason, event_ts, received_at) VALUES (?, ?, ?, ?, ?)",
+            (outbox_id, event, (reason or "")[:300] or None, event_ts, _now_iso()),
+        )
+
+
+def list_email_events(outbox_ids: List[int], db_path: Optional[Path | str] = None) -> Dict[int, List[Dict[str, Any]]]:
+    if not outbox_ids:
+        return {}
+    marks = ",".join("?" * len(outbox_ids))
+    with get_conn(db_path) as conn:
+        rows = conn.execute(f"SELECT * FROM email_events WHERE outbox_id IN ({marks}) ORDER BY event_id",
+                            outbox_ids).fetchall()
+    out: Dict[int, List[Dict[str, Any]]] = {}
+    for r in rows:
+        out.setdefault(r["outbox_id"], []).append(dict(r))
+    return out
+
+
+def get_approved_snapshot_version(meeting_id: str, version: int,
+                                  db_path: Optional[Path | str] = None) -> Optional[Dict[str, Any]]:
+    with get_conn(db_path) as conn:
+        row = conn.execute("SELECT * FROM approved_snapshots WHERE meeting_id = ? AND version = ?",
+                           (meeting_id, version)).fetchone()
+    if not row:
+        return None
+    res = dict(row)
+    res["mom_payload"] = json.loads(res["mom_payload"]) if res["mom_payload"] else {}
+    return res
+
+
+def list_meeting_members(meeting_id: str, db_path: Optional[Path | str] = None) -> List[Dict[str, Any]]:
+    with get_conn(db_path) as conn:
+        rows = conn.execute(
+            "SELECT m.user_id, m.role, u.email, u.display_name FROM meeting_members m "
+            "JOIN users u ON u.user_id = m.user_id WHERE m.meeting_id = ? ORDER BY m.added_at",
+            (meeting_id,),
+        ).fetchall()
+    return [dict(r) for r in rows]
 
 
 def update_scheduled_meeting(meeting_id: str, fields: Dict[str, Any], db_path: Optional[Path | str] = None) -> bool:
@@ -3141,3 +3424,8 @@ def remove_meeting_member(meeting_id: str, user_id: str, db_path: Optional[Path 
             (meeting_id, user_id),
         )
 
+
+
+def delete_invitation_token(token_hash: str, db_path: Optional[Path | str] = None) -> None:
+    with get_conn(db_path) as conn:
+        conn.execute("DELETE FROM meeting_invitations WHERE token_hash = ?", (token_hash,))

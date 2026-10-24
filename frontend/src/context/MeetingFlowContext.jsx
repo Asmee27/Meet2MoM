@@ -22,6 +22,7 @@ import {
   verifyMeeting,
   getClaims,
   correctTranscriptUtterance,
+  acceptInvitation,
 } from "../services/api";
 
 const MeetingFlowContext = createContext(null);
@@ -211,10 +212,28 @@ export function MeetingFlowProvider({ children }) {
   useEffect(() => {
     if (initialLinkLoaded.current) return;
     initialLinkLoaded.current = true;
-    const existingMeetingId = new URLSearchParams(window.location.search).get(
-      "meeting"
-    );
-    if (existingMeetingId) {
+    const params = new URLSearchParams(window.location.search);
+    const existingMeetingId = params.get("meeting");
+    const invite = params.get("invite");
+    if (existingMeetingId && invite) {
+      // Phase 8.4: an emailed minutes link for someone invited but not yet a
+      // member. Accept the invitation (the server checks the signed-in email
+      // and the meeting) before loading; a refusal is shown, never bypassed.
+      acceptInvitation(invite)
+        .then((accepted) => {
+          if (accepted?.meeting_id !== existingMeetingId) {
+            throw new Error("This link belongs to a different meeting.");
+          }
+          loadExistingMeeting(existingMeetingId);
+        })
+        .catch((err) => {
+          setTranscriptionError(
+            err?.status === 404
+              ? "This invitation link is invalid or has expired. Ask the host for a new one."
+              : err?.message || "The invitation could not be accepted."
+          );
+        });
+    } else if (existingMeetingId) {
       loadExistingMeeting(existingMeetingId);
     }
   }, [loadExistingMeeting]);

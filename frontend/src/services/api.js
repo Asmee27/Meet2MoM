@@ -488,3 +488,23 @@ export const revokeInvitee = (meetingId, inviteeId) =>
   authRequest(`/api/meetings/${encodeURIComponent(meetingId)}/schedule/invitees/${inviteeId}`, { method: "DELETE" });
 export const cancelScheduledMeeting = (meetingId) =>
   authRequest(`/api/meetings/${encodeURIComponent(meetingId)}/schedule/cancel`, { method: "POST" });
+
+// ---------------------------------------------------------------------------
+// Email (Phase 8.4). Requests only queue messages; statuses come from the
+// server (queued, sent to provider, delivered, bounced, failed…). In
+// development mode the server sends nothing and says so.
+// ---------------------------------------------------------------------------
+export const getEmailStatus = () => authRequest("/api/email/status");
+export const sendInvitationEmail = (meetingId, inviteeId) =>
+  authRequest(`/api/meetings/${encodeURIComponent(meetingId)}/schedule/invitees/${inviteeId}/email`, { method: "POST" });
+export const approveInviteeAccount = (meetingId, inviteeId, approve) =>
+  authRequest(`/api/meetings/${encodeURIComponent(meetingId)}/schedule/invitees/${inviteeId}/approve-account`,
+    { method: "POST", body: { approve } });
+export const getMinutesEmail = (meetingId) => authRequest(`/api/meetings/${encodeURIComponent(meetingId)}/minutes-email`);
+export const sendMinutesEmail = (meetingId, { recipients, version, attachPdf = false, confirmAttachment = false }) =>
+  authRequest(`/api/meetings/${encodeURIComponent(meetingId)}/minutes-email`, {
+    method: "POST",
+    body: { recipients, version, attach_pdf: attachPdf, confirm_attachment: confirmAttachment },
+  });
+export const retryEmail = (meetingId, outboxId) =>
+  authRequest(`/api/meetings/${encodeURIComponent(meetingId)}/emails/${outboxId}/retry`, { method: "POST" });

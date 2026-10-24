@@ -1,6 +1,8 @@
 // Phase 8.3: schedule a future meeting and invite several people at once.
-// Form -> review -> scheduled (one link per invitee). Nothing is emailed:
-// the host copies each link and shares it themselves.
+// Form -> review -> scheduled (one link per invitee).
+// Phase 8.4: each invitee is emailed their own link when a provider is
+// configured; the result says only "queued" (never "sent"), and copy links
+// stay available as a fallback. In development mode nothing is emailed.
 import { useMemo, useRef, useState } from "react";
 import { PageHeader } from "../components/AppShell";
 import { Alert, Badge, Button, Icon, useToast } from "../components/ui";
@@ -155,6 +157,32 @@ export function InviteLinks({ links }) {
   );
 }
 
+// What happened to the invitation emails, in the provider's own terms.
+function EmailOutcome({ email, invited }) {
+  if (!invited) return null;
+  if (email?.live && email?.configured) {
+    return (
+      <Alert tone="info" title={`Invitation emails queued for ${email.queued || invited} people`} data-testid="email-queued-notice">
+        <p>
+          Each person gets their own link by email. Being accepted by the email provider is not the same as delivery;
+          check each person's status on the meeting page. The links below are a fallback you can share yourself.
+        </p>
+      </Alert>
+    );
+  }
+  return (
+    <Alert tone={email?.live ? "warning" : "info"} title="No email was sent" data-testid="no-email-notice">
+      <p>
+        {email?.live
+          ? `${email.message} `
+          : "Email is in development mode, so nothing was sent. "}
+        Copy each person's link below and share it with them yourself. Each link works only for this meeting and
+        only until it expires or you revoke it.
+      </p>
+    </Alert>
+  );
+}
+
 function localToday() {
   const now = new Date();
   const pad = (n) => String(n).padStart(2, "0");
@@ -224,12 +252,7 @@ export default function ScheduleMeeting({ hostEmail = "", onOpenScheduled, onCan
           description={formatScheduledStart(meeting)}
           actions={<Button variant="primary" onClick={() => onOpenScheduled(meeting.meeting_id)} iconRight="chevronRight">Open meeting page</Button>}
         />
-        <Alert tone="info" title="No email was sent" data-testid="no-email-notice">
-          <p>
-            Meet2MoM does not send email. Copy each person's link below and share it with them yourself.
-            Each link works only for this meeting and only until it expires or you revoke it.
-          </p>
-        </Alert>
+        <EmailOutcome email={result.email} invited={result.links.length} />
         {result.duplicate_request && (
           <Alert tone="warning" title="Already scheduled">
             <p>This form was already submitted, so no second meeting was created. Copy links from the meeting page.</p>

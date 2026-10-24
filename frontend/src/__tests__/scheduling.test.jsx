@@ -141,7 +141,7 @@ describe("Scheduled meeting page", () => {
     expect(rows.map((r) => within(r).getAllByRole("cell")[1].textContent)).toEqual(["Accepted", "Not joined yet", "Revoked"]);
     expect(screen.getByTestId("email-mismatch")).toBeTruthy();
     expect(within(rows[2]).queryByRole("button", { name: "Copy link" })).toBeNull();
-    expect(screen.getAllByText(/No email is sent/).length).toBeGreaterThan(0);
+    expect(screen.getByText(/Copy link is a fallback/)).toBeTruthy();
 
     fireEvent.click(within(rows[1]).getByRole("button", { name: "Copy link" }));
     await waitFor(() => expect(copy).toHaveBeenCalledWith("sched1234567", 2));

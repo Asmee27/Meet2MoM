@@ -9,9 +9,12 @@ opens only when the owner starts the meeting (live_routes.create_room).
 * Only the owner schedules, edits, cancels and manages invitees.
 * A link works only for its own meeting, expires, and is revoked by
   replacing it, revoking the invitee or cancelling the meeting.
-* An invitee's email is how the host keeps track of them; it is never proof
-  of who opens the link. The account that accepted is shown beside it.
-* No email is sent (see app/services/invitations/delivery.py).
+* An invitee's email must match the account that accepts the link; any
+  other account waits for the host's explicit approval (Phase 8.4).
+* Phase 8.4: each invitee is emailed their own link through the email outbox
+  (app/services/email/outbox.py). The request only queues the messages; the
+  host sees each one's real status, can retry failures, and can still copy a
+  link by hand. In development mode nothing is sent and the UI says so.
 """
 from __future__ import annotations
 
@@ -26,6 +29,8 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from app.core import auth, db
+from app.services.email import outbox, providers
+from app.services.email.addresses import normalize_many
 from app.services.invitations.delivery import get_delivery
 
 router = APIRouter(prefix="/api", tags=["Scheduling"])
@@ -35,7 +40,6 @@ MAX_AGENDA = 2000
 MAX_INVITEES = 50
 MIN_DURATION, MAX_DURATION = 5, 480
 LINK_GRACE = timedelta(days=1)           # links stay valid a day after the scheduled end
-_EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 _LOCAL_TIME = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$")
 
 
@@ -59,6 +63,10 @@ class ScheduleUpdate(BaseModel):
 
 class InviteesRequest(BaseModel):
     emails: List[str]
+
+
+class AccountApproval(BaseModel):
+    approve: bool
 
 
 # ---------------------------------------------------------------------------
@@ -122,22 +130,15 @@ def _duration(value: Optional[int]) -> Optional[int]:
 
 
 def clean_emails(raw: List[str], owner_email: str) -> Dict[str, List[str]]:
-    """Normalised unique emails, plus duplicates removed. Invalid entries and the owner's own email are errors."""
-    emails: List[str] = []
-    duplicates: List[str] = []
-    invalid: List[str] = []
-    for item in raw or []:
-        email = (item or "").strip().lower()
-        if not email:
-            continue
-        if not _EMAIL.match(email) or len(email) > 254:
-            invalid.append(item.strip())
-        elif email in emails:
-            duplicates.append(email)
-        else:
-            emails.append(email)
-    if invalid:
-        raise HTTPException(status_code=422, detail="Not a valid email address: " + ", ".join(invalid))
+    """
+    Normalised unique emails (email-validator syntax check, lower-cased), plus
+    duplicates removed. Invalid entries and the owner's own email are errors.
+    A valid-looking address may still not exist; only delivery events tell.
+    """
+    result = normalize_many(raw)
+    emails, duplicates = result["emails"], result["duplicates"]
+    if result["errors"]:
+        raise HTTPException(status_code=422, detail=" ".join(result["errors"]))
     if owner_email and owner_email.lower() in emails:
         raise HTTPException(status_code=422, detail="You are the host; you do not need to invite yourself.")
     return {"emails": emails, "duplicates": duplicates}
@@ -147,7 +148,7 @@ def clean_emails(raw: List[str], owner_email: str) -> Dict[str, List[str]]:
 # Views and links
 # ---------------------------------------------------------------------------
 
-def _link_expiry(schedule: Dict[str, Any]) -> datetime:
+def link_expiry(schedule: Dict[str, Any]) -> datetime:
     start = datetime.fromisoformat(schedule["scheduled_start_utc"])
     end = start + timedelta(minutes=schedule.get("duration_minutes") or 60)
     return max(auth._now() + timedelta(days=auth.INVITATION_DAYS), end + LINK_GRACE)
@@ -155,16 +156,23 @@ def _link_expiry(schedule: Dict[str, Any]) -> datetime:
 
 def _issue_link(schedule: Dict[str, Any], invitee_id: int, owner_id: str) -> Dict[str, Any]:
     """A fresh link for one invitee; the previous one stops working. The token is returned once, never stored."""
-    expires = _link_expiry(schedule)
-    token = auth.create_invitation(schedule["meeting_id"], owner_id, expires_at=expires)
+    expires = link_expiry(schedule)
+    token = auth.create_invitation(schedule["meeting_id"], owner_id, expires_at=expires,
+                                   invitee_id=invitee_id, channel="copy")
     db.set_invitee_token(invitee_id, auth.token_hash(token))
     return {"token": token, "room_name": schedule["room_name"],
             "link_path": f"/?room={schedule['room_name']}&invite={token}", "expires_at": expires.isoformat()}
 
 
 def _invitee_view(row: Dict[str, Any]) -> Dict[str, Any]:
+    latest = db.latest_invitation_email(row["invitee_id"])
     view = {"invitee_id": row["invitee_id"], "email": row["email"], "status": row["status"],
-            "delivery": row["delivery"], "accepted_by": None}
+            "delivery": row["delivery"], "accepted_by": None, "approval_request": None,
+            "email_delivery": outbox.email_view(latest) if latest else None}
+    if row.get("approval_user_id"):
+        waiting = db.get_user(row["approval_user_id"]) or {}
+        view["approval_request"] = {"display_name": waiting.get("display_name"), "email": waiting.get("email"),
+                                    "requested_at": row.get("approval_requested_at")}
     if row.get("accepted_user_id"):
         user = db.get_user(row["accepted_user_id"]) or {}
         view["accepted_by"] = {
@@ -219,6 +227,7 @@ def _require_open(schedule: Dict[str, Any]) -> None:
 
 
 def _invite(schedule: Dict[str, Any], emails: List[str], owner_id: str) -> Dict[str, Any]:
+    """Invitee rows, a copyable link each, and one queued invitation email each."""
     delivery = get_delivery()
     links, already = [], []
     for email in emails:
@@ -227,9 +236,19 @@ def _invite(schedule: Dict[str, Any], emails: List[str], owner_id: str) -> Dict[
             already.append(email)
             continue
         link = _issue_link(schedule, invitee_id, owner_id)
+        queued, _ = outbox.enqueue_invitation(schedule["meeting_id"], db.get_invitee(schedule["meeting_id"], invitee_id),
+                                              requested_by=owner_id)
         links.append({"invitee_id": invitee_id, "email": email, **link,
-                      "delivery": delivery.deliver(email, link["link_path"], schedule["title"]).as_dict()})
+                      "delivery": delivery.deliver(email, link["link_path"], schedule["title"]).as_dict(),
+                      "email_delivery": outbox.email_view(queued)})
+    if links:
+        outbox.kick()
     return {"links": links, "already_invited": already}
+
+
+def _email_summary(links: List[Dict[str, Any]]) -> Dict[str, Any]:
+    status = providers.provider_status()
+    return {**status, "queued": len(links) if status["live"] and status["configured"] else 0}
 
 
 # ---------------------------------------------------------------------------
@@ -248,7 +267,8 @@ def schedule_meeting(payload: ScheduleRequest, request: Request):
             # A repeated submit (double click, retry) returns the meeting already
             # created. Links are not reissued here; copy them from the meeting page.
             return {"meeting": schedule_view(existing, include_invitees=True), "links": [],
-                    "duplicate_request": True, "duplicates_ignored": [], "email_sent": False}
+                    "duplicate_request": True, "duplicates_ignored": [], "email_sent": False,
+                    "email": _email_summary([])}
 
     title = _title(payload.title)
     agenda = _agenda(payload.agenda)
@@ -266,8 +286,10 @@ def schedule_meeting(payload: ScheduleRequest, request: Request):
     )
     schedule = db.get_scheduled_meeting(meeting_id)
     invited = _invite(schedule, cleaned["emails"], user["user_id"])
+    # email_sent stays false: at this point emails are only queued.
     return {"meeting": schedule_view(schedule, include_invitees=True), "links": invited["links"],
-            "duplicate_request": False, "duplicates_ignored": cleaned["duplicates"], "email_sent": False}
+            "duplicate_request": False, "duplicates_ignored": cleaned["duplicates"], "email_sent": False,
+            "email": _email_summary(invited["links"])}
 
 
 @router.get("/meetings/{meeting_id}/schedule")
@@ -318,7 +340,8 @@ def add_invitees(meeting_id: str, payload: InviteesRequest, request: Request):
     invited = _invite(schedule, cleaned["emails"], user["user_id"])
     return {"meeting": schedule_view(db.get_scheduled_meeting(meeting_id), include_invitees=True),
             "links": invited["links"], "already_invited": invited["already_invited"],
-            "duplicates_ignored": cleaned["duplicates"], "email_sent": False}
+            "duplicates_ignored": cleaned["duplicates"], "email_sent": False,
+            "email": _email_summary(invited["links"])}
 
 
 @router.post("/meetings/{meeting_id}/schedule/invitees/{invitee_id}/link")
@@ -351,6 +374,7 @@ def revoke_invitee(meeting_id: str, invitee_id: int, request: Request):
     if invitee is None:
         raise HTTPException(status_code=404, detail="Invitee not found.")
     db.revoke_invitee(invitee_id)
+    db.cancel_queued_emails(meeting_id, invitee_id=invitee_id, reason="The invitation was revoked before it was sent.")
     if invitee["accepted_user_id"]:
         db.remove_meeting_member(meeting_id, invitee["accepted_user_id"])
     return {"meeting": schedule_view(db.get_scheduled_meeting(meeting_id), include_invitees=True)}
@@ -364,4 +388,51 @@ def cancel_schedule(meeting_id: str, request: Request):
     if schedule["status"] == "started":
         raise HTTPException(status_code=409, detail="This meeting has already started and cannot be cancelled.")
     db.cancel_scheduled_meeting(meeting_id)
+    db.cancel_queued_emails(meeting_id, reason="The meeting was cancelled before this invitation was sent.")
+    return {"meeting": schedule_view(db.get_scheduled_meeting(meeting_id), include_invitees=True)}
+
+
+@router.post("/meetings/{meeting_id}/schedule/invitees/{invitee_id}/email")
+def send_invitation_email(meeting_id: str, invitee_id: int, request: Request):
+    """
+    Email this invitee their invitation: retries a failed message (same record),
+    or sends a new one when the last one finished. Refused while one is still
+    queued or sending, so repeated clicks never send duplicates.
+    """
+    db.init_db()
+    user, schedule = _owned_schedule(request, meeting_id)
+    _require_open(schedule)
+    invitee = db.get_invitee(meeting_id, invitee_id)
+    if invitee is None:
+        raise HTTPException(status_code=404, detail="Invitee not found.")
+    if invitee["status"] != "pending":
+        raise HTTPException(status_code=409, detail="Only invitees who have not joined can be emailed an invitation.")
+    latest = db.latest_invitation_email(invitee_id)
+    if latest and latest["status"] in db.EMAIL_ACTIVE_STATUSES:
+        raise HTTPException(status_code=409, detail="An invitation email to this person is already being sent.")
+    if latest and latest["status"] in outbox.RETRYABLE:
+        outbox.retry(latest["outbox_id"])
+        row = db.get_email(latest["outbox_id"])
+    else:
+        row, _ = outbox.enqueue_invitation(meeting_id, invitee, requested_by=user["user_id"])
+    outbox.kick()
+    return {"email_delivery": outbox.email_view(row), "email": providers.provider_status()}
+
+
+@router.post("/meetings/{meeting_id}/schedule/invitees/{invitee_id}/approve-account")
+def approve_invitee_account(meeting_id: str, invitee_id: int, payload: AccountApproval, request: Request):
+    """
+    An account whose email differs from the invited address opened the link.
+    The host explicitly admits it as a participant, or turns it away.
+    """
+    db.init_db()
+    _, schedule = _owned_schedule(request, meeting_id)
+    invitee = db.get_invitee(meeting_id, invitee_id)
+    if invitee is None or not invitee.get("approval_user_id"):
+        raise HTTPException(status_code=404, detail="No account is waiting for approval for this invitation.")
+    if payload.approve:
+        db.add_meeting_member(meeting_id, invitee["approval_user_id"], "member")
+        db.mark_invitee_accepted(invitee_id, invitee["approval_user_id"])
+    else:
+        db.clear_invitee_approval(invitee_id)
     return {"meeting": schedule_view(db.get_scheduled_meeting(meeting_id), include_invitees=True)}

@@ -1,11 +1,10 @@
 """
-How an invitation link reaches an invitee (Phase 8.3).
+The copyable invitation link (Phase 8.3).
 
-Meet2MoM has no email configuration, so the only channel is manual: the host
-copies each invitee's link and shares it themselves. Results always say
-whether anything was actually sent; the manual channel never claims it was.
-A real email channel would implement the same deliver() and be chosen in
-get_delivery() only when it is configured.
+Every invitee also gets a link the host copies and shares by hand. That link
+is never emailed by the server; the result says so. Invitation emails are a
+separate channel with their own link and status (Phase 8.4,
+app/services/email/outbox.py), so copying a link never claims an email.
 """
 from __future__ import annotations
 
@@ -32,7 +31,7 @@ class ManualLinkDelivery:
         return DeliveryResult(
             channel=self.channel,
             sent=False,
-            message="No email was sent. Copy this invitee's link and share it with them yourself.",
+            message="Copy link: not emailed by Meet2MoM. Share it with this invitee yourself.",
         )
 
 

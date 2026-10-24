@@ -1013,3 +1013,72 @@
   .invite-link { grid-template-columns: 1fr; }
   .schedule-review__list { grid-template-columns: 1fr; }
 }
+
+/* ---------------------------------------------------------------------------
+   Phase 8.4: email delivery
+   --------------------------------------------------------------------------- */
+.email-status {
+  display: inline-grid;
+  gap: 2px;
+  justify-items: start;
+  max-width: 280px;
+}
+
+.email-status__detail { overflow-wrap: anywhere; }
+
+.minutes-email {
+  display: grid;
+  gap: var(--space-4);
+}
+
+.minutes-email__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.recipient-list {
+  display: grid;
+  gap: var(--space-2);
+  margin: 0 0 var(--space-4);
+  padding: 0;
+  border: 0;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.recipient-option {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+}
+
+.recipient-option input { margin-top: 3px; }
+.recipient-option--disabled { cursor: not-allowed; opacity: 0.65; }
+
+.recipient-option__text {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px var(--space-2);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.recipient-option__reason { flex-basis: 100%; }
+
+.confirm-recipients {
+  margin: 0 0 var(--space-4);
+  padding-left: var(--space-5);
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.approval-request { display: grid; gap: 4px; }
+.approval-request__actions { display: flex; gap: var(--space-2); }

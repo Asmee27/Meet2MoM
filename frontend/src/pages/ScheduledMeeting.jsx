@@ -1,16 +1,22 @@
 // Phase 8.3: a scheduled meeting. The owner sees invitees and their status,
 // copies (re-issues) links, revokes, invites more, cancels or starts it.
 // Other members see the time and agenda only.
+// Phase 8.4: each invitee's invitation email status (one per person), send or
+// retry, and the host's approval when a different account opened a link.
 import { useCallback, useEffect, useState } from "react";
 import { PageHeader } from "../components/AppShell";
 import { Alert, Badge, Button, ConfirmDialog, SkeletonRows, useToast } from "../components/ui";
 import {
   addScheduleInvitees,
+  approveInviteeAccount,
   cancelScheduledMeeting,
   copyInviteeLink,
+  getEmailStatus,
   getSchedule,
   revokeInvitee,
+  sendInvitationEmail,
 } from "../services/api";
+import { EmailStatusBadge, ProviderNotice } from "../components/EmailStatus";
 import { formatScheduledStart } from "../format";
 import { InviteeInput, InviteLinks, copyText, inviteUrl } from "./ScheduleMeeting";
 
@@ -34,6 +40,11 @@ export default function ScheduledMeeting({ meetingId, hostEmail = "", onStart })
   const [busy, setBusy] = useState("");
   const [actionError, setActionError] = useState("");
   const [confirm, setConfirm] = useState(null); // { kind: "cancel" } | { kind: "revoke", invitee }
+  const [provider, setProvider] = useState(null);
+
+  useEffect(() => {
+    getEmailStatus().then(setProvider).catch(() => setProvider(null));
+  }, []);
 
   const load = useCallback(() => {
     getSchedule(meetingId)
@@ -42,6 +53,15 @@ export default function ScheduledMeeting({ meetingId, hostEmail = "", onStart })
   }, [meetingId]);
 
   useEffect(() => { load(); }, [load]);
+
+  // Refresh while any invitation email is still queued or being sent.
+  const pendingEmail = (state.data?.meeting?.invitees || [])
+    .some((i) => ["queued", "sending"].includes(i.email_delivery?.status));
+  useEffect(() => {
+    if (!pendingEmail) return undefined;
+    const timer = setTimeout(load, 4000);
+    return () => clearTimeout(timer);
+  }, [pendingEmail, load, state.data]);
 
   if (state.status === "loading") return <main className="page"><SkeletonRows rows={4} label="Loading meeting" /></main>;
   if (state.status === "error") {
@@ -92,6 +112,16 @@ export default function ScheduledMeeting({ meetingId, hostEmail = "", onStart })
       notify(`Invitation for ${confirm.invitee.email} revoked.`, "success");
     }
     setConfirm(null);
+  });
+
+  const emailInvite = (invitee) => run(`email-${invitee.invitee_id}`, async () => {
+    await sendInvitationEmail(meetingId, invitee.invitee_id);
+    load();
+  });
+
+  const decideAccount = (invitee, approve) => run(`approve-${invitee.invitee_id}`, async () => {
+    update((await approveInviteeAccount(meetingId, invitee.invitee_id, approve)).meeting);
+    notify(approve ? "Account admitted as a participant." : "Account turned away.", "success");
   });
 
   const invite = () => run("invite", async () => {
@@ -145,19 +175,18 @@ export default function ScheduledMeeting({ meetingId, hostEmail = "", onStart })
       {isOwner && (
         <section className="ui-card ui-card--pad" aria-labelledby="invitees-heading">
           <h2 className="ui-card__title" id="invitees-heading">Invitees</h2>
-          <Alert tone="info" title="No email is sent">
-            <p>
-              Share links yourself. Copying a link issues a new one and the previous link for that person stops
-              working, because links are stored only in a form that cannot be shown again.
-            </p>
-          </Alert>
+          <ProviderNotice provider={provider} />
+          <p className="ui-help">
+            Each invitee is emailed their own link. Copy link is a fallback: it issues a separate link for you to
+            share, and replaces only your previously copied link, not the emailed one.
+          </p>
           {meeting.invitees.length === 0 ? (
             <p className="ui-help">No one is invited yet.</p>
           ) : (
             <div className="ui-table-wrap">
               <table className="ui-table" data-testid="invitee-table">
                 <thead>
-                  <tr><th scope="col">Email</th><th scope="col">Status</th><th scope="col">Joined as</th><th scope="col"><span className="ui-visually-hidden">Actions</span></th></tr>
+                  <tr><th scope="col">Email</th><th scope="col">Status</th><th scope="col">Invitation email</th><th scope="col">Joined as</th><th scope="col"><span className="ui-visually-hidden">Actions</span></th></tr>
                 </thead>
                 <tbody>
                   {meeting.invitees.map((inv) => {
@@ -166,6 +195,7 @@ export default function ScheduledMeeting({ meetingId, hostEmail = "", onStart })
                       <tr key={inv.invitee_id}>
                         <td data-label="Email">{inv.email}</td>
                         <td data-label="Status"><Badge tone={st.tone}>{st.label}</Badge></td>
+                        <td data-label="Invitation email"><EmailStatusBadge delivery={inv.email_delivery} /></td>
                         <td data-label="Joined as">
                           {inv.accepted_by ? (
                             <>
@@ -176,11 +206,30 @@ export default function ScheduledMeeting({ meetingId, hostEmail = "", onStart })
                                 </div>
                               )}
                             </>
+                          ) : inv.approval_request ? (
+                            <div className="approval-request" data-testid="approval-request">
+                              <span>
+                                {inv.approval_request.display_name} <span className="ui-help">{inv.approval_request.email}</span>
+                              </span>
+                              <span className="ui-help">Opened this invite with a different email. Admit them?</span>
+                              <span className="approval-request__actions">
+                                <Button size="sm" variant="primary" loading={busy === `approve-${inv.invitee_id}`}
+                                  onClick={() => decideAccount(inv, true)}>Admit</Button>
+                                <Button size="sm" variant="ghost" onClick={() => decideAccount(inv, false)}>Turn away</Button>
+                              </span>
+                            </div>
                           ) : "—"}
                         </td>
                         <td className="meetings-table__actions">
                           {inv.status !== "revoked" && meeting.status !== "cancelled" && (
                             <>
+                              {open && inv.status === "pending" && provider?.live && provider?.configured
+                                && !["queued", "sending"].includes(inv.email_delivery?.status) && (
+                                <Button size="sm" icon={inv.email_delivery?.can_retry ? "refresh" : "arrowRight"}
+                                  loading={busy === `email-${inv.invitee_id}`} onClick={() => emailInvite(inv)}>
+                                  {inv.email_delivery?.can_retry ? "Retry email" : inv.email_delivery ? "Email again" : "Send invitation"}
+                                </Button>
+                              )}
                               <Button size="sm" icon="file" loading={busy === `copy-${inv.invitee_id}`}
                                 onClick={() => copyLink(inv)}>Copy link</Button>
                               <Button size="sm" variant="ghost" onClick={() => setConfirm({ kind: "revoke", invitee: inv })}>

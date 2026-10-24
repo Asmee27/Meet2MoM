@@ -31,7 +31,7 @@ _MEETING_TABLES = (
     "approved_snapshots", "review_drafts", "processing_stage_timings", "live_events",
     "live_participants", "recording_segments", "live_meetings", "meeting_members",
     "meeting_invitations", "commitment_updates", "transcript_corrections", "jobs",
-    "meeting_invitees", "scheduled_meetings",
+    "meeting_invitees", "scheduled_meetings", "email_outbox",
 )
 
 
@@ -87,6 +87,9 @@ def delete_meeting(meeting_id: str) -> Dict[str, Any]:
             conn.execute("DELETE FROM commitment_updates WHERE commitment_id = ?", (cid,))
         removed_rows["commitments"] = conn.execute(
             "DELETE FROM commitments WHERE source_meeting_id = ?", (meeting_id,)).rowcount
+        removed_rows["email_events"] = conn.execute(
+            "DELETE FROM email_events WHERE outbox_id IN (SELECT outbox_id FROM email_outbox WHERE meeting_id = ?)",
+            (meeting_id,)).rowcount
         for table in _MEETING_TABLES:
             removed_rows[table] = conn.execute(f"DELETE FROM {table} WHERE meeting_id = ?", (meeting_id,)).rowcount
         removed_rows["meetings"] = conn.execute("DELETE FROM meetings WHERE meeting_id = ?", (meeting_id,)).rowcount

@@ -175,21 +175,56 @@ def reviewer_identity(request: Request, provided: Optional[str]) -> Optional[str
 # Invitations
 # ---------------------------------------------------------------------------
 
-def create_invitation(meeting_id: str, user_id: str, expires_at: Optional[datetime] = None) -> str:
-    """A single-meeting token; only its hash is stored. Default lifetime INVITATION_DAYS."""
+def create_invitation(meeting_id: str, user_id: str, expires_at: Optional[datetime] = None,
+                      invitee_id: Optional[int] = None, channel: Optional[str] = None) -> str:
+    """
+    A single-meeting token; only its hash is stored. Default lifetime
+    INVITATION_DAYS. Scheduled-meeting invitations name their invitee and
+    channel ("copy" link, "email", "minutes"), so issuing a new link on one
+    channel replaces only that channel's previous link.
+    """
     token = secrets.token_urlsafe(24)
     expiry = expires_at or (_now() + timedelta(days=INVITATION_DAYS))
-    db.create_invitation(token_hash(token), meeting_id, user_id, expiry.isoformat())
+    db.create_invitation(token_hash(token), meeting_id, user_id, expiry.isoformat(),
+                         invitee_id=invitee_id, channel=channel)
     return token
 
 
+def _masked(email: str) -> str:
+    local, _, domain = (email or "").partition("@")
+    return f"{local[:1]}***@{domain}" if domain else "another address"
+
+
 def accept_invitation(token: str, user_id: str) -> str:
+    """
+    Make the signed-in account a member (never an owner) of the invitation's
+    meeting. A scheduled-meeting invitation was addressed to one email: an
+    account with that email joins directly; any other account is recorded as
+    waiting and joins only after the host approves it (Phase 8.4). Account
+    emails are not verified by Meet2MoM, so the match is a consistency check
+    on top of holding the link, not proof of identity on its own.
+    """
     hashed = token_hash(token or "")
     invitation = db.get_invitation(hashed, _now().isoformat())
     if invitation is None:
         raise HTTPException(status_code=404, detail="This invitation is invalid or has expired.")
+    invitee = db.get_invitee_for_token(hashed)
+    if invitee is not None:
+        if invitee["status"] == "revoked" or invitee["meeting_id"] != invitation["meeting_id"]:
+            raise HTTPException(status_code=404, detail="This invitation is invalid or has expired.")
+        if invitee["status"] == "accepted" and invitee.get("accepted_user_id") != user_id:
+            if db.get_member_role(invitation["meeting_id"], user_id) is None:
+                raise HTTPException(status_code=409, detail="This invitation was already accepted by another account.")
+        elif invitee["status"] == "pending":
+            user = db.get_user(user_id) or {}
+            if (user.get("email") or "").lower() != invitee["email"].lower():
+                db.request_invitee_approval(invitee["invitee_id"], user_id)
+                raise HTTPException(
+                    status_code=409,
+                    detail=(f"This invitation was sent to {_masked(invitee['email'])}, but you are signed in as "
+                            f"{user.get('email')}. Sign in with the invited address, or wait for the host to "
+                            "approve this account."),
+                )
+            db.mark_invitee_accepted(invitee["invitee_id"], user_id)
     db.add_meeting_member(invitation["meeting_id"], user_id, "member")
-    # Scheduled-meeting invitations (Phase 8.3) record which account opened the
-    # link. The invited email is never treated as proof of who that is.
-    db.mark_invitee_accepted(hashed, user_id)
     return invitation["meeting_id"]

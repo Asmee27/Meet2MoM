@@ -40,9 +40,15 @@ def auth_on(monkeypatch):
     return created_rooms
 
 
-def _account(name):
+def _addr(name):
+    """A unique invitee address per test (accounts are unique per email)."""
+    return f"{name.lower()}-{uuid4().hex[:8]}@example.com"
+
+
+def _account(name, email=None):
+    """An account; pass the invited address so the invitation's email matches."""
     client = TestClient(app)
-    email = f"{name.lower()}-{uuid4().hex[:8]}@example.test"
+    email = email or _addr(name)
     res = client.post("/api/auth/register", json={"email": email, "password": "correct horse 1", "display_name": name})
     assert res.status_code == 200, res.text
     return client, res.json()["user"]
@@ -81,16 +87,16 @@ def _meeting_state(mid):
 
 def test_scheduling_three_invitees_creates_a_scheduled_meeting_and_one_link_each(auth_on):
     host_client, host = _account("Hana")
-    res = _schedule(host_client, ["asha@example.test", "Ben@Example.test ", "chen@example.test", "ben@example.test"])
+    res = _schedule(host_client, ["asha@example.com", "Ben@Example.COM ", "chen@example.com", "ben@example.com"])
     assert res.status_code == 200, res.text
     body = res.json()
     mid = body["meeting"]["meeting_id"]
 
     assert body["email_sent"] is False
-    assert body["duplicates_ignored"] == ["ben@example.test"]
-    assert [l["email"] for l in body["links"]] == ["asha@example.test", "ben@example.test", "chen@example.test"]
+    assert body["duplicates_ignored"] == ["ben@example.com"]
+    assert [l["email"] for l in body["links"]] == ["asha@example.com", "ben@example.com", "chen@example.com"]
     assert len({l["token"] for l in body["links"]}) == 3                       # one distinct link each
-    assert all(l["delivery"]["sent"] is False and "No email was sent" in l["delivery"]["message"]
+    assert all(l["delivery"]["sent"] is False and "not emailed" in l["delivery"]["message"]
                for l in body["links"])
     assert all(l["link_path"] == f"/?room={body['meeting']['room_name']}&invite={l['token']}" for l in body["links"])
 
@@ -121,12 +127,12 @@ def test_scheduling_three_invitees_creates_a_scheduled_meeting_and_one_link_each
     ({"start_local": "next tuesday"}, "YYYY-MM-DDTHH:MM"),
     ({"title": "   "}, "Enter a title"),
     ({"duration_minutes": 2}, "Duration"),
-    ({"invitees": ["asha@example.test", "not-an-email"]}, "not-an-email"),
+    ({"invitees": ["asha@example.com", "not-an-email"]}, "not-an-email"),
 ])
 def test_invalid_schedules_are_refused_and_create_nothing(override, message):
     host_client, host = _account("Hana")
     before = len(db.get_member_meeting_ids(host["user_id"]))
-    res = _schedule(host_client, **{"invitees": ["asha@example.test"], **override})
+    res = _schedule(host_client, **{"invitees": ["asha@example.com"], **override})
     assert res.status_code == 422 and message in res.json()["detail"]
     assert len(db.get_member_meeting_ids(host["user_id"])) == before
 
@@ -138,15 +144,15 @@ def test_the_host_cannot_invite_themselves():
 
 
 def test_scheduling_needs_sign_in(monkeypatch):
-    assert _schedule(TestClient(app), ["asha@example.test"]).status_code == 401
+    assert _schedule(TestClient(app), ["asha@example.com"]).status_code == 401
     monkeypatch.setattr(config, "AUTH_REQUIRED", False)
-    assert _schedule(TestClient(app), ["asha@example.test"]).status_code == 409
+    assert _schedule(TestClient(app), ["asha@example.com"]).status_code == 409
 
 
 def test_a_repeated_submit_creates_one_meeting():
     host_client, host = _account("Hana")
-    first = _schedule(host_client, ["asha@example.test"], request_id="form-123").json()
-    again = _schedule(host_client, ["asha@example.test"], request_id="form-123").json()
+    first = _schedule(host_client, ["asha@example.com"], request_id="form-123").json()
+    again = _schedule(host_client, ["asha@example.com"], request_id="form-123").json()
     assert again["duplicate_request"] is True and again["links"] == []
     assert again["meeting"]["meeting_id"] == first["meeting"]["meeting_id"]
     assert len(again["meeting"]["invitees"]) == 1
@@ -158,9 +164,10 @@ def test_a_repeated_submit_creates_one_meeting():
 
 def test_an_invitation_admits_to_its_own_meeting_only_and_records_who_accepted():
     host_client, _ = _account("Hana")
-    a = _schedule(host_client, ["asha@example.test"]).json()
-    b = _schedule(host_client, ["asha@example.test"]).json()
-    guest_client, guest = _account("Asha")            # a different email than the one invited
+    asha = _addr("asha")
+    a = _schedule(host_client, [asha]).json()
+    b = _schedule(host_client, [asha]).json()
+    guest_client, guest = _account("Asha", asha)
 
     accepted = _accept(guest_client, a["links"][0]["token"])
     assert accepted.status_code == 200
@@ -172,35 +179,59 @@ def test_an_invitation_admits_to_its_own_meeting_only_and_records_who_accepted()
     invitee = host_client.get(f"/api/meetings/{a['meeting']['meeting_id']}/schedule").json()["meeting"]["invitees"][0]
     assert invitee["status"] == "accepted"
     assert invitee["accepted_by"]["display_name"] == "Asha"
-    assert invitee["accepted_by"]["email_matches_invite"] is False       # shown, never used as proof
+    assert invitee["accepted_by"]["email_matches_invite"] is True
 
     # Meeting B's data stays closed to this guest.
     assert guest_client.get(f"/api/meetings/{b['meeting']['meeting_id']}/schedule").status_code == 404
 
 
+def test_another_account_waits_for_the_hosts_explicit_approval():
+    host_client, _ = _account("Hana")
+    body = _schedule(host_client, [_addr("asha")]).json()
+    mid, link = body["meeting"]["meeting_id"], body["links"][0]
+    other_client, other = _account("Mallory")             # holds the link, different email
+
+    refused = _accept(other_client, link["token"])
+    assert refused.status_code == 409 and "sent to a***@example.com" in refused.json()["detail"]
+    assert db.get_member_role(mid, other["user_id"]) is None
+    invitee = host_client.get(f"/api/meetings/{mid}/schedule").json()["meeting"]["invitees"][0]
+    assert invitee["status"] == "pending" and invitee["approval_request"]["email"] == other["email"]
+
+    outsider, _ = _account("Olga")
+    assert outsider.post(f"/api/meetings/{mid}/schedule/invitees/{link['invitee_id']}/approve-account",
+                         json={"approve": True}).status_code == 404
+    approved = host_client.post(f"/api/meetings/{mid}/schedule/invitees/{link['invitee_id']}/approve-account",
+                                json={"approve": True})
+    assert approved.status_code == 200
+    assert db.get_member_role(mid, other["user_id"]) == "member"          # a participant, never an owner
+    assert approved.json()["meeting"]["invitees"][0]["accepted_by"]["email_matches_invite"] is False
+
+
 def test_copying_a_link_replaces_the_previous_one():
     host_client, _ = _account("Hana")
-    body = _schedule(host_client, ["asha@example.test"]).json()
+    asha = _addr("asha")
+    body = _schedule(host_client, [asha]).json()
     mid, old = body["meeting"]["meeting_id"], body["links"][0]
     new = host_client.post(f"/api/meetings/{mid}/schedule/invitees/{old['invitee_id']}/link").json()
     assert new["previous_link_revoked"] is True and new["token"] != old["token"]
-    guest_client, _ = _account("Asha")
+    guest_client, _ = _account("Asha", asha)
     assert _accept(guest_client, old["token"]).status_code == 404
     assert _accept(guest_client, new["token"]).status_code == 200
 
 
 def test_revoking_an_invitee_closes_the_link_and_removes_access():
     host_client, _ = _account("Hana")
-    body = _schedule(host_client, ["asha@example.test", "ben@example.test"]).json()
+    asha_email, ben_email = _addr("asha"), _addr("ben")
+    body = _schedule(host_client, [asha_email, ben_email]).json()
     mid = body["meeting"]["meeting_id"]
     asha, ben = body["links"]
-    asha_client, asha_user = _account("Asha")
+    asha_client, asha_user = _account("Asha", asha_email)
     assert _accept(asha_client, asha["token"]).status_code == 200
 
     for link in (asha, ben):
         assert host_client.delete(f"/api/meetings/{mid}/schedule/invitees/{link['invitee_id']}").status_code == 200
     assert db.get_member_role(mid, asha_user["user_id"]) is None
-    ben_client, _ = _account("Ben")
+    ben_client, _ = _account("Ben", ben_email)
     assert _accept(ben_client, ben["token"]).status_code == 404
     statuses = [i["status"] for i in host_client.get(f"/api/meetings/{mid}/schedule").json()["meeting"]["invitees"]]
     assert statuses == ["revoked", "revoked"]
@@ -208,21 +239,22 @@ def test_revoking_an_invitee_closes_the_link_and_removes_access():
 
 def test_adding_invitees_later_skips_people_already_invited():
     host_client, _ = _account("Hana")
-    mid = _schedule(host_client, ["asha@example.test"]).json()["meeting"]["meeting_id"]
+    mid = _schedule(host_client, ["asha@example.com"]).json()["meeting"]["meeting_id"]
     res = host_client.post(f"/api/meetings/{mid}/schedule/invitees",
-                           json={"emails": ["ASHA@example.test", "dev@example.test", "dev@example.test"]}).json()
-    assert [l["email"] for l in res["links"]] == ["dev@example.test"]
-    assert res["already_invited"] == ["asha@example.test"] and res["duplicates_ignored"] == ["dev@example.test"]
+                           json={"emails": ["ASHA@example.com", "dev@example.com", "dev@example.com"]}).json()
+    assert [l["email"] for l in res["links"]] == ["dev@example.com"]
+    assert res["already_invited"] == ["asha@example.com"] and res["duplicates_ignored"] == ["dev@example.com"]
     assert res["email_sent"] is False and res["meeting"]["invitee_count"] == 2
 
 
 def test_links_expire_after_the_meeting(monkeypatch):
     host_client, _ = _account("Hana")
-    body = _schedule(host_client, ["asha@example.test"]).json()
+    asha = _addr("asha")
+    body = _schedule(host_client, [asha]).json()
     end = datetime.fromisoformat(body["meeting"]["scheduled_start_utc"]) + timedelta(minutes=45)
     assert datetime.fromisoformat(body["links"][0]["expires_at"]) >= end + timedelta(days=1)
 
-    guest_client, _ = _account("Asha")
+    guest_client, _ = _account("Asha", asha)
     later = datetime.now(timezone.utc) + timedelta(days=6)     # sessions last 7 days
     monkeypatch.setattr(auth, "_now", lambda: later)
     assert _accept(guest_client, body["links"][0]["token"]).status_code == 404
@@ -234,10 +266,11 @@ def test_links_expire_after_the_meeting(monkeypatch):
 
 def test_only_the_owner_edits_invites_or_cancels():
     host_client, _ = _account("Hana")
-    body = _schedule(host_client, ["asha@example.test"]).json()
+    asha = _addr("asha")
+    body = _schedule(host_client, [asha]).json()
     mid, link = body["meeting"]["meeting_id"], body["links"][0]
-    guest_client, _ = _account("Asha")
-    _accept(guest_client, link["token"])
+    guest_client, _ = _account("Asha", asha)
+    assert _accept(guest_client, link["token"]).status_code == 200
     outsider, _ = _account("Olga")
 
     member_view = guest_client.get(f"/api/meetings/{mid}/schedule").json()
@@ -247,7 +280,7 @@ def test_only_the_owner_edits_invites_or_cancels():
     for client, expected in ((guest_client, 403), (outsider, 404)):
         assert client.patch(f"/api/meetings/{mid}/schedule", json={"title": "Mine"}).status_code == expected
         assert client.post(f"/api/meetings/{mid}/schedule/invitees",
-                           json={"emails": ["x@example.test"]}).status_code == expected
+                           json={"emails": ["x@example.com"]}).status_code == expected
         assert client.post(f"/api/meetings/{mid}/schedule/invitees/{link['invitee_id']}/link").status_code == expected
         assert client.delete(f"/api/meetings/{mid}/schedule/invitees/{link['invitee_id']}").status_code == expected
         assert client.post(f"/api/meetings/{mid}/schedule/cancel").status_code == expected
@@ -262,15 +295,16 @@ def test_only_the_owner_edits_invites_or_cancels():
 
 def test_cancelling_revokes_every_link_and_is_safe_to_repeat(auth_on):
     host_client, _ = _account("Hana")
-    body = _schedule(host_client, ["asha@example.test", "ben@example.test"]).json()
+    asha = _addr("asha")
+    body = _schedule(host_client, [asha, _addr("ben")]).json()
     mid, room = body["meeting"]["meeting_id"], body["meeting"]["room_name"]
 
     assert host_client.post(f"/api/meetings/{mid}/schedule/cancel").json()["meeting"]["status"] == "cancelled"
     assert host_client.post(f"/api/meetings/{mid}/schedule/cancel").status_code == 200      # repeat is harmless
-    guest_client, _ = _account("Asha")
+    guest_client, _ = _account("Asha", asha)
     assert _accept(guest_client, body["links"][0]["token"]).status_code == 404
     assert host_client.post(f"/api/meetings/{mid}/schedule/invitees",
-                            json={"emails": ["dev@example.test"]}).status_code == 409
+                            json={"emails": ["dev@example.com"]}).status_code == 409
     assert host_client.post("/api/live/rooms", json={"room_name": room}).status_code == 410
     assert auth_on == []
     status, counts = _meeting_state(mid)
@@ -284,9 +318,10 @@ def test_cancelling_revokes_every_link_and_is_safe_to_repeat(auth_on):
 
 def test_the_owner_starts_the_scheduled_meeting_and_invitees_join_as_participants():
     host_client, host = _account("Hana")
-    body = _schedule(host_client, ["asha@example.test"]).json()
+    asha = _addr("asha")
+    body = _schedule(host_client, [asha]).json()
     mid, room = body["meeting"]["meeting_id"], body["meeting"]["room_name"]
-    guest_client, guest = _account("Asha")
+    guest_client, guest = _account("Asha", asha)
     assert _accept(guest_client, body["links"][0]["token"]).status_code == 200
 
     # Before the start: the guest is told it has not started; an outsider
@@ -324,6 +359,6 @@ def test_deleting_a_scheduled_meeting_removes_its_schedule_and_invitees():
     from app.services.meeting_deletion import delete_meeting
 
     host_client, _ = _account("Hana")
-    mid = _schedule(host_client, ["asha@example.test"]).json()["meeting"]["meeting_id"]
+    mid = _schedule(host_client, ["asha@example.com"]).json()["meeting"]["meeting_id"]
     delete_meeting(mid)
     assert db.get_scheduled_meeting(mid) is None and db.list_invitees(mid) == []

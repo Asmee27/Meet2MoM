@@ -41,6 +41,15 @@ config.LLM_MODEL = "mock-v1"
 for _key in ("LLM_API_KEY", "GEMINI_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY"):
     setattr(config, _key, None)
 
+# Tests never send real email: development (console) provider, no Brevo key
+# or webhook token from .env, and no background dispatcher. Email tests call
+# outbox.dispatch_pending() themselves with a fake sender.
+config.EMAIL_PROVIDER = "console"
+config.EMAIL_DISPATCH = "off"
+for _key in ("BREVO_API_KEY", "EMAIL_SENDER_ADDRESS", "BREVO_WEBHOOK_TOKEN"):
+    setattr(config, _key, None)
+config.PUBLIC_APP_URL = "http://app.test"
+
 
 @pytest.fixture(autouse=True)
 def _no_real_http(monkeypatch):

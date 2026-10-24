@@ -356,4 +356,27 @@ TOPIC_TITLE_LLM_BUDGET_SECONDS = float(os.getenv("TOPIC_TITLE_LLM_BUDGET_SECONDS
 LIVEKIT_URL = os.getenv("LIVEKIT_URL", "").strip()
 LIVEKIT_API_KEY = os.getenv("LIVEKIT_API_KEY", "").strip()
 LIVEKIT_API_SECRET = os.getenv("LIVEKIT_API_SECRET", "").strip()
-
+
+# ---------------------------------------------------------------------------
+# Transactional email (Phase 8.4)
+# ---------------------------------------------------------------------------
+# console (default): development mode. Nothing is sent; each message is logged
+#   without its links and marked "not sent (development mode)".
+# brevo: Brevo transactional API. Needs BREVO_API_KEY and a sender address
+#   verified in Brevo (EMAIL_SENDER_ADDRESS); see docs/phase-8/PHASE_8_4_EMAIL.md.
+EMAIL_PROVIDER = (os.getenv("EMAIL_PROVIDER") or "console").strip().lower()
+BREVO_API_KEY = os.getenv("BREVO_API_KEY") or None
+BREVO_API_URL = (os.getenv("BREVO_API_URL") or "https://api.brevo.com/v3/smtp/email").strip()
+EMAIL_SENDER_ADDRESS = (os.getenv("EMAIL_SENDER_ADDRESS") or "").strip() or None
+EMAIL_SENDER_NAME = (os.getenv("EMAIL_SENDER_NAME") or "Meet2MoM").strip()
+# Shared secret Brevo sends with delivery webhooks (custom header
+# X-Meet2MoM-Webhook-Token, or "Authorization: Bearer <token>"). Unset: the
+# webhook endpoint is disabled and statuses stop at "sent to provider".
+BREVO_WEBHOOK_TOKEN = os.getenv("BREVO_WEBHOOK_TOKEN") or None
+EMAIL_TIMEOUT_SECONDS = float(os.getenv("EMAIL_TIMEOUT_SECONDS", "15") or 15)
+EMAIL_MAX_ATTEMPTS = int(os.getenv("EMAIL_MAX_ATTEMPTS", "4") or 4)
+# Where queued email is sent from: api (a background thread in the API
+# process), worker (scripts/worker.py), or off (nothing sends; tests).
+EMAIL_DISPATCH = (os.getenv("EMAIL_DISPATCH") or "api").strip().lower()
+# The address people open links on (the frontend), used in emailed links.
+PUBLIC_APP_URL = (os.getenv("PUBLIC_APP_URL") or "http://localhost:5173").strip().rstrip("/")
