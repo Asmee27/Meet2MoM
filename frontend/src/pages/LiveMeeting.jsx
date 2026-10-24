@@ -427,7 +427,9 @@ function LocalParticipantTile({ room, name, isHost, consented, isSpeaking, micEn
 // Main LiveMeeting Component with Real LiveKit WebRTC Integration
 // ============================================================================
 
-export default function LiveMeeting() {
+// `defaults` (Phase 8.3): { roomName, topic } when the host starts a
+// scheduled meeting or reopens a live room from the meeting list.
+export default function LiveMeeting({ defaults = null } = {}) {
   const {
     setMeetingMode,
     loadExistingMeeting,
@@ -453,10 +455,12 @@ export default function LiveMeeting() {
   // Create / Join Configuration
   const [isJoinMode, setIsJoinMode] = useState(Boolean(initialRoomParam || initialInvite));
   const [roomCode, setRoomCode] = useState(
-    initialRoomParam || `livekit-m2m-${Math.floor(1000 + Math.random() * 9000)}`
+    initialRoomParam || defaults?.roomName || `livekit-m2m-${Math.floor(1000 + Math.random() * 9000)}`
   );
   const [topic, setTopic] = useState(
-    initialRoomParam ? `Live Meeting: ${initialRoomParam}` : "Engineering Sync & Sprint Planning"
+    initialRoomParam
+      ? `Live Meeting: ${initialRoomParam}`
+      : defaults?.topic || "Engineering Sync & Sprint Planning"
   );
   const [displayName, setDisplayName] = useState(
     initialRoomParam ? "Guest Participant" : "Alex Morgan (Host)"
@@ -628,9 +632,12 @@ export default function LiveMeeting() {
         } catch (err) {
           if (err?.status === 409) {
             throw new Error(
-              `Room code “${roomToJoin}” already belongs to another host's meeting. Choose a different code, or use “Have a Room Code? Join” with that host's invite link.`
+              err?.message && !/another meeting owner/.test(err.message)
+                ? err.message
+                : `Room code “${roomToJoin}” already belongs to another host's meeting. Choose a different code, or use “Have a Room Code? Join” with that host's invite link.`
             );
           }
+          if (err?.status === 410) throw new Error(err.message || "This scheduled meeting was cancelled.");
           console.warn("createLiveRoom warning (continuing with join token):", err);
         }
       }

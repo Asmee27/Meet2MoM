@@ -304,6 +304,16 @@ async def create_room(payload: CreateRoomRequest, request: Request):
     else:
         room_name = sanitize_room_name(room_name)
 
+    # Phase 8.3: a scheduled meeting's room code is reserved. Only its owner
+    # opens it, under the scheduled meeting's ID; nobody can take the code.
+    db.init_db()
+    schedule = db.get_scheduled_by_room(room_name)
+    if schedule is not None:
+        if schedule["status"] == "cancelled":
+            raise HTTPException(status_code=410, detail="This scheduled meeting was cancelled.")
+        if not auth.auth_required() or db.get_member_role(schedule["meeting_id"], user["user_id"]) != "owner":
+            raise HTTPException(status_code=409, detail="This room belongs to another meeting owner.")
+
     try:
         room_info = await create_live_room(
             room_name=room_name,
@@ -319,7 +329,14 @@ async def create_room(payload: CreateRoomRequest, request: Request):
             detail=f"Failed to create LiveKit room: {exc}",
         )
 
-    db.init_db()
+    if schedule is not None:
+        meeting = db.get_active_live_meeting(room_name)
+        if meeting is None:
+            meeting = db.start_scheduled_meeting(schedule["meeting_id"], room_sid=room_info.get("sid"))
+        if meeting is None:
+            raise HTTPException(status_code=409, detail="This scheduled meeting has already taken place.")
+        return {**room_info, "meeting_id": meeting["meeting_id"]}
+
     meeting = db.get_or_create_live_meeting(
         room_name,
         title=payload.title or "Live Meeting",
@@ -360,6 +377,11 @@ def create_token(payload: TokenRequest, request: Request):
         user = auth.current_user(request)
         meeting = db.get_active_live_meeting(clean_room)
         if meeting is None:
+            schedule = db.get_scheduled_by_room(clean_room)
+            if schedule and schedule["status"] == "scheduled" and db.get_member_role(
+                    schedule["meeting_id"], user["user_id"]):
+                raise HTTPException(status_code=409, detail="This meeting has not started yet. "
+                                    "Join again once the host has started it.")
             raise HTTPException(status_code=404, detail="Meeting not found.")
         role = db.get_member_role(meeting["meeting_id"], user["user_id"])
         if role is None:

@@ -4,10 +4,12 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { PageHeader } from "../components/AppShell";
 import { Alert, Badge, Button, ConfirmDialog, EmptyState, Icon, SkeletonRows, useToast } from "../components/ui";
 import { deleteMeeting, getLedger, listMeetings } from "../services/api";
-import { formatDateTime, formatDuration, meetingStatus, meetingTitle } from "../format";
+import { formatDateTime, formatDuration, formatScheduledStart, meetingStatus, meetingTitle } from "../format";
 
 const FILTERS = [
   { id: "all", label: "All" },
+  { id: "upcoming", label: "Upcoming" },
+  { id: "live", label: "Live" },
   { id: "review", label: "Needs review" },
   { id: "approved", label: "Approved" },
   { id: "processing", label: "Processing" },
@@ -19,6 +21,9 @@ const NEXT_ACTION = {
   failed: "View error",
   review: "Review",
   approved: "Open",
+  upcoming: "Details",
+  live: "Open room",
+  cancelled: "Details",
 };
 
 function SummaryTile({ label, value, hint, icon, tone }) {
@@ -34,7 +39,7 @@ function SummaryTile({ label, value, hint, icon, tone }) {
   );
 }
 
-export default function Dashboard({ onOpenMeeting, onUpload, onStartLive, onOpenCommitments }) {
+export default function Dashboard({ onOpenMeeting, onUpload, onStartLive, onSchedule, onOpenCommitments }) {
   const { notify } = useToast();
   const [state, setState] = useState({ status: "loading", meetings: [], error: "" });
   const [ledger, setLedger] = useState(null);
@@ -59,7 +64,7 @@ export default function Dashboard({ onOpenMeeting, onUpload, onStartLive, onOpen
 
   const meetings = state.meetings;
   const counts = useMemo(() => {
-    const result = { all: meetings.length, review: 0, approved: 0, processing: 0, failed: 0 };
+    const result = { all: meetings.length, review: 0, approved: 0, processing: 0, failed: 0, upcoming: 0, live: 0, cancelled: 0 };
     meetings.forEach((m) => { result[meetingStatus(m).key] += 1; });
     return result;
   }, [meetings]);
@@ -90,10 +95,11 @@ export default function Dashboard({ onOpenMeeting, onUpload, onStartLive, onOpen
     <main className="page ui-enter" aria-labelledby="dashboard-title">
       <PageHeader
         title={<span id="dashboard-title">Meetings</span>}
-        description="Recorded and live meetings, their review status, and the minutes you have approved."
+        description="Upcoming, live and recorded meetings, their review status, and the minutes you have approved."
         actions={
           <>
             <Button icon="upload" onClick={onUpload}>Upload recording</Button>
+            {onSchedule && <Button icon="clock" onClick={onSchedule}>Schedule meeting</Button>}
             <Button variant="primary" icon="mic" onClick={onStartLive}>Start live meeting</Button>
           </>
         }
@@ -101,6 +107,15 @@ export default function Dashboard({ onOpenMeeting, onUpload, onStartLive, onOpen
 
       {state.status === "ready" && meetings.length > 0 && (
         <section className="summary-grid" aria-label="Summary">
+          {(counts.upcoming > 0 || counts.live > 0) && (
+            <SummaryTile
+              icon="clock"
+              tone="accent"
+              value={counts.upcoming}
+              label="Upcoming"
+              hint={counts.live ? `${counts.live} live now` : "Scheduled, not started"}
+            />
+          )}
           <SummaryTile
             icon="warning"
             tone="warning"
@@ -188,6 +203,7 @@ export default function Dashboard({ onOpenMeeting, onUpload, onStartLive, onOpen
             actions={
               <>
                 <Button icon="upload" onClick={onUpload}>Upload recording</Button>
+                {onSchedule && <Button icon="clock" onClick={onSchedule}>Schedule meeting</Button>}
                 <Button variant="primary" icon="mic" onClick={onStartLive}>Start live meeting</Button>
               </>
             }
@@ -236,7 +252,12 @@ export default function Dashboard({ onOpenMeeting, onUpload, onStartLive, onOpen
                           <span className="ui-mono meetings-table__id">{meeting.meeting_id.slice(0, 12)}</span>
                         </div>
                       </td>
-                      <td data-label="Date" className="meetings-table__nowrap">{formatDateTime(meeting.created_at)}</td>
+                      <td data-label="Date" className="meetings-table__nowrap">
+                        {meeting.schedule ? formatScheduledStart(meeting.schedule) : formatDateTime(meeting.created_at)}
+                        {meeting.schedule && meeting.schedule.invitee_count > 0 && (
+                          <div className="meetings-table__sub">{meeting.schedule.invitee_count} invited</div>
+                        )}
+                      </td>
                       <td data-label="Duration">{formatDuration(meeting.duration_seconds)}</td>
                       <td data-label="Speakers">{meeting.speaker_count || "—"}</td>
                       <td data-label="Items">

@@ -54,8 +54,10 @@ app.add_middleware(
 )
 
 from app.api.auth_routes import router as auth_router  # noqa: E402
+from app.api.schedule_routes import router as schedule_router  # noqa: E402
 
 app.include_router(auth_router)
+app.include_router(schedule_router)
 app.include_router(meeting_router)
 app.include_router(live_router)
 

@@ -51,6 +51,7 @@ export function formatVersion(version) {
 
 // A readable name from the stored file name (extension removed).
 export function meetingTitle(meeting) {
+  if (meeting?.schedule?.title) return meeting.schedule.title;
   const name = meeting?.filename || "";
   const stripped = name.replace(/\.(json|wav|mp3|mp4|webm|ogg|m4a)$/i, "");
   return stripped || `Meeting ${String(meeting?.meeting_id || "").slice(0, 8)}`;
@@ -59,10 +60,33 @@ export function meetingTitle(meeting) {
 // Status shown in the meeting list, derived only from backend fields.
 export function meetingStatus(meeting) {
   const job = meeting?.job_state;
+  if (meeting?.status === "scheduled") return { key: "upcoming", tone: "accent", label: "Upcoming" };
+  if (meeting?.status === "cancelled") return { key: "cancelled", tone: "neutral", label: "Cancelled" };
+  // A room that is open now and has nothing processed yet.
+  if (meeting?.live_status === "active" && !job && !meeting?.utterance_count) {
+    return { key: "live", tone: "live", label: "Live", pulse: true };
+  }
   if (job === "queued") return { key: "processing", tone: "info", label: "Queued", pulse: true };
   if (job === "running") return { key: "processing", tone: "info", label: "Processing", pulse: true };
   if (job === "failed") return { key: "failed", tone: "danger", label: "Failed" };
   if (meeting?.review_status === "approved") return { key: "approved", tone: "success", label: "Approved" };
   if (meeting?.review_status === "reopened") return { key: "review", tone: "warning", label: "Reopened" };
   return { key: "review", tone: "warning", label: "Needs review" };
+}
+
+// A scheduled start in the meeting's own timezone, e.g.
+// "Mon, 26 Oct 2026, 10:30 (Asia/Kolkata)".
+export function formatScheduledStart(schedule) {
+  if (!schedule?.scheduled_start_utc) return "Time unknown";
+  const date = new Date(schedule.scheduled_start_utc);
+  if (Number.isNaN(date.getTime())) return schedule.scheduled_start_utc;
+  try {
+    const text = date.toLocaleString(undefined, {
+      weekday: "short", year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit",
+      timeZone: schedule.timezone,
+    });
+    return `${text} (${schedule.timezone})`;
+  } catch {
+    return date.toLocaleString();
+  }
 }

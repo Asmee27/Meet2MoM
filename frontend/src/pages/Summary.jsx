@@ -135,6 +135,12 @@ export default function Summary() {
             jsonExportError={jsonExportError}
           />
 
+          {momData.extraction?.fallback_note && (
+            <Alert tone="warning" title="Extraction fallback" data-testid="fallback-alert">
+              <p>{momData.extraction.fallback_note}</p>
+            </Alert>
+          )}
+
           <article className="ui-card minutes-doc">
             <header className="minutes-doc__header">
               <div>

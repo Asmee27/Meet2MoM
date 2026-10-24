@@ -80,4 +80,9 @@ def accept_invitation(payload: AcceptInvitationRequest, request: Request):
         raise HTTPException(status_code=401, detail="Sign in to continue.")
     meeting_id = auth.accept_invitation(payload.token, user["user_id"])
     live = db.get_live_meeting(meeting_id) or {}
-    return {"meeting_id": meeting_id, "room_name": live.get("room_name")}
+    schedule = db.get_scheduled_meeting(meeting_id)
+    if schedule is None:
+        return {"meeting_id": meeting_id, "room_name": live.get("room_name")}
+    # A scheduled meeting's room code is reserved before the room opens.
+    return {"meeting_id": meeting_id, "room_name": schedule["room_name"], "schedule_status": schedule["status"],
+            "scheduled_start_utc": schedule["scheduled_start_utc"], "title": schedule["title"]}

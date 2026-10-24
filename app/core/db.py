@@ -163,7 +163,7 @@ def init_db(db_path: Optional[Path | str] = None) -> None:
 # Migrations only ADD tables/indexes; they never rewrite or drop existing
 # data. Each step is idempotent (IF NOT EXISTS) and bumps user_version.
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 _MIGRATION_V1 = """
 CREATE TABLE IF NOT EXISTS extraction_runs (
@@ -494,6 +494,47 @@ CREATE INDEX IF NOT EXISTS idx_transcript_corrections_meeting
 """
 
 
+
+# Phase 8.3: scheduled meetings and their invitees. A scheduled meeting is a
+# normal meetings row (status 'scheduled') owned through meeting_members; the
+# schedule row holds the intended time and the reserved room code. Invitees
+# are tracked per email; their tokens live in meeting_invitations (hash only),
+# so revoking a link deletes its row and the link stops working.
+_MIGRATION_V8 = """
+CREATE TABLE IF NOT EXISTS scheduled_meetings (
+    meeting_id           TEXT PRIMARY KEY,
+    title                TEXT NOT NULL,
+    agenda               TEXT,
+    scheduled_start_utc  TEXT NOT NULL,
+    timezone             TEXT NOT NULL,
+    duration_minutes     INTEGER,
+    room_name            TEXT NOT NULL UNIQUE,
+    status               TEXT NOT NULL CHECK (status IN ('scheduled', 'started', 'cancelled')),
+    created_by           TEXT NOT NULL,
+    request_id           TEXT,
+    created_at           TEXT NOT NULL,
+    cancelled_at         TEXT,
+    UNIQUE (created_by, request_id),
+    FOREIGN KEY (meeting_id) REFERENCES meetings(meeting_id)
+);
+
+CREATE TABLE IF NOT EXISTS meeting_invitees (
+    invitee_id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    meeting_id        TEXT NOT NULL,
+    email             TEXT NOT NULL COLLATE NOCASE,
+    status            TEXT NOT NULL CHECK (status IN ('pending', 'accepted', 'revoked')),
+    token_hash        TEXT,
+    delivery          TEXT NOT NULL DEFAULT 'manual',
+    accepted_user_id  TEXT,
+    created_at        TEXT NOT NULL,
+    updated_at        TEXT NOT NULL,
+    UNIQUE (meeting_id, email),
+    FOREIGN KEY (meeting_id) REFERENCES meetings(meeting_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_meeting_invitees_token ON meeting_invitees(token_hash);
+"""
+
 def _migrate(conn: sqlite3.Connection) -> None:
     current = conn.execute("PRAGMA user_version").fetchone()[0]
     if current < 1:
@@ -527,6 +568,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
     if current < 7:
         conn.executescript(_MIGRATION_V7)
         conn.execute("PRAGMA user_version = 7")
+        current = 7
+    if current < 8:
+        conn.executescript(_MIGRATION_V8)
+        conn.execute("PRAGMA user_version = 8")
 
 
 def get_schema_version(db_path: Optional[Path | str] = None) -> int:
@@ -2885,4 +2930,214 @@ def get_invitation(token_hash: str, now_iso: str,
             "SELECT * FROM meeting_invitations WHERE token_hash = ? AND expires_at > ?", (token_hash, now_iso)
         ).fetchone()
     return dict(row) if row else None
+
+
+# ---------------------------------------------------------------------------
+# Scheduled meetings (Phase 8.3)
+# ---------------------------------------------------------------------------
+
+def create_scheduled_meeting(meeting_id: str, *, title: str, agenda: Optional[str], scheduled_start_utc: str,
+                             timezone_name: str, duration_minutes: Optional[int], room_name: str,
+                             owner_id: str, request_id: Optional[str],
+                             db_path: Optional[Path | str] = None) -> None:
+    """The meetings row (status 'scheduled'), the schedule and the owner, in one transaction."""
+    now = _now_iso()
+    with get_conn(db_path) as conn:
+        conn.execute(
+            "INSERT INTO meetings (meeting_id, filename, duration, created_at, status, owner_user_id) "
+            "VALUES (?, NULL, NULL, ?, 'scheduled', ?)",
+            (meeting_id, now, owner_id),
+        )
+        conn.execute(
+            """
+            INSERT INTO scheduled_meetings (meeting_id, title, agenda, scheduled_start_utc, timezone,
+                duration_minutes, room_name, status, created_by, request_id, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 'scheduled', ?, ?, ?)
+            """,
+            (meeting_id, title, agenda, scheduled_start_utc, timezone_name, duration_minutes, room_name,
+             owner_id, request_id, now),
+        )
+        conn.execute(
+            "INSERT INTO meeting_members (meeting_id, user_id, role, added_at) VALUES (?, ?, 'owner', ?)",
+            (meeting_id, owner_id, now),
+        )
+
+
+def get_scheduled_meeting(meeting_id: str, db_path: Optional[Path | str] = None) -> Optional[Dict[str, Any]]:
+    with get_conn(db_path) as conn:
+        row = conn.execute("SELECT * FROM scheduled_meetings WHERE meeting_id = ?", (meeting_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def get_scheduled_meetings(meeting_ids: List[str], db_path: Optional[Path | str] = None) -> Dict[str, Dict[str, Any]]:
+    if not meeting_ids:
+        return {}
+    marks = ",".join("?" * len(meeting_ids))
+    with get_conn(db_path) as conn:
+        rows = conn.execute(
+            f"""
+            SELECT s.*, (SELECT COUNT(*) FROM meeting_invitees i
+                         WHERE i.meeting_id = s.meeting_id AND i.status != 'revoked') AS invitee_count
+            FROM scheduled_meetings s WHERE s.meeting_id IN ({marks})
+            """,
+            meeting_ids,
+        ).fetchall()
+    return {r["meeting_id"]: dict(r) for r in rows}
+
+
+def find_scheduled_by_request(owner_id: str, request_id: str,
+                              db_path: Optional[Path | str] = None) -> Optional[Dict[str, Any]]:
+    with get_conn(db_path) as conn:
+        row = conn.execute(
+            "SELECT * FROM scheduled_meetings WHERE created_by = ? AND request_id = ?", (owner_id, request_id),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def get_scheduled_by_room(room_name: str, db_path: Optional[Path | str] = None) -> Optional[Dict[str, Any]]:
+    with get_conn(db_path) as conn:
+        row = conn.execute("SELECT * FROM scheduled_meetings WHERE room_name = ?", (room_name,)).fetchone()
+    return dict(row) if row else None
+
+
+def cancel_scheduled_meeting(meeting_id: str, db_path: Optional[Path | str] = None) -> bool:
+    """Cancel a meeting that has not started; revokes every invitation link. False if it was not 'scheduled'."""
+    now = _now_iso()
+    with get_conn(db_path) as conn:
+        cursor = conn.execute(
+            "UPDATE scheduled_meetings SET status = 'cancelled', cancelled_at = ? "
+            "WHERE meeting_id = ? AND status = 'scheduled'",
+            (now, meeting_id),
+        )
+        if not cursor.rowcount:
+            return False
+        conn.execute("UPDATE meetings SET status = 'cancelled' WHERE meeting_id = ?", (meeting_id,))
+        conn.execute("DELETE FROM meeting_invitations WHERE meeting_id = ?", (meeting_id,))
+        conn.execute(
+            "UPDATE meeting_invitees SET status = 'revoked', token_hash = NULL, updated_at = ? "
+            "WHERE meeting_id = ? AND status = 'pending'",
+            (now, meeting_id),
+        )
+    return True
+
+
+def add_invitee(meeting_id: str, email: str, db_path: Optional[Path | str] = None) -> Optional[int]:
+    """Insert a pending invitee; None if this email is already invited (a revoked one is re-opened)."""
+    now = _now_iso()
+    with get_conn(db_path) as conn:
+        row = conn.execute(
+            "SELECT invitee_id, status FROM meeting_invitees WHERE meeting_id = ? AND email = ?", (meeting_id, email),
+        ).fetchone()
+        if row:
+            if row["status"] != "revoked":
+                return None
+            conn.execute("UPDATE meeting_invitees SET status = 'pending', accepted_user_id = NULL, updated_at = ? "
+                         "WHERE invitee_id = ?", (now, row["invitee_id"]))
+            return int(row["invitee_id"])
+        cursor = conn.execute(
+            "INSERT INTO meeting_invitees (meeting_id, email, status, created_at, updated_at) "
+            "VALUES (?, ?, 'pending', ?, ?)",
+            (meeting_id, email, now, now),
+        )
+        return int(cursor.lastrowid)
+
+
+def list_invitees(meeting_id: str, db_path: Optional[Path | str] = None) -> List[Dict[str, Any]]:
+    with get_conn(db_path) as conn:
+        rows = conn.execute(
+            "SELECT * FROM meeting_invitees WHERE meeting_id = ? ORDER BY invitee_id", (meeting_id,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_invitee(meeting_id: str, invitee_id: int, db_path: Optional[Path | str] = None) -> Optional[Dict[str, Any]]:
+    with get_conn(db_path) as conn:
+        row = conn.execute(
+            "SELECT * FROM meeting_invitees WHERE meeting_id = ? AND invitee_id = ?", (meeting_id, invitee_id),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def set_invitee_token(invitee_id: int, new_hash: str, db_path: Optional[Path | str] = None) -> None:
+    """Point an invitee at a new link; the previous link is revoked."""
+    with get_conn(db_path) as conn:
+        row = conn.execute("SELECT token_hash FROM meeting_invitees WHERE invitee_id = ?", (invitee_id,)).fetchone()
+        if row and row["token_hash"]:
+            conn.execute("DELETE FROM meeting_invitations WHERE token_hash = ?", (row["token_hash"],))
+        conn.execute("UPDATE meeting_invitees SET token_hash = ?, updated_at = ? WHERE invitee_id = ?",
+                     (new_hash, _now_iso(), invitee_id))
+
+
+def revoke_invitee(invitee_id: int, db_path: Optional[Path | str] = None) -> None:
+    with get_conn(db_path) as conn:
+        row = conn.execute("SELECT token_hash FROM meeting_invitees WHERE invitee_id = ?", (invitee_id,)).fetchone()
+        if row and row["token_hash"]:
+            conn.execute("DELETE FROM meeting_invitations WHERE token_hash = ?", (row["token_hash"],))
+        conn.execute("UPDATE meeting_invitees SET status = 'revoked', token_hash = NULL, updated_at = ? "
+                     "WHERE invitee_id = ?", (_now_iso(), invitee_id))
+
+
+def mark_invitee_accepted(token_hash: str, user_id: str, db_path: Optional[Path | str] = None) -> None:
+    """Record which account opened a tracked invitation link (no effect on plain invitations)."""
+    with get_conn(db_path) as conn:
+        conn.execute(
+            "UPDATE meeting_invitees SET status = 'accepted', accepted_user_id = ?, updated_at = ? "
+            "WHERE token_hash = ? AND status = 'pending'",
+            (user_id, _now_iso(), token_hash),
+        )
+
+
+def update_scheduled_meeting(meeting_id: str, fields: Dict[str, Any], db_path: Optional[Path | str] = None) -> bool:
+    """Edit a meeting that has not started. False if it is no longer 'scheduled'."""
+    allowed = ("title", "agenda", "scheduled_start_utc", "timezone", "duration_minutes")
+    changes = {k: v for k, v in fields.items() if k in allowed}
+    if not changes:
+        return get_scheduled_meeting(meeting_id, db_path=db_path) is not None
+    sets = ", ".join(f"{k} = ?" for k in changes)
+    with get_conn(db_path) as conn:
+        cursor = conn.execute(
+            f"UPDATE scheduled_meetings SET {sets} WHERE meeting_id = ? AND status = 'scheduled'",
+            (*changes.values(), meeting_id),
+        )
+    return bool(cursor.rowcount)
+
+
+def start_scheduled_meeting(meeting_id: str, room_sid: Optional[str] = None,
+                            db_path: Optional[Path | str] = None) -> Optional[Dict[str, Any]]:
+    """
+    Open the live room for a scheduled meeting under the scheduled meeting's ID,
+    so its members and invitations carry over. Returns the live meeting, or
+    None when the meeting is not 'scheduled' (cancelled, or already held).
+    """
+    now = _now_iso()
+    with get_conn(db_path) as conn:
+        schedule = conn.execute(
+            "SELECT * FROM scheduled_meetings WHERE meeting_id = ? AND status = 'scheduled'", (meeting_id,),
+        ).fetchone()
+        if schedule is None:
+            return None
+        conn.execute("UPDATE scheduled_meetings SET status = 'started' WHERE meeting_id = ?", (meeting_id,))
+        conn.execute(
+            "UPDATE meetings SET status = 'live', filename = ? WHERE meeting_id = ?",
+            (f"live-{schedule['room_name']}.wav", meeting_id),
+        )
+        conn.execute(
+            """
+            INSERT INTO live_meetings (meeting_id, room_name, room_sid, title, status, created_at)
+            VALUES (?, ?, ?, ?, 'active', ?)
+            """,
+            (meeting_id, schedule["room_name"], room_sid, schedule["title"], now),
+        )
+    record_live_event(meeting_id, "meeting_created",
+                      detail={"room_name": schedule["room_name"], "scheduled": True}, db_path=db_path)
+    return get_live_meeting(meeting_id, db_path=db_path)
+
+
+def remove_meeting_member(meeting_id: str, user_id: str, db_path: Optional[Path | str] = None) -> None:
+    """Remove a non-owner member (owners are never removed this way)."""
+    with get_conn(db_path) as conn:
+        conn.execute(
+            "DELETE FROM meeting_members WHERE meeting_id = ? AND user_id = ? AND role != 'owner'",
+            (meeting_id, user_id),
+        )
 

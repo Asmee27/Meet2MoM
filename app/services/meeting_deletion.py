@@ -31,6 +31,7 @@ _MEETING_TABLES = (
     "approved_snapshots", "review_drafts", "processing_stage_timings", "live_events",
     "live_participants", "recording_segments", "live_meetings", "meeting_members",
     "meeting_invitations", "commitment_updates", "transcript_corrections", "jobs",
+    "meeting_invitees", "scheduled_meetings",
 )
 
 

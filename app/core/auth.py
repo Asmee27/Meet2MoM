@@ -175,16 +175,21 @@ def reviewer_identity(request: Request, provided: Optional[str]) -> Optional[str
 # Invitations
 # ---------------------------------------------------------------------------
 
-def create_invitation(meeting_id: str, user_id: str) -> str:
+def create_invitation(meeting_id: str, user_id: str, expires_at: Optional[datetime] = None) -> str:
+    """A single-meeting token; only its hash is stored. Default lifetime INVITATION_DAYS."""
     token = secrets.token_urlsafe(24)
-    db.create_invitation(token_hash(token), meeting_id, user_id,
-                         (_now() + timedelta(days=INVITATION_DAYS)).isoformat())
+    expiry = expires_at or (_now() + timedelta(days=INVITATION_DAYS))
+    db.create_invitation(token_hash(token), meeting_id, user_id, expiry.isoformat())
     return token
 
 
 def accept_invitation(token: str, user_id: str) -> str:
-    invitation = db.get_invitation(token_hash(token or ""), _now().isoformat())
+    hashed = token_hash(token or "")
+    invitation = db.get_invitation(hashed, _now().isoformat())
     if invitation is None:
         raise HTTPException(status_code=404, detail="This invitation is invalid or has expired.")
     db.add_meeting_member(invitation["meeting_id"], user_id, "member")
+    # Scheduled-meeting invitations (Phase 8.3) record which account opened the
+    # link. The invited email is never treated as proof of who that is.
+    db.mark_invitee_accepted(hashed, user_id)
     return invitation["meeting_id"]

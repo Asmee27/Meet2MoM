@@ -10,7 +10,7 @@ import "./styles/legacy.css";
 import { Suspense, lazy, useCallback, useEffect, useRef, useState } from "react";
 
 import AppShell from "./components/AppShell";
-import AuthGate from "./components/AuthGate";
+import AuthGate, { useAuth } from "./components/AuthGate";
 import MeetingHeader from "./components/MeetingHeader";
 import { Alert, ConfirmDialog, Icon, SkeletonRows, ToastProvider } from "./components/ui";
 import {
@@ -19,7 +19,7 @@ import {
 } from "./context/MeetingFlowContext";
 import { readRoute, routeSearch, stepFromSlug } from "./navigation";
 import { getStatus } from "./services/api";
-import { meetingStatus } from "./format";
+import { meetingStatus, meetingTitle } from "./format";
 
 import Dashboard from "./pages/Dashboard";
 import UploadMeeting from "./pages/UploadMeeting";
@@ -32,6 +32,15 @@ const LiveMeeting = lazy(() => import("./pages/LiveMeeting"));
 const VerifyMeeting = lazy(() => import("./pages/VerifyMeeting"));
 const Summary = lazy(() => import("./pages/Summary"));
 const Commitments = lazy(() => import("./pages/Commitments"));
+const ScheduleMeeting = lazy(() => import("./pages/ScheduleMeeting"));
+const ScheduledMeeting = lazy(() => import("./pages/ScheduledMeeting"));
+
+function initialPage(route) {
+  if (route.view === "commitments") return "commitments";
+  if (route.view === "schedule") return "schedule";
+  if (route.scheduled) return "scheduled";
+  return "meetings";
+}
 
 function PageFallback() {
   return (
@@ -73,8 +82,13 @@ function MeetingFlow() {
     loadReviewData,
   } = flow;
 
+  const { user } = useAuth() || {};
   const initial = useRef(readRoute());
-  const [page, setPage] = useState(initial.current.view === "commitments" ? "commitments" : "meetings");
+  const [page, setPage] = useState(() => initialPage(initial.current));
+  // Phase 8.3: the scheduled meeting shown on its own page, and the room code
+  // and topic the live room opens with when a host starts or reopens one.
+  const [scheduledId, setScheduledId] = useState(initial.current.scheduled);
+  const [liveDefaults, setLiveDefaults] = useState(null);
   const [activeMeeting, setActiveMeeting] = useState(null);
   const [leaveAction, setLeaveAction] = useState(null);
   const [openError, setOpenError] = useState("");
@@ -143,22 +157,27 @@ function MeetingFlow() {
   useEffect(() => {
     // While a ?meeting=…&step=… link is being restored, keep its URL.
     if (!routeApplied || booting || pendingStep.current || openManualReview.current) return;
-    const search = routeSearch({ page, meetingMode, currentStep, meetingId: backendFileId });
+    const search = routeSearch({ page, meetingMode, currentStep, meetingId: backendFileId, scheduledId });
     if (search !== window.location.search) {
       // A bare ?meeting= link only gains its step: no extra history entry.
       const current = readRoute();
       const sameEntry = current.meeting && current.meeting === backendFileId && !current.step;
       window.history[sameEntry ? "replaceState" : "pushState"](null, "", `${window.location.pathname}${search}`);
     }
-  }, [routeApplied, booting, page, meetingMode, currentStep, backendFileId]);
+  }, [routeApplied, booting, page, meetingMode, currentStep, backendFileId, scheduledId]);
 
   // Browser Back/Forward: move the app to the screen in the URL.
   useEffect(() => {
     const onPop = () => {
       const route = readRoute();
       setOpenError("");
-      if (route.view === "commitments") {
-        setPage("commitments");
+      if (route.view === "commitments" || route.view === "schedule") {
+        setPage(route.view);
+        return;
+      }
+      if (route.scheduled) {
+        setScheduledId(route.scheduled);
+        setPage("scheduled");
         return;
       }
       setPage("meetings");
@@ -206,17 +225,37 @@ function MeetingFlow() {
     setMeetingMode("recorded");
   });
 
-  const startLive = () => {
+  const startLive = (defaults = null) => {
     setPage("meetings");
     resetFlow();
+    setLiveDefaults(defaults && defaults.roomName ? defaults : null);
     setMeetingMode("live");
   };
+
+  const startSchedule = () => guarded(() => {
+    resetFlow();
+    setPage("schedule");
+  });
+
+  const openScheduled = useCallback((meetingId) => {
+    resetFlow();
+    setScheduledId(meetingId);
+    setPage("scheduled");
+  }, [resetFlow]);
 
   const openMeeting = useCallback(async (meeting) => {
     setOpenError("");
     setPage("meetings");
     setActiveMeeting(meeting);
     const status = meetingStatus(meeting);
+    if (meeting.schedule) {
+      openScheduled(meeting.meeting_id);
+      return;
+    }
+    if (status.key === "live") {
+      startLive({ roomName: meeting.live_room_name, topic: meetingTitle(meeting) });
+      return;
+    }
     if (status.key === "processing" || status.key === "failed") {
       let job = null;
       try {
@@ -229,11 +268,30 @@ function MeetingFlow() {
     }
     resetFlow();
     loadExistingMeeting(meeting.meeting_id);
-  }, [loadExistingMeeting, resetFlow, watchProcessingMeeting]);
+  }, [loadExistingMeeting, resetFlow, watchProcessingMeeting, openScheduled]);
 
   let content;
   if (page === "commitments") {
     content = <Commitments onOpenMeeting={openMeeting} />;
+  } else if (page === "schedule") {
+    content = (
+      <>
+        <Crumb onBack={goToMeetings} label="Schedule meeting" />
+        <ScheduleMeeting hostEmail={user?.email || ""} onOpenScheduled={openScheduled} onCancel={goToMeetings} />
+      </>
+    );
+  } else if (page === "scheduled" && scheduledId) {
+    content = (
+      <>
+        <Crumb onBack={goToMeetings} label="Scheduled meeting" />
+        <ScheduledMeeting
+          key={scheduledId}
+          meetingId={scheduledId}
+          hostEmail={user?.email || ""}
+          onStart={(m) => startLive({ roomName: m.room_name, topic: m.title })}
+        />
+      </>
+    );
   } else if (booting) {
     content = <PageFallback />;
   } else if (currentStep === 1 && !meetingMode) {
@@ -249,7 +307,8 @@ function MeetingFlow() {
         <Dashboard
           onOpenMeeting={openMeeting}
           onUpload={startUpload}
-          onStartLive={startLive}
+          onStartLive={() => startLive()}
+          onSchedule={startSchedule}
           onOpenCommitments={() => setPage("commitments")}
         />
       </>
@@ -265,7 +324,7 @@ function MeetingFlow() {
     content = (
       <>
         <Crumb onBack={goToMeetings} label="Live meeting" />
-        <LiveMeeting />
+        <LiveMeeting key={liveDefaults?.roomName || "new"} defaults={liveDefaults} />
       </>
     );
   } else {

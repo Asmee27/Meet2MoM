@@ -17,15 +17,20 @@ export function readRoute(search = window.location.search) {
     step: params.get("step"),
     room: params.get("room"),
     invite: params.get("invite"),
+    scheduled: params.get("scheduled"),
   };
 }
 
 // The URL for the current app state. Live-meeting invite parameters are kept
 // so a guest's link survives reloads.
-export function routeSearch({ page, meetingMode, currentStep, meetingId }, current = readRoute()) {
+export function routeSearch({ page, meetingMode, currentStep, meetingId, scheduledId }, current = readRoute()) {
   const params = new URLSearchParams();
   if (page === "commitments") {
     params.set("view", "commitments");
+  } else if (page === "schedule") {
+    params.set("view", "schedule");
+  } else if (page === "scheduled" && scheduledId) {
+    params.set("scheduled", scheduledId);
   } else if (currentStep >= 2 && meetingId) {
     params.set("meeting", meetingId);
     params.set("step", STEP_SLUGS[currentStep]);

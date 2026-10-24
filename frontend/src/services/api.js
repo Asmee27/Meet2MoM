@@ -472,3 +472,19 @@ export const correctTranscriptUtterance = (meetingId, uttId, text, reason = "", 
   );
 export const getTranscriptCorrections = (meetingId) =>
   authRequest(`/api/meetings/${encodeURIComponent(meetingId)}/transcript-corrections`);
+
+// ---------------------------------------------------------------------------
+// Scheduled meetings (Phase 8.3). No email is sent: each invitee's link is
+// returned to the host to share. Copying a link issues a new one and the
+// previous link stops working (only token hashes are stored).
+// ---------------------------------------------------------------------------
+export const scheduleMeeting = (payload) => authRequest("/api/schedule", { method: "POST", body: payload });
+export const getSchedule = (meetingId) => authRequest(`/api/meetings/${encodeURIComponent(meetingId)}/schedule`);
+export const addScheduleInvitees = (meetingId, emails) =>
+  authRequest(`/api/meetings/${encodeURIComponent(meetingId)}/schedule/invitees`, { method: "POST", body: { emails } });
+export const copyInviteeLink = (meetingId, inviteeId) =>
+  authRequest(`/api/meetings/${encodeURIComponent(meetingId)}/schedule/invitees/${inviteeId}/link`, { method: "POST" });
+export const revokeInvitee = (meetingId, inviteeId) =>
+  authRequest(`/api/meetings/${encodeURIComponent(meetingId)}/schedule/invitees/${inviteeId}`, { method: "DELETE" });
+export const cancelScheduledMeeting = (meetingId) =>
+  authRequest(`/api/meetings/${encodeURIComponent(meetingId)}/schedule/cancel`, { method: "POST" });

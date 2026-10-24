@@ -134,6 +134,7 @@ def build_claims_view(meeting_id: str) -> dict[str, Any]:
             "owner_type": payload.get("owner_type"),
             "deadline_text": payload.get("deadline_text"),
             "deadline_resolved": payload.get("deadline_resolved"),
+            "deadline_type": payload.get("deadline_type"),
             "commitment_type": payload.get("commitment_type"),
             "evidence_ids": list(claim["evidence"]),
             "evidence": cited,

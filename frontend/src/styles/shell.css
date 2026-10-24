@@ -900,3 +900,116 @@
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
+
+/* ---------------------------------------------------------------------------
+   Phase 8.3: scheduling
+   --------------------------------------------------------------------------- */
+.schedule-form,
+.schedule-review {
+  display: grid;
+  gap: var(--space-5);
+  max-width: 880px;
+}
+
+.schedule-form__row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: var(--space-4);
+}
+
+.schedule-form__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-3);
+}
+
+.field-error {
+  margin: 0;
+  font-size: var(--text-xs);
+  color: var(--danger);
+}
+
+.invitee-input {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.invitee-input .ui-input { flex: 1; }
+
+.invitee-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.invitee-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 4px 3px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  background: var(--surface-muted);
+  font-size: var(--text-sm);
+}
+
+.invitee-chip__remove {
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.invitee-chip__remove:hover { background: var(--neutral-soft); color: var(--text); }
+.invitee-chip__remove svg { width: 14px; height: 14px; }
+
+.schedule-review__list {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: var(--space-2) var(--space-5);
+  margin: 0;
+}
+
+.schedule-review__list dt { font-weight: 600; color: var(--text-secondary); }
+.schedule-review__list dd { margin: 0; }
+.schedule-review__agenda { white-space: pre-wrap; }
+
+.invite-links {
+  display: grid;
+  gap: var(--space-3);
+  margin: var(--space-3) 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.invite-link {
+  display: grid;
+  grid-template-columns: minmax(160px, 1fr) minmax(200px, 2fr) auto;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.invite-link__who { display: grid; gap: 2px; min-width: 0; overflow-wrap: anywhere; }
+.invite-link__url { font-size: var(--text-xs); }
+
+.schedule-add {
+  display: grid;
+  gap: var(--space-3);
+  justify-items: start;
+  margin-top: var(--space-5);
+}
+
+.schedule-add .ui-field { width: 100%; max-width: 640px; }
+
+@media (max-width: 720px) {
+  .invite-link { grid-template-columns: 1fr; }
+  .schedule-review__list { grid-template-columns: 1fr; }
+}
