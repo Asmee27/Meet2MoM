@@ -211,6 +211,64 @@ async def get_livekit_api() -> api.LiveKitAPI:
     return api.LiveKitAPI(url=url, api_key=key, api_secret=secret)
 
 
+class LiveKitAuthError(Exception):
+    """LiveKit refused this server's credentials (HTTP 401/403)."""
+
+
+def livekit_error_status(exc: BaseException) -> Optional[int]:
+    """HTTP status of a LiveKit server API error, if it has one."""
+    status = getattr(exc, "status", None)
+    return status if isinstance(status, int) else None
+
+
+_skew_cache: Dict[str, Any] = {"at": 0.0, "value": None}
+_SKEW_CACHE_SECONDS = 600
+
+
+def measure_clock_skew(timeout: float = 5.0) -> Optional[float]:
+    """
+    Seconds this computer's clock is behind (+) or ahead (-) of the LiveKit
+    server, from the server's HTTP Date header; None if it cannot be measured.
+
+    Phase 11: LiveKit tokens carry not-before/expiry times signed with this
+    computer's clock. A badly wrong clock (an unsynced Windows clock was 8.5 h
+    behind) makes LiveKit reject every token as "invalid token", which looked
+    like a broken room lifecycle.
+    """
+    import email.utils
+    import time as _time
+    import urllib.request
+
+    if _time.monotonic() - _skew_cache["at"] < _SKEW_CACHE_SECONDS and _skew_cache["at"]:
+        return _skew_cache["value"]
+    url = getattr(config, "LIVEKIT_URL", "") or ""
+    host = url.split("://", 1)[-1].split("/", 1)[0]
+    value = None
+    if host:
+        try:
+            request = urllib.request.Request(f"https://{host}", method="HEAD")
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                server_date = response.headers.get("Date")
+            if server_date:
+                server_now = email.utils.parsedate_to_datetime(server_date)
+                value = round((server_now - datetime.now(timezone.utc)).total_seconds(), 1)
+        except Exception as exc:
+            logger.info("Clock check against LiveKit skipped: %s", type(exc).__name__)
+    _skew_cache.update(at=_time.monotonic(), value=value)
+    return value
+
+
+def clock_warning(skew: Optional[float]) -> Optional[str]:
+    if skew is None or abs(skew) < 60:
+        return None
+    hours = abs(skew) / 3600
+    amount = f"{hours:.1f} hours" if hours >= 1 else f"{abs(skew) / 60:.0f} minutes"
+    direction = "behind" if skew > 0 else "ahead of"
+    return (f"This computer's clock is {amount} {direction} the real time, so LiveKit rejects its tokens "
+            "(\"invalid token\"). Turn on Settings > Time & language > Date & time > Set time automatically, "
+            "click Sync now, then restart the backend.")
+
+
 async def create_live_room(
     room_name: str,
     title: str = "",
@@ -255,6 +313,10 @@ async def create_live_room(
         finally:
             await lk.aclose()
     except Exception as exc:
+        if livekit_error_status(exc) in (401, 403):
+            # Not a "create on join later" case: every token from this server
+            # would be refused too (wrong key/secret, or a wrong clock).
+            raise LiveKitAuthError(f"LiveKit rejected this server's credentials (HTTP {livekit_error_status(exc)}).") from exc
         logger.warning("LiveKit explicit room creation returned: %s. Using lazy creation on join.", exc)
         return {
             "room_name": room_name,
@@ -314,7 +376,21 @@ async def end_live_room(room_name: str) -> Dict[str, Any]:
 
     lk = await get_livekit_api()
     try:
-        await lk.room.delete_room(api.DeleteRoomRequest(room=room_name))
+        try:
+            await lk.room.delete_room(api.DeleteRoomRequest(room=room_name))
+        except Exception as exc:
+            # LiveKit closes a room by itself shortly after its last
+            # participant leaves. Deleting it afterwards answers 404 "requested
+            # room does not exist": the room is already closed, which is the
+            # state ending was meant to reach. Any other error is real.
+            if livekit_error_status(exc) != 404:
+                raise
+            return {
+                "status": "already_closed",
+                "room_name": room_name,
+                "ended_at": datetime.now(timezone.utc).isoformat(),
+                "note": "LiveKit had already closed this room (everyone had left).",
+            }
         return {
             "status": "ended",
             "room_name": room_name,

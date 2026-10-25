@@ -517,6 +517,9 @@ export default function LiveMeeting({ defaults = null } = {}) {
         if (!active) return;
         if (!cfg?.configured) {
           setLiveConfigNotice(cfg?.message || "LiveKit credentials not configured.");
+        } else if (cfg?.clock_warning) {
+          // Phase 11: a wrong computer clock makes LiveKit refuse every token.
+          setLiveConfigNotice(cfg.clock_warning);
         }
       })
       .catch((err) => {
@@ -638,6 +641,9 @@ export default function LiveMeeting({ defaults = null } = {}) {
             );
           }
           if (err?.status === 410) throw new Error(err.message || "This scheduled meeting was cancelled.");
+          // LiveKit refused the server's credentials (or this computer's clock
+          // is wrong): joining would fail with "invalid token", so say why now.
+          if (err?.status === 503) throw new Error(err.message || "LiveKit is not available.");
           console.warn("createLiveRoom warning (continuing with join token):", err);
         }
       }
@@ -1605,6 +1611,10 @@ export default function LiveMeeting({ defaults = null } = {}) {
     if (recStatus === "completed") return "Processing finished. The meeting is ready for review.";
     if (recStatus === "failed") return "Processing or recording failed. See the details below.";
     if (artifact) return "The server-side recording is finalized and ready to process.";
+    // Never claim nothing was recorded while recorded segments exist.
+    if (segments.length > 0) {
+      return "Recording segments exist, but no finalized audio file was found yet. See the segment details below.";
+    }
     return "No consented audio was recorded in this meeting, so there is nothing to process.";
   })();
 

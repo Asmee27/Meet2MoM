@@ -162,8 +162,10 @@ def init_db(db_path: Optional[Path | str] = None) -> None:
 # ---------------------------------------------------------------------------
 # Migrations only ADD tables/indexes; they never rewrite or drop existing
 # data. Each step is idempotent (IF NOT EXISTS) and bumps user_version.
+# One exception: v10 fills in a missing commitment owner (NULL only), see
+# _MIGRATION_V10_BACKFILL.
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 _MIGRATION_V1 = """
 CREATE TABLE IF NOT EXISTS extraction_runs (
@@ -584,6 +586,17 @@ CREATE INDEX IF NOT EXISTS idx_email_events_outbox ON email_events(outbox_id);
 """
 
 
+_MIGRATION_V10_BACKFILL = """
+UPDATE commitments SET ledger_owner_id = COALESCE(
+    (SELECT m.owner_user_id FROM meetings m WHERE m.meeting_id = commitments.source_meeting_id),
+    (SELECT mm.user_id FROM meeting_members mm
+      WHERE mm.meeting_id = commitments.source_meeting_id AND mm.role = 'owner'
+      ORDER BY mm.added_at LIMIT 1)
+)
+WHERE ledger_owner_id IS NULL
+"""
+
+
 def _add_column(conn: sqlite3.Connection, table: str, column_def: str) -> None:
     try:
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {column_def}")
@@ -640,6 +653,13 @@ def _migrate(conn: sqlite3.Connection) -> None:
         _add_column(conn, "meeting_invitees", "approval_user_id TEXT")
         _add_column(conn, "meeting_invitees", "approval_requested_at TEXT")
         conn.execute("PRAGMA user_version = 9")
+        current = 9
+    if current < 10:
+        # Phase 11: commitments were stored without their ledger owner (see
+        # commitment_ledger.ledger_owner). Give each one the owner of the
+        # meeting it came from; nothing else about a commitment changes.
+        conn.execute(_MIGRATION_V10_BACKFILL)
+        conn.execute("PRAGMA user_version = 10")
 
 
 def get_schema_version(db_path: Optional[Path | str] = None) -> int:

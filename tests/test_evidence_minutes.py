@@ -208,3 +208,36 @@ def test_reviewer_exclusions_are_listed_but_not_used_as_evidence(monkeypatch):
     assert mom["excluded_from_mom"][0]["claim_type"] == "decision"
     pdf = meeting_routes.build_pdf(mid, mom)
     assert pdf.exists()
+
+
+# ---------------------------------------------------------------------------
+# Phase 11: the PDF states its own approval status
+# ---------------------------------------------------------------------------
+
+def _pdf_text(path):
+    import base64
+    import re
+    import zlib
+
+    data = path.read_bytes()
+    chunks = []
+    for m in re.finditer(rb"stream\s*(.*?)\s*endstream", data, re.S):
+        body = m.group(1).strip()
+        for decode in (zlib.decompress, lambda b: zlib.decompress(base64.a85decode(b.removesuffix(b"~>")))):
+            try:
+                chunks.append(decode(body))
+                break
+            except Exception:
+                continue
+    return " ".join(re.findall(r"\(((?:\.|[^\)])*)\)", b"\n".join(chunks).decode("latin-1")))
+
+
+def test_the_pdf_says_whether_minutes_are_approved(monkeypatch):
+    client, mid, *_ = _mixed_meeting(monkeypatch)
+    draft = client.post(f"/api/generate-mom/{mid}").json()["mom"]
+    draft_text = _pdf_text(meeting_routes.build_pdf(mid, draft))
+    assert "DRAFT - these minutes have not been approved" in draft_text and "APPROVED MINUTES" not in draft_text
+
+    approved = client.post(f"/api/meetings/{mid}/approve", json={"reviewer": "Rita"}).json()["mom"]
+    text = _pdf_text(meeting_routes.build_pdf(mid, approved))
+    assert "APPROVED MINUTES v1 - approved by Rita on" in text and "DRAFT" not in text
