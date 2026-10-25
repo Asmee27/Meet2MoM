@@ -12,11 +12,9 @@ Who may send approved minutes, and to whom (Phase 8.4).
 """
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from app.core import db
-from app.services.email import templates
 
 
 def current_approved_snapshot(meeting_id: str) -> Optional[Dict[str, Any]]:
@@ -76,14 +74,7 @@ def recipient_for_row(meeting_id: str, row: Dict[str, Any]) -> Optional[Dict[str
 
 
 def meeting_date(meeting_id: str) -> Optional[str]:
-    schedule = db.get_scheduled_meeting(meeting_id)
-    if schedule:
-        return templates.format_start(schedule)
-    meeting = db.get_meeting(meeting_id) or {}
-    created = meeting.get("created_at")
-    if not created:
-        return None
-    try:
-        return datetime.fromisoformat(created).strftime("%d %B %Y") + " (UTC)"
-    except ValueError:
-        return None
+    """The known meeting date (scheduled or live start); None for uploads."""
+    from app.services.meeting_dates import meeting_date_info
+
+    return meeting_date_info(meeting_id)["date"]

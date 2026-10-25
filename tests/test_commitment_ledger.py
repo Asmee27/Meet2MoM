@@ -58,8 +58,10 @@ def _follow_up(lines):
 @pytest.mark.parametrize("lines, proposed", [
     ([("Bob", "Quick update: the database cluster set up is done now."),
       ("Ann", "Great, thanks.")], "done"),
-    ([("Bob", "The database cluster set up is not done, it slipped to Monday."),
-      ("Ann", "Okay.")], "delayed"),
+    # "Delayed" needs the NLI model to recognise a postponement, which the
+    # keyword fake cannot; it is covered with real-model scores in
+    # tests/test_ledger_status_accuracy.py (Phase 9.1). This case used to pass
+    # only because "not done" was wrongly turned into "delayed".
     ([("Ann", "Let us talk about the marketing budget."),
       ("Bob", "The office coffee machine is broken again.")], "no_update"),
 ])
@@ -167,6 +169,6 @@ def test_hypotheses_leave_out_the_deadline():
     from app.services.ledger.commitment_ledger import _hypotheses
 
     assert _hypotheses("Update the login page by Friday.")["done"] == "Update the login page is done."
-    assert _hypotheses("check the mobile layout before the demo")["delayed"] == "check the mobile layout is delayed."
+    assert _hypotheses("check the mobile layout before the demo")["completed"] == "check the mobile layout has been completed."
     assert _hypotheses("share the results at the next meeting")["done"] == "share the results is done."
     assert _hypotheses("by Friday")["done"] == "by Friday is done."     # never empties the task

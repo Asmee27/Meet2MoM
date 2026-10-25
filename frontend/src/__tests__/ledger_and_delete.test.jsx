@@ -43,7 +43,7 @@ describe("CommitmentPanel", () => {
 
     await waitFor(() =>
       expect(review).toHaveBeenCalledWith("m2", "c_1", "delayed", "Only partly done", "Rita"));
-    expect(await screen.findByText(/Corrected to Delayed by Rita/)).toBeTruthy();
+    expect(await screen.findByText(/Reviewer set: Delayed · Rita \(changed the AI proposal\)/)).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Mark Delayed" })).toBeNull();
   });
 });

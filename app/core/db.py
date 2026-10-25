@@ -165,7 +165,7 @@ def init_db(db_path: Optional[Path | str] = None) -> None:
 # One exception: v10 fills in a missing commitment owner (NULL only), see
 # _MIGRATION_V10_BACKFILL.
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 
 _MIGRATION_V1 = """
 CREATE TABLE IF NOT EXISTS extraction_runs (
@@ -660,6 +660,12 @@ def _migrate(conn: sqlite3.Connection) -> None:
         # meeting it came from; nothing else about a commitment changes.
         conn.execute(_MIGRATION_V10_BACKFILL)
         conn.execute("PRAGMA user_version = 10")
+        current = 10
+    if current < 11:
+        # Phase 9.1: a reviewed proposal records the status the commitment had
+        # before the review, so the history shows previous -> new.
+        _add_column(conn, "commitment_updates", "previous_status TEXT")
+        conn.execute("PRAGMA user_version = 11")
 
 
 def get_schema_version(db_path: Optional[Path | str] = None) -> int:

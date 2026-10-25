@@ -2,6 +2,10 @@
 // Commitments are created when minutes are approved. A follow-up meeting gets
 // *proposed* statuses with cited utterances; nothing changes until a reviewer
 // confirms or corrects the proposal.
+// Phase 9.1: the current confirmed status, the AI proposal (with its reason,
+// or "needs review" for conflicting evidence) and the reviewer's decision are
+// shown separately, and every citation names its meeting as well as its
+// utterance, because utterance IDs (u00000…) restart in every meeting.
 import { useCallback, useEffect, useState } from "react";
 import {
   getMeetingCommitments,
@@ -19,6 +23,54 @@ function formatTime(seconds) {
   const m = Math.floor(seconds / 60);
   const s = Math.round(seconds % 60);
   return `${m}:${String(s).padStart(2, "0")}`;
+}
+
+const shortId = (id) => String(id || "").slice(0, 8);
+
+// Who was assigned the task in the transcript. A spoken name is never treated
+// as a registered account.
+export function AssigneeText({ assignee, assigneeUserId }) {
+  if (!assignee) return <span>No assignee stated</span>;
+  return (
+    <span>
+      Assigned in the transcript: {assignee}
+      {!assigneeUserId && <span className="ui-help"> (identity not linked to an account)</span>}
+    </span>
+  );
+}
+
+function Citations({ items, meetingLabel }) {
+  return (
+    <ul className="commitment-evidence">
+      {items.map((e) => (
+        <li key={e.ref || e.utt_id} data-ref={e.ref}>
+          <span className="ui-help">{meetingLabel} · </span>
+          <code>{e.utt_id}</code> {e.speaker} ({formatTime(e.start)}): “{e.text}”
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function ProposalBadge({ followUp }) {
+  if (followUp.needs_review) {
+    return <Badge tone="warning" icon="warning">AI proposal: needs review</Badge>;
+  }
+  return <Badge tone="accent" icon="sparkle">AI proposal: {STATUS_LABEL[followUp.proposed_status]}</Badge>;
+}
+
+function ReviewerDecision({ followUp }) {
+  if (followUp.review_status === "proposed") {
+    return <span className="ui-help">Awaiting reviewer decision</span>;
+  }
+  const corrected = followUp.review_status === "corrected";
+  return (
+    <Badge tone="success" icon="shield">
+      Reviewer {corrected ? "set" : "confirmed"}: {STATUS_LABEL[followUp.final_status]}
+      {followUp.reviewer ? ` · ${followUp.reviewer}` : ""}
+      {corrected ? " (changed the AI proposal)" : ""}
+    </Badge>
+  );
 }
 
 export default function CommitmentPanel({ meetingId, reviewerName = "" }) {
@@ -86,12 +138,11 @@ export default function CommitmentPanel({ meetingId, reviewerName = "" }) {
                     </Badge>
                   </div>
                   <div className="ui-meta">
-                    <span>
-                      {c.assignee ? `Assignee: ${c.assignee}` : "No assignee"}
-                      {!c.assignee_user_id && c.assignee ? " (not linked to an account)" : ""}
-                    </span>
+                    <AssigneeText assignee={c.assignee} assigneeUserId={c.assignee_user_id} />
                     {c.deadline && <span>Due: {c.deadline}</span>}
-                    <span>Evidence: <span className="ui-mono">{(c.evidence_ids || []).join(", ") || "none"}</span></span>
+                    <span>
+                      Evidence (this meeting): <span className="ui-mono">{(c.evidence_ids || []).join(", ") || "none"}</span>
+                    </span>
                   </div>
                 </li>
               ))}
@@ -115,55 +166,77 @@ export default function CommitmentPanel({ meetingId, reviewerName = "" }) {
           <p className="ui-help">No follow-ups for this meeting yet.</p>
         ) : (
           <ul className="commitment-list">
-            {data.follow_ups.map((f) => (
-              <li key={f.commitment_id} data-testid={`follow-up-${f.commitment_id}`}>
-                <strong>{f.text}</strong>
-                <div className="commitment-list__badges">
-                  <Badge tone="accent" icon="sparkle">AI proposal: {STATUS_LABEL[f.proposed_status]}</Badge>
-                  {f.review_status === "proposed" ? (
-                    <span className="ui-help">Awaiting reviewer confirmation</span>
-                  ) : (
-                    <Badge tone="success" icon="shield">
-                      {f.review_status === "confirmed" ? "Confirmed" : "Corrected to"} {STATUS_LABEL[f.final_status]}
-                      {f.reviewer ? ` by ${f.reviewer}` : ""}
-                    </Badge>
-                  )}
-                </div>
-                {f.evidence && f.evidence.length > 0 ? (
-                  <ul className="commitment-evidence">
-                    {f.evidence.map((e) => (
-                      <li key={e.utt_id}>
-                        <code>{e.utt_id}</code> {e.speaker} ({formatTime(e.start)}): “{e.text}”
-                      </li>
-                    ))}
-                  </ul>
-                ) : (
-                  <p className="ui-help">No utterance in this meeting supports a status change.</p>
-                )}
-                {f.review_status === "proposed" && (
-                  <div className="commitment-actions">
-                    <input
-                      className="ui-input"
-                      aria-label={`Note for ${f.text}`}
-                      placeholder="Optional note"
-                      value={notes[f.commitment_id] || ""}
-                      onChange={(e) => setNotes({ ...notes, [f.commitment_id]: e.target.value })}
-                    />
-                    {["done", "delayed", "no_update"].map((status) => (
-                      <Button
-                        key={status}
-                        size="sm"
-                        variant={status === f.proposed_status ? "primary" : "secondary"}
-                        disabled={busy}
-                        onClick={() => review(f.commitment_id, status)}
-                      >
-                        {status === f.proposed_status ? `Confirm: ${STATUS_LABEL[status]}` : `Mark ${STATUS_LABEL[status]}`}
-                      </Button>
-                    ))}
+            {data.follow_ups.map((f) => {
+              const unchangedNote = f.review_status === "proposed" && f.proposed_status === "no_update"
+                && f.commitment_status && f.commitment_status !== "open";
+              return (
+                <li key={f.commitment_id} data-testid={`follow-up-${f.commitment_id}`}>
+                  <strong>{f.text}</strong>
+                  <div className="ui-meta">
+                    <AssigneeText assignee={f.assignee} assigneeUserId={f.assignee_user_id} />
+                    <span>
+                      From meeting <span className="ui-mono">{shortId(f.source_meeting_id)}</span>
+                      {(f.source_evidence || []).length > 0 && (
+                        <> · evidence <span className="ui-mono">{f.source_evidence.map((e) => e.utt_id).join(", ")}</span></>
+                      )}
+                    </span>
                   </div>
-                )}
-              </li>
-            ))}
+                  <div className="commitment-list__badges">
+                    <span className="commitment-status" data-testid="current-status">
+                      Current status:{" "}
+                      <Badge tone={STATUS_TONE[f.commitment_status] || "neutral"} icon={STATUS_ICON[f.commitment_status]}>
+                        {STATUS_LABEL[f.commitment_status] || f.commitment_status}
+                      </Badge>
+                    </span>
+                    <ProposalBadge followUp={f} />
+                    <ReviewerDecision followUp={f} />
+                  </div>
+                  {f.reason && <p className="ui-help" data-testid="proposal-reason">{f.reason}</p>}
+                  {unchangedNote && (
+                    <p className="ui-help" data-testid="status-unchanged">
+                      This meeting gave no new status evidence. The confirmed status stays{" "}
+                      {STATUS_LABEL[f.commitment_status]}.
+                    </p>
+                  )}
+                  {f.evidence && f.evidence.length > 0 ? (
+                    <Citations items={f.evidence} meetingLabel="This meeting" />
+                  ) : (
+                    <p className="ui-help">No utterance in this meeting supports a status change.</p>
+                  )}
+                  {f.context && f.context.length > 0 && (
+                    <details className="commitment-context">
+                      <summary>Mentioned here, not evidence of a change ({f.context.length})</summary>
+                      <Citations items={f.context} meetingLabel="This meeting" />
+                    </details>
+                  )}
+                  {f.review_status === "proposed" && (
+                    <div className="commitment-actions">
+                      <input
+                        className="ui-input"
+                        aria-label={`Note for ${f.text}`}
+                        placeholder="Optional note"
+                        value={notes[f.commitment_id] || ""}
+                        onChange={(e) => setNotes({ ...notes, [f.commitment_id]: e.target.value })}
+                      />
+                      {["done", "delayed", "no_update"].map((status) => {
+                        const isProposal = !f.needs_review && status === f.proposed_status;
+                        return (
+                          <Button
+                            key={status}
+                            size="sm"
+                            variant={isProposal ? "primary" : "secondary"}
+                            disabled={busy}
+                            onClick={() => review(f.commitment_id, status)}
+                          >
+                            {isProposal ? `Confirm: ${STATUS_LABEL[status]}` : `Mark ${STATUS_LABEL[status]}`}
+                          </Button>
+                        );
+                      })}
+                    </div>
+                  )}
+                </li>
+              );
+            })}
           </ul>
         )}
       </div>
