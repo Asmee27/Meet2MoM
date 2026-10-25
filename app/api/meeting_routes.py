@@ -44,6 +44,7 @@ from app.services.pipeline.intelligence_service import (
     verification_is_current,
 )
 from app.services.verification.claims_view import build_claims_view
+from app.services.meeting_dates import meeting_date_info
 
 
 router = APIRouter(
@@ -1639,7 +1640,10 @@ def approve_meeting_review(
     mom = {
         "file_id": meeting_id,
         "meeting_title": draft.get("meeting_title") or "Meeting Minutes",
-        "meeting_date": None,
+        # Phase 9.1: the date the system knows (scheduled start or live
+        # recording start); None for uploads, whose upload time is not the date.
+        "meeting_date": meeting_date_info(meeting_id)["date"],
+        "meeting_date_source": meeting_date_info(meeting_id)["source"],
         "duration_seconds": round(duration, 2),
         **_meeting_language_info(storage, utterances),
         "participants": participants,
@@ -2329,7 +2333,10 @@ def create_mom(
     mom = {
         "file_id": file_id,
         "meeting_title": "Meeting Minutes",
-        "meeting_date": None,
+        # Phase 9.1: the date the system knows (scheduled start or live
+        # recording start); None for uploads, whose upload time is not the date.
+        "meeting_date": meeting_date_info(file_id)["date"],
+        "meeting_date_source": meeting_date_info(file_id)["source"],
         "duration_seconds": round(duration, 2),
         **_meeting_language_info(storage, utterances),
         "participants": participants,
@@ -2605,7 +2612,11 @@ def build_pdf(
         ("TOPPADDING", (0, 0), (-1, -1), 5),
         ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
     ]))
-    story.extend([status_box, Spacer(1, 7)])
+    story.extend([status_box, Spacer(1, 4)])
+    if mom.get("meeting_date"):
+        story.append(Paragraph(safe_pdf(f"Meeting date: {mom['meeting_date']} ({mom.get('meeting_date_source')})"),
+                               small_style))
+    story.append(Spacer(1, 5))
 
     participants = mom.get("participants") or []
     decisions = mom.get("decisions") or []

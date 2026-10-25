@@ -6,6 +6,7 @@ import { PageHeader } from "../components/AppShell";
 import { Alert, Badge, Button, EmptyState, Icon, SkeletonRows } from "../components/ui";
 import { getLedger, listMeetings } from "../services/api";
 import { formatDateTime, meetingTitle } from "../format";
+import { AssigneeText } from "../components/CommitmentPanel";
 
 const STATUS = {
   open: { tone: "info", label: "Open", icon: "clock" },
@@ -25,28 +26,57 @@ function StatusBadge({ status }) {
   return <Badge tone={s.tone} icon={s.icon}>{s.label}</Badge>;
 }
 
-// The latest proposal or review for a commitment, labelled by who decided it.
-function LatestUpdate({ history }) {
+const reviewed = (history) => (history || []).filter((h) => h.review_status !== "proposed");
+
+// Who confirmed the current status, and in which meeting (Phase 9.1).
+function ConfirmedBy({ history, titles }) {
+  const last = reviewed(history).slice(-1)[0];
+  if (!last) return <div className="ledger-muted">Not reviewed since the minutes were approved</div>;
+  const meeting = titles[last.meeting_id];
+  return (
+    <div className="ledger-muted" data-testid="confirmed-by">
+      {last.review_status === "confirmed" ? "Confirmed" : "Set"} by {last.reviewer || "a reviewer"}
+      {last.reviewed_at ? ` · ${formatDateTime(last.reviewed_at)}` : ""}
+      {" · in "}{meeting ? meetingTitle(meeting) : last.meeting_id.slice(0, 8)}
+      {last.previous_status ? ` · was ${STATUS[last.previous_status]?.label || last.previous_status}` : ""}
+    </div>
+  );
+}
+
+// The latest AI proposal, kept apart from the reviewer's decision on it.
+function LatestUpdate({ history, status, titles }) {
   const latest = (history || [])[history.length - 1];
   if (!latest) return <span className="ledger-muted">No follow-up checked yet</span>;
-  if (latest.review_status === "proposed") {
-    return (
-      <div className="ledger-update">
-        <Badge tone="accent" icon="sparkle">AI proposal: {STATUS[latest.proposed_status]?.label || latest.proposed_status}</Badge>
-        <span className="ledger-muted">Awaiting reviewer confirmation</span>
-      </div>
-    );
-  }
+  const scores = latest.scores || {};
+  const meeting = titles[latest.meeting_id];
+  const where = meeting ? meetingTitle(meeting) : latest.meeting_id.slice(0, 8);
+  const proposal = scores.needs_review
+    ? <Badge tone="warning" icon="warning">AI proposal: needs review</Badge>
+    : <Badge tone="accent" icon="sparkle">AI proposal: {STATUS[latest.proposed_status]?.label || latest.proposed_status}</Badge>;
   return (
     <div className="ledger-update">
-      <Badge tone="success" icon="shield">
-        {latest.review_status === "confirmed" ? "Confirmed" : "Corrected"}: {STATUS[latest.final_status]?.label || latest.final_status}
-      </Badge>
-      <span className="ledger-muted">
-        {latest.reviewer ? `by ${latest.reviewer}` : "by a reviewer"}
-        {latest.reviewed_at ? ` · ${formatDateTime(latest.reviewed_at)}` : ""}
-      </span>
-      {latest.note && <span className="ledger-note">“{latest.note}”</span>}
+      <div>{proposal} <span className="ledger-muted">in {where}</span></div>
+      {scores.reason && <span className="ledger-muted">{scores.reason}</span>}
+      {(latest.evidence_ids || []).length > 0 && (
+        <span className="ui-mono ledger-muted" title="Cited utterances of the follow-up meeting">
+          <Icon name="quote" size={12} /> {where} · {latest.evidence_ids.join(", ")}
+        </span>
+      )}
+      {latest.review_status === "proposed" ? (
+        <span className="ledger-muted">
+          Awaiting reviewer decision
+          {latest.proposed_status === "no_update" && status !== "open"
+            ? ` · the confirmed status stays ${STATUS[status]?.label || status}`
+            : ""}
+        </span>
+      ) : (
+        <span className="ledger-muted">
+          Reviewer {latest.review_status === "confirmed" ? "confirmed" : "set"}:{" "}
+          {STATUS[latest.final_status]?.label || latest.final_status}
+          {latest.reviewer ? ` · ${latest.reviewer}` : ""}
+          {latest.note ? ` · “${latest.note}”` : ""}
+        </span>
+      )}
     </div>
   );
 }
@@ -138,7 +168,7 @@ export default function Commitments({ onOpenMeeting }) {
               <thead>
                 <tr>
                   <th scope="col">Commitment</th>
-                  <th scope="col">Status</th>
+                  <th scope="col">Confirmed status</th>
                   <th scope="col">Latest follow-up</th>
                   <th scope="col">From meeting</th>
                 </tr>
@@ -151,15 +181,21 @@ export default function Commitments({ onOpenMeeting }) {
                       <td data-label="Commitment">
                         <div className="ledger-task">{c.text}</div>
                         <div className="ui-meta">
-                          <span>{c.assignee ? `Assignee: ${c.assignee}` : "No assignee"}</span>
+                          <AssigneeText assignee={c.assignee} assigneeUserId={c.assignee_user_id} />
                           <span>{c.deadline ? `Due: ${c.deadline}` : "No deadline"}</span>
-                          <span className="ui-mono" title="Cited utterances">
-                            <Icon name="quote" size={12} /> {(c.evidence_ids || []).join(", ") || "no evidence"}
+                          <span className="ui-mono" title="Cited utterances of the source meeting">
+                            <Icon name="quote" size={12} /> {source ? meetingTitle(source) : c.source_meeting_id.slice(0, 8)}
+                            {" · "}{(c.evidence_ids || []).join(", ") || "no evidence"}
                           </span>
                         </div>
                       </td>
-                      <td data-label="Status"><StatusBadge status={c.status} /></td>
-                      <td data-label="Latest follow-up"><LatestUpdate history={c.history || []} /></td>
+                      <td data-label="Status">
+                        <StatusBadge status={c.status} />
+                        <ConfirmedBy history={c.history || []} titles={titles} />
+                      </td>
+                      <td data-label="Latest follow-up">
+                        <LatestUpdate history={c.history || []} status={c.status} titles={titles} />
+                      </td>
                       <td data-label="From meeting">
                         <button type="button" className="meetings-table__title" onClick={() => onOpenMeeting(source || { meeting_id: c.source_meeting_id })}>
                           {source ? meetingTitle(source) : c.source_meeting_id.slice(0, 12)}

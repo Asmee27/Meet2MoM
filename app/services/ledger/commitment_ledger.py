@@ -6,9 +6,10 @@ Evidence-linked commitment ledger (Phase 9).
    the minutes; never linked to an account by name) and deadline.
 2. For a later meeting of the same ledger, each open commitment is checked
    against that meeting's transcript: hybrid retrieval finds the most relevant
-   spans and the NLI model scores "<task> is done" and "<task> is delayed".
-   The result is a *proposal* (done / delayed / no_update) with cited
-   utterances and scores.
+   spans, and each *utterance* in them that is about this commitment is scored
+   by the NLI model (Phase 9.1, see propose_updates). The result is a
+   *proposal* (done / delayed / no_update, possibly flagged as needing review)
+   citing that meeting's utterances, with scores.
 3. A reviewer confirms or corrects the proposal. Only that changes the
    commitment's status; every proposal and decision stays in the history.
 
@@ -29,7 +30,25 @@ logger = logging.getLogger(__name__)
 
 PROPOSAL_MIN = 0.60          # entailment needed to propose done / delayed
 TOP_K = 5
-METHOD = "retrieval+topic-gate+nli-v3"
+METHOD = "retrieval+utterance-topic-gate+nli-status-v4"
+# Phase 9.1. "Delayed" used to be proposed whenever "<task> is done." was
+# contradicted - but a repeated promise ("I will finalize the backend API")
+# or "I have not started yet" contradicts "done" without saying anything about
+# a delay. With the real NLI model, "<task> is delayed." was also entailed by
+# plain future promises ("I will submit the report by Friday": 0.76), and an
+# explicit "the deployment is postponed until next week" scored 0.00 because
+# the compound task text was not fully restated. So:
+#   done     <- "<task> is done." / "<task> has been completed." (task-specific)
+#   delayed  <- the utterance itself says the work was postponed, late or
+#               blocked, clearly more than "it will be done in the future"
+#   not done but no delay stated, or only a repeated promise -> no_update
+#   completion and delay/not-finished evidence together     -> needs review
+POSTPONED_HYPOTHESES = ("The work has been postponed to a later date.", "The work is late or blocked.")
+FUTURE_HYPOTHESIS = "The work will be done in the future."
+NOT_FINISHED_HYPOTHESIS = "The work is not finished yet."
+# A delay must beat "will be done in the future" by this margin; a promise
+# with a date scores about the same on both and is not evidence of a delay.
+FUTURE_MARGIN = 0.30
 # An utterance is only considered when it shares this share of the
 # commitment's content words (and at least two of them). Without it, "the
 # mobile check is not done" contradicts "the login page is done" and was
@@ -152,8 +171,9 @@ def _task_without_deadline(text: str) -> str:
 
 
 def _hypotheses(text: str) -> Dict[str, str]:
+    """Task-specific completion hypotheses (the deadline left out)."""
     task = _task_without_deadline(text)
-    return {"done": f"{task} is done.", "delayed": f"{task} is delayed."}
+    return {"done": f"{task} is done.", "completed": f"{task} has been completed."}
 
 
 def _content_words(text: str) -> set:
@@ -167,11 +187,94 @@ def _on_topic(task: str, utterance: str) -> bool:
     return bool(wanted) and shared >= min(2, len(wanted)) and shared >= TOPIC_MIN_OVERLAP * len(wanted)
 
 
+def _candidate_utterances(meeting_id: str, task: str, index, utterances: Dict[str, Any]) -> List[Any]:
+    """
+    Utterances of THIS meeting that are about this commitment. Retrieval spans
+    group three utterances; each utterance is gated on its own, so a neighbour
+    about something else is never cited (it used to be, as part of the span).
+    """
+    chosen: List[str] = []
+    for hit in index.retrieve(task, k=TOP_K):
+        if getattr(hit.span, "meeting_id", meeting_id) != meeting_id:
+            continue                                   # never another meeting's text
+        for uid in hit.span.utt_ids:
+            utterance = utterances.get(uid)
+            if utterance is not None and uid not in chosen and _on_topic(task, utterance.text or ""):
+                chosen.append(uid)
+    return [utterances[uid] for uid in chosen]
+
+
+def classify_status(task: str, candidates: List[Any], scores: List[Dict[str, float]]) -> Dict[str, Any]:
+    """
+    The proposal from per-utterance NLI scores. `scores[i]` holds the
+    entailment of each hypothesis for `candidates[i]`: keys "done",
+    "postponed", "future", "not_finished".
+    """
+    done, delayed, not_finished = [], [], []
+    best = {"done": 0.0, "delayed": 0.0, "not_finished": 0.0, "future": 0.0}
+    for utterance, s in zip(candidates, scores):
+        delay = s["postponed"] if s["postponed"] - s["future"] >= FUTURE_MARGIN else 0.0
+        best["done"] = max(best["done"], s["done"])
+        best["delayed"] = max(best["delayed"], delay)
+        best["not_finished"] = max(best["not_finished"], s["not_finished"])
+        best["future"] = max(best["future"], s["future"])
+        if s["done"] >= PROPOSAL_MIN and s["not_finished"] < PROPOSAL_MIN and s["postponed"] < PROPOSAL_MIN:
+            done.append((s["done"], utterance))
+        elif delay >= PROPOSAL_MIN and s["done"] < PROPOSAL_MIN:
+            delayed.append((delay, utterance))
+        elif s["not_finished"] >= PROPOSAL_MIN:
+            not_finished.append((s["not_finished"], utterance))
+
+    def ids(found):
+        return [u.utt_id for _, u in sorted(found, key=lambda x: -x[0])[:1]]
+
+    if done and (delayed or not_finished):
+        return {"status": "no_update", "needs_review": True, "evidence_ids": ids(done) + ids(delayed or not_finished),
+                "reason": "Conflicting evidence: one statement says the work is done, another that it is not "
+                          "finished or delayed. Check the recording and decide.", "best": best}
+    if done:
+        return {"status": "done", "needs_review": False, "evidence_ids": ids(done),
+                "reason": "A statement in this meeting says the work is done.", "best": best}
+    if delayed:
+        return {"status": "delayed", "needs_review": False, "evidence_ids": ids(delayed),
+                "reason": "A statement in this meeting says the work is postponed, late or blocked.", "best": best}
+    if not_finished:
+        return {"status": "no_update", "needs_review": False, "evidence_ids": [], "context_ids": ids(not_finished),
+                "reason": "The work is said to be not finished yet, but no delay or new date is stated.",
+                "best": best}
+    if candidates:
+        return {"status": "no_update", "needs_review": False, "evidence_ids": [],
+                "context_ids": [u.utt_id for u in candidates[:3]],
+                "reason": "The task is mentioned without progress information (for example, the promise is "
+                          "repeated).", "best": best}
+    return {"status": "no_update", "needs_review": False, "evidence_ids": [],
+            "reason": "This commitment is not discussed in this meeting.", "best": best}
+
+
+def _score_candidates(meeting_id: str, task: str, candidates: List[Any], scorer) -> List[Dict[str, float]]:
+    done_hyps = list(_hypotheses(task).values())
+    hypotheses = done_hyps + list(POSTPONED_HYPOTHESES) + [FUTURE_HYPOTHESIS, NOT_FINISHED_HYPOTHESIS]
+    pairs = [(u.text, h) for u in candidates for h in hypotheses]
+    raw = scorer.score_pairs_cached(meeting_id, pairs) if pairs else []
+    out = []
+    width = len(hypotheses)
+    for i in range(len(candidates)):
+        entail = [r.get("entailment", 0.0) for r in raw[i * width:(i + 1) * width]]
+        n_done, n_post = len(done_hyps), len(POSTPONED_HYPOTHESES)
+        out.append({
+            "done": max(entail[:n_done]),
+            "postponed": max(entail[n_done:n_done + n_post]),
+            "future": entail[n_done + n_post],
+            "not_finished": entail[n_done + n_post + 1],
+        })
+    return out
+
+
 def propose_updates(meeting_id: str, *, index=None, scorer=None) -> List[Dict[str, Any]]:
     """
     Propose a status for every outstanding (open or delayed) commitment of
     this meeting's ledger that came from an earlier meeting. Never changes a
-    commitment's status.
+    commitment's status. Evidence is always an utterance of `meeting_id`.
     """
     from app.services.verification.nli_scorer import NLIScorer
     from app.services.verification.retrieval_index import RetrievalIndex
@@ -191,40 +294,34 @@ def propose_updates(meeting_id: str, *, index=None, scorer=None) -> List[Dict[st
             ).fetchall()]
     if not open_items:
         return []
-    if not db.get_utterances(meeting_id):
+    utterances = {u.utt_id: u for u in db.get_utterances(meeting_id)}
+    if not utterances:
         raise ValueError("This meeting has no transcript yet.")
     index = index or RetrievalIndex.load_or_build(meeting_id)
     scorer = scorer or NLIScorer()
 
     proposals = []
     for item in open_items:
-        hits = [h for h in index.retrieve(item["text"], k=TOP_K) if _on_topic(item["text"], h.span.text)]
-        hyps = _hypotheses(item["text"])
-        pairs, owners = [], []
-        for hit in hits:
-            for status, hypothesis in hyps.items():
-                pairs.append((hit.span.text, hypothesis))
-                owners.append((status, hit))
-        scores = scorer.score_pairs_cached(meeting_id, pairs) if pairs else []
-        best = {"done": (0.0, None), "delayed": (0.0, None)}
-        for (status, hit), score in zip(owners, scores):
-            # "done" entailed -> done; "done" contradicted counts towards delayed.
-            candidates = [(status, score.get("entailment", 0.0))]
-            if status == "done":
-                candidates.append(("delayed", score.get("contradiction", 0.0)))
-            for name, value in candidates:
-                if value > best[name][0]:
-                    best[name] = (value, hit)
-        status, (value, hit) = max(best.items(), key=lambda kv: kv[1][0])
-        if value < PROPOSAL_MIN:
-            status, hit = "no_update", None
+        candidates = _candidate_utterances(meeting_id, item["text"], index, utterances)
+        result = classify_status(item["text"], candidates, _score_candidates(meeting_id, item["text"], candidates, scorer))
+        status = result["status"]
         record = {
             "commitment_id": item["commitment_id"],
             "meeting_id": meeting_id,
             "proposed_status": status,
-            "evidence_ids": list(hit.span.utt_ids) if hit else [],
-            "scores": {"done": round(best["done"][0], 4), "delayed": round(best["delayed"][0], 4),
-                       "threshold": PROPOSAL_MIN},
+            "evidence_ids": result["evidence_ids"],
+            "scores": {
+                "done": round(result["best"]["done"], 4),
+                "delayed": round(result["best"]["delayed"], 4),
+                "not_finished": round(result["best"]["not_finished"], 4),
+                "future": round(result["best"]["future"], 4),
+                "threshold": PROPOSAL_MIN,
+                "future_margin": FUTURE_MARGIN,
+                "needs_review": result["needs_review"],
+                "reason": result["reason"],
+                "context_ids": result.get("context_ids", []),
+                "candidate_ids": [u.utt_id for u in candidates],
+            },
         }
         with db.get_conn() as conn:
             conn.execute(
@@ -264,10 +361,26 @@ def meeting_follow_ups(meeting_id: str) -> List[Dict[str, Any]]:
             item["source_evidence_ids"] = json.loads(item["source_evidence_ids"] or "[]")
         except ValueError:
             pass
-        item["evidence"] = [
-            {"utt_id": uid, "speaker": utterances[uid].speaker_name or utterances[uid].speaker_id,
-             "start": utterances[uid].start, "end": utterances[uid].end, "text": utterances[uid].text}
-            for uid in item["evidence_ids"] if uid in utterances
+        scores = item.get("scores") if isinstance(item.get("scores"), dict) else {}
+
+        def cite(ids):
+            # Utterance IDs restart in every meeting (u00000...), so a citation
+            # is always the pair (meeting_id, utt_id) - here the follow-up meeting.
+            return [
+                {"meeting_id": meeting_id, "utt_id": uid, "ref": f"{meeting_id}:{uid}",
+                 "speaker": utterances[uid].speaker_name or utterances[uid].speaker_id,
+                 "start": utterances[uid].start, "end": utterances[uid].end, "text": utterances[uid].text}
+                for uid in ids if uid in utterances
+            ]
+
+        item["evidence"] = cite(item["evidence_ids"])
+        item["context"] = cite(scores.get("context_ids") or [])
+        item["needs_review"] = bool(scores.get("needs_review"))
+        item["reason"] = scores.get("reason")
+        # The source evidence belongs to the commitment's own meeting.
+        item["source_evidence"] = [
+            {"meeting_id": item["source_meeting_id"], "utt_id": uid, "ref": f"{item['source_meeting_id']}:{uid}"}
+            for uid in item.get("source_evidence_ids") or []
         ]
         result.append(item)
     return result
@@ -292,16 +405,20 @@ def review_update(meeting_id: str, commitment_id: str, final_status: str, review
         if update is None:
             raise LookupError("No proposal exists for this commitment in this meeting.")
         review_status = "confirmed" if final_status == update["proposed_status"] else "corrected"
+        previous = conn.execute("SELECT status FROM commitments WHERE commitment_id = ?", (commitment_id,)).fetchone()
         conn.execute(
             """
-            UPDATE commitment_updates SET review_status = ?, final_status = ?, reviewer = ?, note = ?, reviewed_at = ?
+            UPDATE commitment_updates SET review_status = ?, final_status = ?, reviewer = ?, note = ?, reviewed_at = ?,
+                                          previous_status = ?
             WHERE update_id = ?
             """,
-            (review_status, final_status, reviewer, (note or None), _now(), update["update_id"]),
+            (review_status, final_status, reviewer, (note or None), _now(),
+             previous["status"] if previous else None, update["update_id"]),
         )
         if final_status in ("done", "delayed"):
             conn.execute(
                 "UPDATE commitments SET status = ?, updated_at = ? WHERE commitment_id = ?",
                 (final_status, _now(), commitment_id),
             )
-    return {"commitment_id": commitment_id, "review_status": review_status, "final_status": final_status}
+    return {"commitment_id": commitment_id, "review_status": review_status, "final_status": final_status,
+            "previous_status": previous["status"] if previous else None}

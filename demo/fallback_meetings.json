@@ -1,5 +1,5 @@
 {
-  "_note": "Synthetic fallback demo data (Phase 10). Written for the demo, not recorded from a real meeting. Load it with scripts/seed_demo_meetings.py when live recording or the network is unavailable.",
+  "_note": "Synthetic fallback demo data (Phase 10). Written for the demo, not recorded from a real meeting. Load it with scripts/seed_demo_meetings.py when live recording or the network is unavailable. Phase 9.1: the follow-up shows the three ledger outcomes - done (the front end validation report was submitted), delayed (the mobile layout check slipped to Monday) and no update (sharing the test results is only promised again).",
   "meetings": [
     {
       "name": "Sprint planning (demo)",
@@ -8,7 +8,8 @@
         {"start": 6.0, "end": 11.5, "speaker": "Ravi", "text": "We decided to keep the email and password sign-in for the first release."},
         {"start": 12.0, "end": 17.5, "speaker": "Ravi", "text": "I will update the login page with loading and error states by Friday."},
         {"start": 18.0, "end": 23.5, "speaker": "Asha", "text": "Neha will check the mobile layout before the demo."},
-        {"start": 24.0, "end": 29.0, "speaker": "Neha", "text": "Sure, I will share the test results at the next meeting."}
+        {"start": 24.0, "end": 29.0, "speaker": "Neha", "text": "Sure, I will share the test results at the next meeting."},
+        {"start": 29.5, "end": 35.0, "speaker": "Asmee", "text": "I will submit the front end validation report by Thursday."}
       ]
     },
     {
@@ -17,7 +18,9 @@
         {"start": 0.0, "end": 5.0, "speaker": "Asha", "text": "Quick status round on last week's items."},
         {"start": 5.5, "end": 11.0, "speaker": "Ravi", "text": "The login page update with loading and error states is done now."},
         {"start": 11.5, "end": 17.0, "speaker": "Neha", "text": "The mobile layout check is not done yet, it slipped to Monday."},
-        {"start": 17.5, "end": 22.0, "speaker": "Asha", "text": "Okay, let's review it again on Monday."}
+        {"start": 17.5, "end": 23.0, "speaker": "Asmee", "text": "I have submitted the front end validation report."},
+        {"start": 23.5, "end": 29.0, "speaker": "Neha", "text": "I will share the test results at the next meeting."},
+        {"start": 29.5, "end": 34.0, "speaker": "Asha", "text": "Okay, let's review it again on Monday."}
       ]
     }
   ]

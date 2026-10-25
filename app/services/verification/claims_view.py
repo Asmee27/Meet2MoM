@@ -7,6 +7,7 @@ authoritative claims and statuses.
 """
 from __future__ import annotations
 
+import re
 from typing import Any, Optional
 
 from app.core import db
@@ -28,6 +29,41 @@ def _stale_reason(corrected_ids: list[str]) -> dict[str, Any]:
         "message": "The transcript was corrected after this claim was verified. "
                    "Run verification again before approving." + cited,
         "utt_ids": corrected_ids,
+    }
+
+
+# Phase 9.1: a claim extracted before a transcript correction can still carry
+# the misheard words ("Deliver the front end vibration" after the reviewer
+# corrected the utterance). Re-verification checks the corrected utterance, but
+# the claim text itself is only changed by the reviewer, so it is held, naming
+# the words, until the item text no longer uses them. No word is replaced
+# automatically.
+WORDING_REASON_CODE = "claim_wording_from_uncorrected_transcript"
+_WORD = re.compile(r"[a-z0-9][a-z0-9'-]*")
+
+
+def _words(text: str) -> set[str]:
+    return {w for w in _WORD.findall((text or "").lower()) if len(w) > 2}
+
+
+def outdated_wording(claim_text: str, cited_ids: list[str], corrections: dict[str, dict]) -> list[str]:
+    """Words of the claim that a reviewer removed from a cited utterance."""
+    removed: set[str] = set()
+    for utt_id in cited_ids:
+        row = corrections.get(utt_id)
+        if row:
+            removed |= _words(row["asr_text"]) - _words(row["corrected_text"])
+    return sorted(removed & _words(claim_text))
+
+
+def _wording_reason(words: list[str], cited: list[str]) -> dict[str, Any]:
+    quoted = ", ".join(f'"{w}"' for w in words)
+    return {
+        "code": WORDING_REASON_CODE,
+        "severity": "review",
+        "message": f"The claim still uses {quoted} from the original transcript, which the reviewer corrected. "
+                   "Edit the item to match the corrected transcript (check the recording), then accept it.",
+        "utt_ids": cited,
     }
 
 
@@ -78,6 +114,19 @@ def build_claims_view(meeting_id: str) -> dict[str, Any]:
     transcript_corrected_at = db.latest_transcript_correction_at(meeting_id)
     corrected_utts = db.get_active_transcript_corrections(meeting_id)
 
+    # The reviewer's current wording of each item, if they edited it.
+    with db.get_conn() as conn:
+        try:
+            edited_text = {
+                r["original_claim_id"]: r["text"]
+                for r in conn.execute(
+                    "SELECT original_claim_id, text FROM review_items WHERE meeting_id = ? AND original_claim_id IS NOT NULL",
+                    (meeting_id,),
+                )
+            }
+        except Exception:
+            edited_text = {}
+
     claims_out: list[dict[str, Any]] = []
     counts = {label: 0 for label in (*FINAL_LABELS, UNVERIFIED)}
     stale_claims = 0
@@ -99,6 +148,12 @@ def build_claims_view(meeting_id: str) -> dict[str, Any]:
             stale_claims += 1
             cited_fixed = [u for u in claim["evidence"] if u in corrected_utts]
             final_reasons = [_stale_reason(cited_fixed), *final_reasons]
+        wording = outdated_wording(edited_text.get(claim["claim_id"]) or claim["text"], list(claim["evidence"]),
+                                   corrected_utts)
+        if wording:
+            final_label = REVIEW
+            final_reasons = [_wording_reason(wording, [u for u in claim["evidence"] if u in corrected_utts]),
+                             *final_reasons]
         counts[final_label] += 1
         correction = corrections.get(claim["claim_id"])
 
@@ -153,6 +208,7 @@ def build_claims_view(meeting_id: str) -> dict[str, Any]:
                 claim["claim_type"] != "decision" or payload.get("state") == "accepted"
             ),
             "verification_stale": stale,
+            "outdated_wording": wording,
             "suggestion": suggestion,
             "contradiction": contradiction,
             "correction": correction,
