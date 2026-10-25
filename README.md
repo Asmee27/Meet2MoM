@@ -5,12 +5,28 @@ Transcript-grounded meeting intelligence with human-in-the-loop review, automate
 ## Running the Application
 
 ### 1. Prerequisites & Environment Setup
-Ensure Python 3.11+ and Node.js 18+ are installed.
+Ensure Python 3.11+ and Node.js 18+ are installed, and `ffmpeg` is on the `PATH` (the audio preparation step calls it). Developed and tested with Python 3.11.4 and Node 22 on Windows.
+
+First-time setup after cloning (Windows PowerShell, repository root):
 
 ```powershell
-# In Windows PowerShell:
+python -m venv .venv
 .\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
+cd frontend; npm install; cd ..
+Copy-Item .env.example .env      # then fill in your own values; never commit .env
 ```
+
+`.env.example` documents every setting. The ones a full demo needs:
+
+- `HF_TOKEN` — Hugging Face token for pyannote diarization of uploaded recordings (accept the model's conditions on Hugging Face first).
+- `LLM_PROVIDER=gemini`, `LLM_MODEL`, `GEMINI_API_KEY` — LLM extraction. Check with `.\.venv\Scripts\python.exe scripts\check_llm.py` (does not print the key). Without a key, the local rule-based extractor is used and the minutes say so.
+- `LIVEKIT_URL`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET` — live meetings (LiveKit Cloud project).
+- Email (optional): `EMAIL_PROVIDER=console` (default) sends nothing and the UI says so; `EMAIL_PROVIDER=brevo` with `BREVO_API_KEY` and a Brevo-verified `EMAIL_SENDER_ADDRESS` sends invitations and approved minutes. Details: `docs/phase-8/PHASE_8_4_EMAIL.md`.
+
+**Keep the computer clock synchronised** (Windows: Settings > Time & language > Date & time > Set time automatically, then Sync now). LiveKit rejects tokens signed with a wrong clock ("invalid token"); `GET http://127.0.0.1:8000/api/live/config` reports `clock_warning` when the clock is off (`docs/phase-11/PHASE_11_DEMO_READINESS.md`).
+
+The SQLite database and all meeting data are created under `storage/` on first start (schema migrations run automatically). `storage/` and `.env` are git-ignored; each clone starts with an empty database.
 
 ### 2. Standalone Background Worker vs Inline Processing
 
@@ -53,6 +69,14 @@ With `AUTH_REQUIRED=true` (default) the UI asks you to register or sign in. Pass
 Meetings created before accounts existed have no owner and are hidden while sign-in is on. After registering, claim them with `.venv\Scripts\python.exe scripts\claim_meetings.py --owner-email you@example.com --apply` (without `--apply` it only lists them). If live recording is unavailable, `scripts\seed_demo_meetings.py --owner-email you@example.com` loads two synthetic demo meetings.
 
 Deleting a meeting (owner only, from the meeting list) removes its database rows, recording, transcripts, minutes and caches. It is refused while the meeting is being processed or recorded.
+
+### Scheduling, email and the commitment ledger (Phases 8.3–9.1)
+
+- **Schedule meeting** (dashboard): title, agenda, date, time, timezone and several invitees. Each invitee gets their own meeting-scoped, expiring link (copy it, or it is emailed when Brevo is configured). An account whose email differs from the invited address waits for the host's approval. Scheduling creates no room or recording. See `docs/phase-8/PHASE_8_3_EVIDENCE_AND_SCHEDULING.md`.
+- **Send approved minutes** (minutes page, owner or approving reviewer): only to members and invitees of that meeting; statuses distinguish "Sent to provider" from "Delivered".
+- **Commitment ledger**: approved action items become commitments; a later meeting *proposes* done / delayed / no update with cited utterances, and only a reviewer's decision changes a status. See `docs/phase-7-10/PHASE_9_1_LEDGER_ACCURACY.md`.
+
+Phase documentation is under `docs/` (one folder per phase).
 
 ### 3. Frontend UI
 
