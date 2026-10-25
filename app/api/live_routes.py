@@ -19,12 +19,15 @@ from app.core.jobs import run_pipeline
 from app.core.stage_timings import timings_view
 from app.core.storage import MeetingStorage, is_valid_meeting_id
 from app.services.live.livekit_service import (
+    LiveKitAuthError,
     TokenVerificationError,
+    clock_warning,
     create_live_room,
     end_live_room,
     generate_livekit_token,
     get_live_room_participants,
     is_livekit_configured,
+    measure_clock_skew,
     sanitize_room_name,
     update_live_participant_consent,
     verify_participant_token,
@@ -281,10 +284,14 @@ def get_live_config():
     """
     configured, err_msg = is_livekit_configured()
     livekit_url = getattr(config, "LIVEKIT_URL", "")
+    skew = measure_clock_skew() if configured else None
     return {
         "configured": configured,
         "livekit_url": livekit_url if configured else "",
         "message": "LiveKit Cloud ready" if configured else err_msg,
+        # Phase 11: a wrong computer clock makes LiveKit refuse every token.
+        "clock_skew_seconds": skew,
+        "clock_warning": clock_warning(skew),
     }
 
 
@@ -321,6 +328,13 @@ async def create_room(payload: CreateRoomRequest, request: Request):
             host_name=payload.host_name or "Host",
             empty_timeout_seconds=payload.empty_timeout or 300,
             max_participants=payload.max_participants or 50,
+        )
+    except LiveKitAuthError as exc:
+        warning = clock_warning(measure_clock_skew())
+        logger.error("LiveKit refused the server credentials: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"{exc} " + (warning or "Check LIVEKIT_API_KEY and LIVEKIT_API_SECRET for this LiveKit project."),
         )
     except Exception as exc:
         logger.error("Failed to create LiveKit room: %s", exc)

@@ -100,16 +100,27 @@ def record_commitments(meeting_id: str, mom: Dict[str, Any], ledger_owner_id: Op
 
 
 def ledger_owner(meeting_id: str) -> Optional[str]:
-    return (db.get_meeting(meeting_id) or {}).get("owner_user_id")
+    """
+    The account whose ledger this meeting's commitments belong to: its primary
+    owner. (Phase 11 fix: this used db.get_meeting(), which does not return
+    owner_user_id, so every commitment was stored without an owner and a
+    signed-in user's ledger was always empty.)
+    """
+    owners = db.get_meeting_owner_ids(meeting_id)
+    return owners[0] if owners else None
 
 
 def list_commitments(ledger_owner_id: Optional[str]) -> List[Dict[str, Any]]:
     """The ledger with each commitment's history (newest first)."""
     with db.get_conn() as conn:
-        rows = conn.execute(
-            "SELECT * FROM commitments WHERE ledger_owner_id IS ? ORDER BY created_at DESC",
-            (ledger_owner_id,),
-        ).fetchall()
+        if ledger_owner_id is None:
+            # Local mode without sign-in: one user, so the whole ledger is theirs.
+            rows = conn.execute("SELECT * FROM commitments ORDER BY created_at DESC").fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM commitments WHERE ledger_owner_id = ? ORDER BY created_at DESC",
+                (ledger_owner_id,),
+            ).fetchall()
         result = []
         for row in rows:
             item = _row(row)
@@ -167,10 +178,17 @@ def propose_updates(meeting_id: str, *, index=None, scorer=None) -> List[Dict[st
 
     owner = ledger_owner(meeting_id)
     with db.get_conn() as conn:
-        open_items = [_row(r) for r in conn.execute(
-            "SELECT * FROM commitments WHERE ledger_owner_id IS ? AND status IN ('open', 'delayed') AND source_meeting_id != ?",
-            (owner, meeting_id),
-        ).fetchall()]
+        if owner is None:                    # local mode without sign-in
+            open_items = [_row(r) for r in conn.execute(
+                "SELECT * FROM commitments WHERE status IN ('open', 'delayed') AND source_meeting_id != ?",
+                (meeting_id,),
+            ).fetchall()]
+        else:
+            open_items = [_row(r) for r in conn.execute(
+                "SELECT * FROM commitments WHERE ledger_owner_id = ? AND status IN ('open', 'delayed') "
+                "AND source_meeting_id != ?",
+                (owner, meeting_id),
+            ).fetchall()]
     if not open_items:
         return []
     if not db.get_utterances(meeting_id):

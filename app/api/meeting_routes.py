@@ -2581,7 +2581,31 @@ def build_pdf(
         ("TOPPADDING", (0, 0), (-1, -1), 10),
         ("BOTTOMPADDING", (0, 0), (-1, -1), 10),
     ]))
-    story.extend([header, Spacer(1, 8)])
+    story.extend([header, Spacer(1, 6)])
+
+    # Phase 11: the document itself says whether these minutes are approved,
+    # which version, by whom and when (an approved PDF used to say neither).
+    approval = mom.get("verification") or {}
+    if mom.get("status") == "approved":
+        snapshot = _db.get_latest_approved_snapshot(file_id) or {}
+        approver = str(approval.get("approved_by") or snapshot.get("approved_by") or "a reviewer").split(" <")[0]
+        approved_at = str(approval.get("approved_at") or snapshot.get("approved_at") or "")[:16].replace("T", " ")
+        status_text = (f"APPROVED MINUTES v{snapshot.get('version', '?')} - approved by {approver}"
+                       + (f" on {approved_at} UTC" if approved_at else ""))
+        status_fg, status_bg = GREEN, GREEN_LIGHT
+    else:
+        status_text = "DRAFT - these minutes have not been approved by a reviewer."
+        status_fg, status_bg = AMBER, AMBER_LIGHT
+    status_style = ParagraphStyle("ApprovalStatus", parent=small_style, textColor=status_fg, fontName="Helvetica-Bold")
+    status_box = Table([[Paragraph(safe_pdf(status_text), status_style)]], colWidths=[159 * mm])
+    status_box.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, -1), status_bg),
+        ("BOX", (0, 0), (-1, -1), 0.6, status_fg),
+        ("LEFTPADDING", (0, 0), (-1, -1), 7),
+        ("TOPPADDING", (0, 0), (-1, -1), 5),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+    ]))
+    story.extend([status_box, Spacer(1, 7)])
 
     participants = mom.get("participants") or []
     decisions = mom.get("decisions") or []
