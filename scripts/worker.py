@@ -255,6 +255,13 @@ def main():
     from app.services.pipeline.recorded_pipeline_adapter import PROCESS_ROLE_ENV, speech_pipeline_mode
 
     os.environ[PROCESS_ROLE_ENV] = "worker"
+
+    # Tell the API a worker is alive, from before the (slow) model preload on.
+    from app.core import worker_presence
+
+    stop_presence = threading.Event()
+    worker_presence.start_heartbeat_thread(stop_presence)
+
     mode = speech_pipeline_mode()
     logger.info("Speech pipeline mode: %s", mode)
     if mode == "inprocess" and getattr(config, "WORKER_PRELOAD_MODELS", True):
@@ -268,6 +275,9 @@ def main():
         run_worker_loop()
     except KeyboardInterrupt:
         logger.info("Worker interrupted by user.")
+    finally:
+        stop_presence.set()
+        worker_presence.clear_heartbeat()
     logger.info("Worker stopped.")
 
 

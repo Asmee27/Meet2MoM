@@ -449,7 +449,8 @@ def list_meetings(request: Request):
                 j.error AS job_error,
                 lm.status AS live_status,
                 lm.created_at AS live_started_at,
-                lm.room_name AS live_room_name
+                lm.room_name AS live_room_name,
+                lm.title AS live_title
             FROM meetings m
             LEFT JOIN jobs j ON j.meeting_id = m.meeting_id
             LEFT JOIN live_meetings lm ON lm.meeting_id = m.meeting_id
@@ -517,9 +518,12 @@ def get_meeting_status(meeting_id: str):
             }
         raise HTTPException(status_code=404, detail="No status found for this meeting.")
     from app.core.stage_timings import timings_view
+    from app.core.worker_presence import queue_notice
 
     # stage_timings is an added field; existing fields are unchanged (Phase 5).
-    return {**job.model_dump(), "stage_timings": timings_view(meeting_id)}
+    # worker is set only for a queued job in worker mode: is anyone going to run it?
+    return {**job.model_dump(), "stage_timings": timings_view(meeting_id),
+            "worker": queue_notice(job.state)}
 
 
 # ============================================================

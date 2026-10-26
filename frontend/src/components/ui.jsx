@@ -70,9 +70,14 @@ export function BrandMark({ size = 32 }) {
   return (
     <span className="brand-mark" style={{ width: size, height: size }} aria-hidden="true">
       <svg viewBox="0 0 32 32" fill="none">
-        <rect width="32" height="32" rx="9" fill="currentColor" />
-        <path d="M9 21V11.5l4.2 5.2 4.2-5.2V21" stroke="#fff" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
-        <circle cx="22.5" cy="19.5" r="2.6" fill="var(--brand-signal)" />
+        <rect width="32" height="32" rx="10" fill="var(--brand, #ff6543)" />
+        <path
+          d="M9 21.5V12.8c0-.7.8-1.1 1.3-.7l5.7 5.1 5.7-5.1c.5-.4 1.3 0 1.3.7V21.5"
+          stroke="#ffffff"
+          strokeWidth="2.6"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
       </svg>
     </span>
   );

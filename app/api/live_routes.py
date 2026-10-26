@@ -17,6 +17,7 @@ from app.core import config
 from app.core import db
 from app.core.jobs import run_pipeline
 from app.core.stage_timings import timings_view
+from app.core.worker_presence import queue_notice
 from app.core.storage import MeetingStorage, is_valid_meeting_id
 from app.services.live.livekit_service import (
     LiveKitAuthError,
@@ -258,7 +259,8 @@ def recording_state(meeting: Dict[str, Any]) -> Dict[str, Any]:
         "segments": [_segment_view(s) for s in segments],
         "artifact": artifact,
         "processing": (
-            {**job.model_dump(mode="json"), "stage_timings": timings_view(meeting_id)}
+            {**job.model_dump(mode="json"), "stage_timings": timings_view(meeting_id),
+             "worker": queue_notice(job.state)}
             if job else None
         ),
         "can_start": (

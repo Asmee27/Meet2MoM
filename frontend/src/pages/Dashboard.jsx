@@ -47,6 +47,14 @@ export default function Dashboard({ onOpenMeeting, onUpload, onStartLive, onSche
   const [filter, setFilter] = useState("all");
   const [pendingDelete, setPendingDelete] = useState(null);
   const [deleteState, setDeleteState] = useState({ busy: false, error: "" });
+  const [joinCode, setJoinCode] = useState("");
+
+  const handleJoinRoom = (e) => {
+    if (e) e.preventDefault();
+    const trimmed = joinCode.trim();
+    if (!trimmed) return;
+    onStartLive({ roomName: trimmed });
+  };
 
   const load = useCallback(() => {
     setState((s) => ({ ...s, status: "loading", error: "" }));
@@ -93,14 +101,126 @@ export default function Dashboard({ onOpenMeeting, onUpload, onStartLive, onSche
 
   return (
     <main className="page ui-enter" aria-labelledby="dashboard-title">
+      {/* Hero Quick-Launch Space (Cosmic Midnight & Sunset Coral Theme) */}
+      <section className="dashboard-hero" aria-label="Meeting quick launcher">
+        <div className="dashboard-hero__left">
+          <div className="dashboard-hero__kicker">
+            <span className="auth-live-dot" /> LIVE INTELLIGENCE
+          </div>
+          <h2 className="dashboard-hero__title">
+            Make room for the conversations that matter.
+          </h2>
+          <p className="dashboard-hero__tagline">
+            <i>Speak freely. We’ll capture the truth, extract decisions, verify evidence, and hold the commitment ledger.</i>
+
+          </p>
+          <div className="dashboard-hero__actions">
+            <Button variant="primary" icon="mic" className="dashboard-hero-cta" onClick={onStartLive}>
+              Start a meeting
+            </Button>
+            <Button icon="upload" onClick={onUpload}>
+              Upload recording
+            </Button>
+          </div>
+          {/* Subtle trust & feature micro-badges */}
+          
+        </div>
+
+        {/* Center / Card 1: Interactive "Where should we meet?" Launcher Card */}
+        <div className="dashboard-launcher-card">
+          <div className="dashboard-launcher-card__top">
+            <span className="dashboard-launcher-card__kicker">YOUR MEETING SPACE</span>
+            <span className="dashboard-launcher-card__pill">Instant room</span>
+          </div>
+
+          <h3 className="dashboard-launcher-card__heading">Where should we meet?</h3>
+
+          <button
+            type="button"
+            className="dashboard-create-room-btn"
+            onClick={onStartLive}
+          >
+            <div>
+              <strong>Create a new room</strong>
+              <small>Start instant conversation</small>
+            </div>
+            <span className="dashboard-create-arrow" aria-hidden="true">→</span>
+          </button>
+
+          <div className="dashboard-launcher-divider">
+            <span>or join one</span>
+          </div>
+
+          <form className="dashboard-join-form" onSubmit={handleJoinRoom}>
+            <input
+              type="text"
+              className="ui-input dashboard-join-input"
+              placeholder="Enter meeting code"
+              value={joinCode}
+              onChange={(e) => setJoinCode(e.target.value)}
+              aria-label="Meeting code"
+            />
+            <button
+              type="submit"
+              className="dashboard-join-btn"
+              disabled={!joinCode.trim()}
+            >
+              Join
+            </button>
+          </form>
+        </div>
+
+        {/* Right / Card 2: Stylish "Recent Insights Demo" Card */}
+        <div className="dashboard-insights-card" aria-label="Recent insights demo">
+          <div className="dashboard-insights-card__top">
+            <span className="dashboard-insights-card__kicker">
+              <span className="insights-pulse-dot" aria-hidden="true" /> LIVE AI SUMMARY
+            </span>
+            <span className="dashboard-insights-card__pill">Real-Time MoM</span>
+          </div>
+
+          <div className="dashboard-insights-card__header">
+            <h3 className="dashboard-insights-card__heading">Product Roadmap &amp; Architecture</h3>
+            <span className="dashboard-insights-card__meta">Recorded 24m ago · 45m call</span>
+          </div>
+
+          <div className="dashboard-insights-card__body">
+            <div className="dashboard-insight-item">
+              <span className="insight-badge insight-badge--decision">Decision</span>
+              <p className="insight-text">
+                Approved hybrid WebRTC audio pipeline for sub-100ms real-time transcription.
+              </p>
+            </div>
+
+            <div className="dashboard-insight-item">
+              <span className="insight-badge insight-badge--action">Action Item</span>
+              <p className="insight-text">
+                <strong>Alex</strong> to benchmark noise suppression and sync commitments by Friday.
+              </p>
+            </div>
+
+            <div className="dashboard-insight-item">
+              <span className="insight-badge insight-badge--decision">Decision</span>
+              <p className="insight-text">
+                Distribute auto-verified minutes to attendees with 24h review window.
+              </p>
+            </div>
+          </div>
+
+          <div className="dashboard-insights-card__footer">
+            <Icon name="check" size={13} />
+            <span>Evidence verified against audio transcript &amp; ledger</span>
+          </div>
+        </div>
+      </section>
+
+      {/* Semantic PageHeader for Test Compatibility & Section Identity */}
       <PageHeader
         title={<span id="dashboard-title">Meetings</span>}
         description="Upcoming, live and recorded meetings, their review status, and the minutes you have approved."
         actions={
           <>
-            <Button icon="upload" onClick={onUpload}>Upload recording</Button>
             {onSchedule && <Button icon="clock" onClick={onSchedule}>Schedule meeting</Button>}
-            <Button variant="primary" icon="mic" onClick={onStartLive}>Start live meeting</Button>
           </>
         }
       />
@@ -199,17 +319,16 @@ export default function Dashboard({ onOpenMeeting, onUpload, onStartLive, onSche
         {state.status === "ready" && meetings.length === 0 && (
           <EmptyState
             icon="meetings"
-            title="No meetings yet"
+            title="Start your first meeting"
             actions={
               <>
-                <Button icon="upload" onClick={onUpload}>Upload recording</Button>
-                {onSchedule && <Button icon="clock" onClick={onSchedule}>Schedule meeting</Button>}
                 <Button variant="primary" icon="mic" onClick={onStartLive}>Start live meeting</Button>
+                <Button icon="upload" onClick={onUpload}>Upload recording</Button>
               </>
             }
           >
-            Upload a recording or host a live meeting. Meet2MoM transcribes it, extracts decisions and action items,
-            and checks each one against the transcript before you approve the minutes.
+            Host a live meeting or upload a recording. Your transcript, decisions, and action items will appear here
+            for review.
           </EmptyState>
         )}
 

@@ -7,7 +7,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import ScheduleMeeting from "../pages/ScheduleMeeting";
 import ScheduledMeeting from "../pages/ScheduledMeeting";
 import Dashboard from "../pages/Dashboard";
-import { meetingStatus } from "../format";
+import { meetingStatus, meetingTitle } from "../format";
 import * as api from "../services/api";
 
 afterEach(() => {
@@ -213,5 +213,12 @@ describe("Dashboard meeting states", () => {
     expect(meetingStatus({ status: "live", live_status: "active", utterance_count: 0 }).key).toBe("live");
     expect(meetingStatus({ status: "live", live_status: "active", utterance_count: 0, job_state: "running" }).key)
       .toBe("processing");
+  });
+
+  it("names a live meeting by the title the host gave, not its room", () => {
+    const live = { meeting_id: "1b521fc8b024", filename: "live-livekit-m2m-2473.wav", live_title: "Final Project Review" };
+    expect(meetingTitle(live)).toBe("Final Project Review");
+    expect(meetingTitle({ ...live, live_title: "  " })).toBe("live-livekit-m2m-2473");
+    expect(meetingTitle({ ...live, schedule: { title: "Product Review" } })).toBe("Product Review");
   });
 });

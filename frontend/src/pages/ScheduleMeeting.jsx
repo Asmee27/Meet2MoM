@@ -285,43 +285,91 @@ export default function ScheduleMeeting({ hostEmail = "", onOpenScheduled, onCan
             if (validate()) setStage("review");
           }}
         >
-          <div className="ui-field">
-            <label className="ui-label" htmlFor="schedule-title-input">Title</label>
-            <input id="schedule-title-input" className="ui-input" maxLength={120} value={form.title} onChange={set("title")}
-              aria-invalid={Boolean(errors.title)} />
-            {errors.title && <p className="field-error" role="alert">{errors.title}</p>}
-          </div>
-          <div className="ui-field">
-            <label className="ui-label" htmlFor="schedule-agenda">Agenda <span className="ui-help">(optional)</span></label>
-            <textarea id="schedule-agenda" className="ui-textarea" maxLength={2000} value={form.agenda} onChange={set("agenda")} />
-          </div>
-          <div className="schedule-form__row">
-            <div className="ui-field">
-              <label className="ui-label" htmlFor="schedule-date">Date</label>
-              <input id="schedule-date" className="ui-input" type="date" min={localToday()} value={form.date} onChange={set("date")}
-                aria-invalid={Boolean(errors.when)} />
-            </div>
-            <div className="ui-field">
-              <label className="ui-label" htmlFor="schedule-time">Start time</label>
-              <input id="schedule-time" className="ui-input" type="time" value={form.time} onChange={set("time")}
-                aria-invalid={Boolean(errors.when)} />
-            </div>
-            <div className="ui-field">
-              <label className="ui-label" htmlFor="schedule-zone">Timezone</label>
-              <select id="schedule-zone" className="ui-select" value={form.timezone} onChange={set("timezone")}>
-                {zones.map((z) => <option key={z} value={z}>{z}</option>)}
-              </select>
-            </div>
-            <div className="ui-field">
-              <label className="ui-label" htmlFor="schedule-duration">Duration <span className="ui-help">(minutes, optional)</span></label>
-              <input id="schedule-duration" className="ui-input" type="number" min={5} max={480} step={5} value={form.duration}
-                onChange={set("duration")} aria-invalid={Boolean(errors.duration)} />
-            </div>
-          </div>
-          {errors.when && <p className="field-error" role="alert">{errors.when}</p>}
-          {errors.duration && <p className="field-error" role="alert">{errors.duration}</p>}
+          <div className="schedule-form__columns">
+            <div className="schedule-form__column">
+              <section className="schedule-section" aria-labelledby="meeting-details-heading">
+                <div className="schedule-section__header">
+                  <h2 id="meeting-details-heading">Meeting details</h2>
+                  <p>Give your meeting a clear focus.</p>
+                </div>
+                <div className="ui-field">
+                  <label className="ui-label schedule-title-label" htmlFor="schedule-title-input">Title</label>
+                  <input
+                    id="schedule-title-input"
+                    className="ui-input schedule-title-input"
+                    maxLength={120}
+                    placeholder="e.g. Product roadmap review"
+                    value={form.title}
+                    onChange={set("title")}
+                    aria-invalid={Boolean(errors.title)}
+                  />
+                  <div className="schedule-field-meta">
+                    {errors.title ? <p className="field-error" role="alert">{errors.title}</p> : <span />}
+                    <span className="ui-help">{form.title.length}/120</span>
+                  </div>
+                </div>
+                <div className="ui-field">
+                  <label className="ui-label" htmlFor="schedule-agenda">Agenda <span className="ui-help">(optional)</span></label>
+                  <textarea id="schedule-agenda" className="ui-textarea schedule-agenda-input" maxLength={2000} value={form.agenda} onChange={set("agenda")} />
+                </div>
+              </section>
 
-          <InviteeInput emails={form.invitees} onChange={(invitees) => setForm((f) => ({ ...f, invitees }))} hostEmail={hostEmail} />
+              <section className="schedule-section" aria-labelledby="participants-heading">
+                <div className="schedule-section__header">
+                  <h2 id="participants-heading">Participants</h2>
+                  <p>Invite people who should receive a meeting link.</p>
+                </div>
+                <InviteeInput emails={form.invitees} onChange={(invitees) => setForm((f) => ({ ...f, invitees }))} hostEmail={hostEmail} />
+              </section>
+            </div>
+
+            <div className="schedule-form__column">
+              <section className="schedule-section" aria-labelledby="when-heading">
+                <div className="schedule-section__header">
+                  <h2 id="when-heading">When</h2>
+                  <p>Choose when the conversation should begin.</p>
+                </div>
+                <div className="schedule-form__row">
+                  <div className="ui-field">
+                    <label className="ui-label" htmlFor="schedule-date">Date</label>
+                    <input id="schedule-date" className="ui-input" type="date" min={localToday()} value={form.date} onChange={set("date")}
+                      aria-invalid={Boolean(errors.when)} />
+                  </div>
+                  <div className="ui-field">
+                    <label className="ui-label" htmlFor="schedule-time">Start time</label>
+                    <input id="schedule-time" className="ui-input" type="time" value={form.time} onChange={set("time")}
+                      aria-invalid={Boolean(errors.when)} />
+                  </div>
+                  <div className="ui-field">
+                    <label className="ui-label" htmlFor="schedule-zone">Timezone</label>
+                    <select id="schedule-zone" className="ui-select" value={form.timezone} onChange={set("timezone")}>
+                      {zones.map((z) => <option key={z} value={z}>{z}</option>)}
+                    </select>
+                  </div>
+                  <div className="ui-field">
+                    <label className="ui-label" htmlFor="schedule-duration">Duration <span className="ui-help">(minutes, optional)</span></label>
+                    <input id="schedule-duration" className="ui-input" type="number" min={5} max={480} step={5} value={form.duration}
+                      onChange={set("duration")} aria-invalid={Boolean(errors.duration)} />
+                  </div>
+                </div>
+                {errors.when && <p className="field-error" role="alert">{errors.when}</p>}
+                {errors.duration && <p className="field-error" role="alert">{errors.duration}</p>}
+              </section>
+
+              <section className="schedule-summary" aria-labelledby="schedule-summary-heading">
+                <div className="schedule-section__header">
+                  <h2 id="schedule-summary-heading">Meeting summary</h2>
+                  <p>Review the basics before continuing.</p>
+                </div>
+                <dl className="schedule-summary__list">
+                  <div><dt>Title</dt><dd>{form.title.trim() || "Untitled meeting"}</dd></div>
+                  <div><dt>When</dt><dd>{form.date && form.time ? `${form.date} at ${form.time}` : "Date and time not chosen"}</dd></div>
+                  <div><dt>Timezone</dt><dd>{form.timezone}</dd></div>
+                  <div><dt>Invitees</dt><dd>{form.invitees.length ? `${form.invitees.length} added` : "No invitees yet"}</dd></div>
+                </dl>
+              </section>
+            </div>
+          </div>
 
           <div className="schedule-form__actions">
             <Button variant="ghost" onClick={onCancel}>Cancel</Button>

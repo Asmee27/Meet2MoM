@@ -1,0 +1,1487 @@
+{
+ "summary": {
+  "generated_from": "byte copy of storage/meet2mom.db (read-only)",
+  "db_sha256": "abf8f46cfec63eb70046a7f5163d15cb4130b2a97095b78017aa52cce98f4e85",
+  "class_A_conclusive_synthetic": {
+   "meetings": 205,
+   "utterances": 8108,
+   "claims": 1,
+   "evidence_links": 1,
+   "dropped_claims": 2,
+   "jobs": 27,
+   "priya_utterances": 3979
+  },
+  "class_A_orphan_jobs": {
+   "rows": 54,
+   "detail": [
+    [
+     "asr",
+     "running",
+     0.33,
+     54
+    ]
+   ],
+   "reason": "no meetings row; stage asr, progress 0.33 exactly (value hard-coded in test_async_jobs_api.py; the real pipeline writes 0.2727 for asr)"
+  },
+  "class_B_likely_synthetic_confirm": {
+   "meetings": 5,
+   "utterances": 237,
+   "claims": 0,
+   "jobs": 0
+  },
+  "class_C_genuine_keep": {
+   "meetings": 18
+  },
+  "storage_folders_of_A_or_B": [
+   "3973bf17481441eba143b1296cfa1d89"
+  ]
+ },
+ "class_A_meetings": [
+  {
+   "meeting_id": "b690bdb1cb544240be3aed13269e444e",
+   "filename": "test.mp4",
+   "utterances": 3,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "68bc67ecb24a4786a9876afe25ce8ac4",
+   "filename": "test_audio.mp3",
+   "utterances": 0,
+   "reason": "filename used by test_async_jobs_api upload test; 0 utterances; status queued; no job; no storage folder"
+  },
+  {
+   "meeting_id": "f6e67a464d6746cfb95836008fcf538d",
+   "filename": "test.mp4",
+   "utterances": 1,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "d3467f3851524dd4a48a228d25b74d05",
+   "filename": "test_audio.mp3",
+   "utterances": 0,
+   "reason": "filename used by test_async_jobs_api upload test; 0 utterances; status queued; no job; no storage folder"
+  },
+  {
+   "meeting_id": "5c8165eb6e22447d8e64d5eadb801d9f",
+   "filename": "test.mp4",
+   "utterances": 1,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "ac09e03a81b848a28e4e69bfb6b7d8a4",
+   "filename": "test_audio.mp3",
+   "utterances": 0,
+   "reason": "filename used by test_async_jobs_api upload test; 0 utterances; status queued; no job; no storage folder"
+  },
+  {
+   "meeting_id": "5121263bdbec4cac903aefef9c49e387",
+   "filename": "test.mp4",
+   "utterances": 1,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "ce68f9ba32154ea7a96e1c1fd3d04477",
+   "filename": "test.mp4",
+   "utterances": 3,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "6c6c1a90b51c4571ac2314a75e9bb25f",
+   "filename": "test_audio.mp3",
+   "utterances": 0,
+   "reason": "filename used by test_async_jobs_api upload test; 0 utterances; status queued; no job; no storage folder"
+  },
+  {
+   "meeting_id": "74e67fe28e624709b12a3d291d087c3c",
+   "filename": "test.mp4",
+   "utterances": 1,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "a4fa7e37b7bf4012ae6e82f353f3fa83",
+   "filename": "test.mp4",
+   "utterances": 3,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "9c9515c2bfaa4f37b427b1f726c29637",
+   "filename": "test.mp4",
+   "utterances": 2,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "add10ebcd5a24e83a78d5090794459c2",
+   "filename": "test.mp4",
+   "utterances": 3,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "3e93b89309a84c7192272b49566d7954",
+   "filename": "test_audio.mp3",
+   "utterances": 0,
+   "reason": "filename used by test_async_jobs_api upload test; 0 utterances; status queued; no job; no storage folder"
+  },
+  {
+   "meeting_id": "779b622fde75441099563ba55b17b7b7",
+   "filename": "test.mp4",
+   "utterances": 1,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "baba3054f79349c39b7017effef53c23",
+   "filename": "test.mp4",
+   "utterances": 2,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "a709716ae93d4c08bfda3927f73e5745",
+   "filename": "test.mp4",
+   "utterances": 3,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "b6e4b56597ef414db22e6e70a858507a",
+   "filename": "test.mp4",
+   "utterances": 2,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "a52048d769714dfd8f4b13cf725c858f",
+   "filename": "test.mp4",
+   "utterances": 3,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "7a85dc2a94004d77a9fcd17e7c1bde5c",
+   "filename": "test_audio.mp3",
+   "utterances": 0,
+   "reason": "filename used by test_async_jobs_api upload test; 0 utterances; status queued; no job; no storage folder"
+  },
+  {
+   "meeting_id": "27081b9f6e55415ab61a24791c40d349",
+   "filename": "test.mp4",
+   "utterances": 1,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "c0f5df78e2eb42b5baaabdeefd428ac6",
+   "filename": "test.mp4",
+   "utterances": 2,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "6e37baa4824a4d2394fc462adcf274c3",
+   "filename": "test.mp4",
+   "utterances": 3,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "ed82871209ce40dd88703b8a70b53187",
+   "filename": "test.mp4",
+   "utterances": 125,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "292158bc9ed141869ab82afb8880b3d3",
+   "filename": "test.mp4",
+   "utterances": 130,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "706c05784fca40bbb83a8859edbf6fdf",
+   "filename": "test.mp4",
+   "utterances": 10,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "3db808b7e11c41e18b1167a3f2a453b0",
+   "filename": "test.mp4",
+   "utterances": 80,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "ffec579cb7e74da484fb81e80559aa5d",
+   "filename": "test_audio.mp3",
+   "utterances": 0,
+   "reason": "filename used by test_async_jobs_api upload test; 0 utterances; status queued; no job; no storage folder"
+  },
+  {
+   "meeting_id": "95b89be913b14d819bb2bc82560080e0",
+   "filename": "test.mp4",
+   "utterances": 1,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "97318374b9374f8d91b9ab6d60c12be6",
+   "filename": "test.mp4",
+   "utterances": 125,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "9559946e53d047cd96edbb1f625ed74a",
+   "filename": "test.mp4",
+   "utterances": 130,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "1d9d9e7f946a43bca5b8d602dc4e7d61",
+   "filename": "test.mp4",
+   "utterances": 10,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "c1c7d58cd7d84196a29a24dff2ce7ee0",
+   "filename": "test.mp4",
+   "utterances": 80,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "fc0fc8633b6b4c339b881eb43a07d512",
+   "filename": "test.mp4",
+   "utterances": 2,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "aa2e035aff6d4621a2d4fe52d1321364",
+   "filename": "test.mp4",
+   "utterances": 3,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "88b4ef785bbf40b5b0f91dcec2d3bfb9",
+   "filename": "test_audio.mp3",
+   "utterances": 0,
+   "reason": "filename used by test_async_jobs_api upload test; 0 utterances; status queued; no job; no storage folder"
+  },
+  {
+   "meeting_id": "7ec0213804234adaafe370b7fe9c0d14",
+   "filename": "test.mp4",
+   "utterances": 1,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "77ae8cf4759d4f68bf719c29c8f5c776",
+   "filename": "test.mp4",
+   "utterances": 125,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "c098896770d34828915f0c35f55bf3af",
+   "filename": "test.mp4",
+   "utterances": 130,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "a63eebb4f26149fa96ae658d038fb6c0",
+   "filename": "test.mp4",
+   "utterances": 10,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "90640b7465dd404b9e9a14bad2d44a1f",
+   "filename": "test.mp4",
+   "utterances": 80,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "8093a8e7c2f34315aa40062086e99d18",
+   "filename": "test.mp4",
+   "utterances": 2,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "a4f746ee93e44d0fa47a92449be8251c",
+   "filename": "test.mp4",
+   "utterances": 3,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "cf2dd53c54df497888bb745dc00ff85f",
+   "filename": "test_audio.mp3",
+   "utterances": 0,
+   "reason": "filename used by test_async_jobs_api upload test; 0 utterances; status queued; no job; no storage folder"
+  },
+  {
+   "meeting_id": "023ac6dbcb2c4322bc2a3a6d43efde6e",
+   "filename": "test.mp4",
+   "utterances": 1,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "57742319c7bf4b0da443f8d424065cc7",
+   "filename": "test.mp4",
+   "utterances": 125,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "4d43730abe524d59865654aa6cc1c503",
+   "filename": "test.mp4",
+   "utterances": 130,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "c44ef4a570cd446091e138cc210fa542",
+   "filename": "test.mp4",
+   "utterances": 10,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "1deef4b1f73e40d48140febdd6f246e4",
+   "filename": "test.mp4",
+   "utterances": 80,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "2982fc46d5b0494281293a95b688ddee",
+   "filename": "test.mp4",
+   "utterances": 2,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "e3e3e5cce4ec40708bd12ae4c2331471",
+   "filename": "test.mp4",
+   "utterances": 3,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "real_e2e_test_span_writer",
+   "filename": "test.mp4",
+   "utterances": 2,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "92d19c3212704163ab710079c0677ad3",
+   "filename": "test_audio.mp3",
+   "utterances": 0,
+   "reason": "filename used by test_async_jobs_api upload test; 0 utterances; status queued; no job; no storage folder"
+  },
+  {
+   "meeting_id": "e491f196566947bcb70a697fb5ec4b57",
+   "filename": "test.mp4",
+   "utterances": 1,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "9f4412845a2040d59c63a1aa48b2583d",
+   "filename": "test.mp4",
+   "utterances": 125,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "fe65c2c6e17a4132bc576c5e5e1d9240",
+   "filename": "test.mp4",
+   "utterances": 130,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "efffb1b7f6ef439298fb028ff7913257",
+   "filename": "test.mp4",
+   "utterances": 10,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "8400194390104283b82c71562b194419",
+   "filename": "test.mp4",
+   "utterances": 80,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "4e346e2f97f04f8f809e3da87e942292",
+   "filename": "test.mp4",
+   "utterances": 2,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "763eb1fcec5349efa7afd5783b927c5b",
+   "filename": "test.mp4",
+   "utterances": 3,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "40966d14bbd5454c8334c087e8253c92",
+   "filename": "test_audio.mp3",
+   "utterances": 0,
+   "reason": "filename used by test_async_jobs_api upload test; 0 utterances; status queued; no job; no storage folder"
+  },
+  {
+   "meeting_id": "d82e83a706ee407bacca8a50359d53e4",
+   "filename": "test.mp4",
+   "utterances": 1,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "5df8ae3f6b6447bb8acb2f17c78f1380",
+   "filename": "test.mp4",
+   "utterances": 125,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "93a33391295f4d528f023396ebbcc180",
+   "filename": "test.mp4",
+   "utterances": 130,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "4189127e9bbd4474ba712c031964341b",
+   "filename": "test.mp4",
+   "utterances": 10,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "a544bff026ae4e86a524c1de2a8f8a54",
+   "filename": "test.mp4",
+   "utterances": 80,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "e50d659389b142aabda79c85a5b630d1",
+   "filename": "test.mp4",
+   "utterances": 2,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "8e4a75792a6146549a725018cbc947f9",
+   "filename": "test.mp4",
+   "utterances": 3,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "286720da599b42e896b6df7b16ec2036",
+   "filename": "test.mp4",
+   "utterances": 2,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "310af3e7c54643039bbf2ea69229f9da",
+   "filename": "test.mp4",
+   "utterances": 3,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "34c6d4800c4148719dd8b290bada711e",
+   "filename": "test_audio.mp3",
+   "utterances": 0,
+   "reason": "filename used by test_async_jobs_api upload test; 0 utterances; status queued; no job; no storage folder"
+  },
+  {
+   "meeting_id": "00c2450c04904f649d8bb22154849dd7",
+   "filename": "test.mp4",
+   "utterances": 1,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "2466b9ea4b4e4a51b25e128c314c376c",
+   "filename": "test.mp4",
+   "utterances": 125,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "158b39e6bb89427ba3f05e6c259df448",
+   "filename": "test.mp4",
+   "utterances": 130,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "c5059069c0de484099c5481efd410345",
+   "filename": "test.mp4",
+   "utterances": 10,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "765a24951b1a47c9a5da4d5dfc75fdba",
+   "filename": "test.mp4",
+   "utterances": 80,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "1217669545ac4eb5b4137151c6e709c2",
+   "filename": "test.mp4",
+   "utterances": 2,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "ae8857f4dec241698dcb9706f92df4ed",
+   "filename": "test.mp4",
+   "utterances": 3,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "f70c647b42ab4672957ec62268a3ff3e",
+   "filename": "test_audio.mp3",
+   "utterances": 0,
+   "reason": "filename used by test_async_jobs_api upload test; 0 utterances; status queued; no job; no storage folder"
+  },
+  {
+   "meeting_id": "c12b1ac6e42845afb29ac85e6d75780c",
+   "filename": "test.mp4",
+   "utterances": 1,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "392bd648e9544a639bba700514caa6d9",
+   "filename": "test.mp4",
+   "utterances": 125,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "e75e2f152a614824a7919f9a5dcd093e",
+   "filename": "test.mp4",
+   "utterances": 130,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "0ba6ab44d9e840f580a36a9ec851fa5a",
+   "filename": "test.mp4",
+   "utterances": 10,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "a3ed6abeeee54ef39985d38264eeb712",
+   "filename": "test.mp4",
+   "utterances": 80,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "6f2dadef13744a3ea5c98244c2002e7a",
+   "filename": "test.mp4",
+   "utterances": 2,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "50291c7e77644e87abfc4d99d2ed59a9",
+   "filename": "test.mp4",
+   "utterances": 3,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "b7464068af954b84aa2d74f530a7e413",
+   "filename": "test.mp4",
+   "utterances": 125,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "b185d57cfe25469ca2424be0e4f7e7f2",
+   "filename": "test.mp4",
+   "utterances": 130,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "22e91d06d521499b81aa57450a8548f9",
+   "filename": "test.mp4",
+   "utterances": 10,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "22c58b19686346e193757d29d125de05",
+   "filename": "test.mp4",
+   "utterances": 80,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "efbabd23ce134c5f9197984f167b9ab1",
+   "filename": "test_audio.mp3",
+   "utterances": 0,
+   "reason": "filename used by test_async_jobs_api upload test; 0 utterances; status queued; no job; no storage folder"
+  },
+  {
+   "meeting_id": "e199e2b44b284af59d7a68cb1d330fca",
+   "filename": "test.mp4",
+   "utterances": 1,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "f563a516bc78403196f2bddff628e831",
+   "filename": "test.mp4",
+   "utterances": 125,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "0e9a6c28273344d08e7cc5afda421606",
+   "filename": "test.mp4",
+   "utterances": 130,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "eb06ce36506d457c91b6901a5c2240f5",
+   "filename": "test.mp4",
+   "utterances": 10,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "6114e89606a849eb858fad07f321ba68",
+   "filename": "test.mp4",
+   "utterances": 80,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "10869a3b03fc4e348ddd4a2056116000",
+   "filename": "test.mp4",
+   "utterances": 2,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "8e40f0d92e384260a028d12187387b70",
+   "filename": "test.mp4",
+   "utterances": 3,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "3b91b83dde9545d6ba65befd56fb7045",
+   "filename": "test_audio.mp3",
+   "utterances": 0,
+   "reason": "filename used by test_async_jobs_api upload test; 0 utterances; status queued; no job; no storage folder"
+  },
+  {
+   "meeting_id": "5cffa173ab114f86947dbac18bd6a5b8",
+   "filename": "test.mp4",
+   "utterances": 1,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "3725a7b5c09346a6b251dad3c86ca3c8",
+   "filename": "test.mp4",
+   "utterances": 125,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "a3eb609a8d8e4267a5b6032efb6badbd",
+   "filename": "test.mp4",
+   "utterances": 130,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "b1e6db346c824d7b9e501c8781f0e94b",
+   "filename": "test.mp4",
+   "utterances": 10,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "7630328067a943a79360a2585ccbc687",
+   "filename": "test.mp4",
+   "utterances": 80,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "e1d2ece1eaf14cc3810dd9312fe56b5f",
+   "filename": "test.mp4",
+   "utterances": 2,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "47500afe170b4e23b9bf000c793a3b20",
+   "filename": "test.mp4",
+   "utterances": 3,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "82e4e44c1e344215be4c8c9a3a09cb41",
+   "filename": "test_audio.mp3",
+   "utterances": 0,
+   "reason": "filename used by test_async_jobs_api upload test; 0 utterances; status queued; no job; no storage folder"
+  },
+  {
+   "meeting_id": "0668514c327b4b9ba78998e46396d0b0",
+   "filename": "test.mp4",
+   "utterances": 1,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "755b823ac33e4905b6751709e09285b0",
+   "filename": "test.mp4",
+   "utterances": 125,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "23c480a1cd9c4d2ba8604a11f6511939",
+   "filename": "test.mp4",
+   "utterances": 130,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "a7df4d991cc04c50ad3f3b5e08f2bc28",
+   "filename": "test.mp4",
+   "utterances": 10,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "4ccc4ebe386d48fa8b260cbd28e88176",
+   "filename": "test.mp4",
+   "utterances": 80,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "2a00132bbbe04e56ac7695d45fd364cb",
+   "filename": "test.mp4",
+   "utterances": 2,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "b6985a2f521d4e1381ac3b5577f609e0",
+   "filename": "test.mp4",
+   "utterances": 3,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "8289bcb2bd444bd4b2cbc2c1e06b82d0",
+   "filename": "test_audio.mp3",
+   "utterances": 0,
+   "reason": "filename used by test_async_jobs_api upload test; 0 utterances; status queued; no job; no storage folder"
+  },
+  {
+   "meeting_id": "5d35c60b42ef4f4ebcfc8a9a6689d7e7",
+   "filename": "test.mp4",
+   "utterances": 1,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "641c273cde584708b4a461e02827de0c",
+   "filename": "test.mp4",
+   "utterances": 125,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "3661e1eeea574515b202cb37ec772e9e",
+   "filename": "test.mp4",
+   "utterances": 130,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "c3d3757cfdcf4be79248f0c0b92426c3",
+   "filename": "test.mp4",
+   "utterances": 10,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "1fc2dbe788a542369182d5988756760b",
+   "filename": "test.mp4",
+   "utterances": 80,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "85a1c11cb51b48cfb9095999b8970f19",
+   "filename": "test.mp4",
+   "utterances": 2,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "770c90f0a6354e74bc63f62cb7759292",
+   "filename": "test.mp4",
+   "utterances": 3,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "c4e574c1d45343638443fd7f81867211",
+   "filename": "test_audio.mp3",
+   "utterances": 0,
+   "reason": "filename used by test_async_jobs_api upload test; 0 utterances; status queued; no job; no storage folder"
+  },
+  {
+   "meeting_id": "b0e288ef6933414eb71787f525b6b664",
+   "filename": "test.mp4",
+   "utterances": 1,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "0659b6667f0b428597c3190503754dd0",
+   "filename": "test.mp4",
+   "utterances": 125,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "4a943d01fa40478ea480eea6eff9beb5",
+   "filename": "test.mp4",
+   "utterances": 130,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "6455ff2c5f574f1fbc0fe14e1da73905",
+   "filename": "test.mp4",
+   "utterances": 10,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "40a970fc12bc4856acd87b5079df5a09",
+   "filename": "test.mp4",
+   "utterances": 80,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "a7e5e887c0e2411fa36ad08da07fc5a0",
+   "filename": "test.mp4",
+   "utterances": 2,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "9b6b0f00a83445d885a57cc66f6d0a92",
+   "filename": "test.mp4",
+   "utterances": 3,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "772923e041974676abb6a8e947592cd4",
+   "filename": "test_audio.mp3",
+   "utterances": 0,
+   "reason": "filename used by test_async_jobs_api upload test; 0 utterances; status queued; no job; no storage folder"
+  },
+  {
+   "meeting_id": "750309a3bd2e4e7ea6bac9b4509fcbe4",
+   "filename": "test.mp4",
+   "utterances": 1,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "14399d04f5284b11a908338cb74396ed",
+   "filename": "test.mp4",
+   "utterances": 125,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "624b7a92ab4a4ffd9a08bcdbb0c3591f",
+   "filename": "test.mp4",
+   "utterances": 130,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "2982acaaf1cd4a9cb8ee5b81d29e4dd4",
+   "filename": "test.mp4",
+   "utterances": 10,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "0178f50ae4724f0b816bb5d0ec21d4dc",
+   "filename": "test.mp4",
+   "utterances": 80,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "4286a772d3ca4295b2e26d5ec6af0785",
+   "filename": "test.mp4",
+   "utterances": 2,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "9e35ac2956ea4891bd616f206d539037",
+   "filename": "test.mp4",
+   "utterances": 3,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "c1c0464e9a5e468a99e23230bfe8a5e0",
+   "filename": "test_audio.mp3",
+   "utterances": 0,
+   "reason": "filename used by test_async_jobs_api upload test; 0 utterances; status queued; no job; no storage folder"
+  },
+  {
+   "meeting_id": "10cd71ffafaa443daf0d26db6bf403c7",
+   "filename": "test.mp4",
+   "utterances": 1,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "e789586e3c4d45f9a308eb1ad192731d",
+   "filename": "test.mp4",
+   "utterances": 125,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "00af8359048f4560bb9b8bd3536f9361",
+   "filename": "test.mp4",
+   "utterances": 130,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "7d05ab5d37524776b2947f568af000b1",
+   "filename": "test.mp4",
+   "utterances": 10,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "b54a7e4aabcb4a53928a5db6653be231",
+   "filename": "test.mp4",
+   "utterances": 80,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "a4614a67595a495986098c7befbd8b7e",
+   "filename": "test.mp4",
+   "utterances": 2,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "089cacfd0129408fa6ca63277185ba54",
+   "filename": "test.mp4",
+   "utterances": 3,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "847d3f979f6c41d2b82d38dd93dcea69",
+   "filename": "test_audio.mp3",
+   "utterances": 0,
+   "reason": "filename used by test_async_jobs_api upload test; 0 utterances; status queued; no job; no storage folder"
+  },
+  {
+   "meeting_id": "3a62a5cdbdd241f4b3625b081ddad69e",
+   "filename": "test.mp4",
+   "utterances": 1,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "8ac94496f0864b8792f2c3716f1d7b3c",
+   "filename": "test.mp4",
+   "utterances": 125,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "6358f18adbf8411ab120bff26bddd880",
+   "filename": "test.mp4",
+   "utterances": 130,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "6702ed10cf5b419e80c7389e8f6b0f12",
+   "filename": "test.mp4",
+   "utterances": 10,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "d07bc76d3fec41c3b64d47ede984deb4",
+   "filename": "test.mp4",
+   "utterances": 80,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "b2011367d86d49ec96410bb0d65d6a3a",
+   "filename": "test.mp4",
+   "utterances": 2,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "9f79a572d13c4f36ad538c4f4309dd89",
+   "filename": "test.mp4",
+   "utterances": 3,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "0047118108884fadbfa059acee28882e",
+   "filename": "test_audio.mp3",
+   "utterances": 0,
+   "reason": "filename used by test_async_jobs_api upload test; 0 utterances; status queued; no job; no storage folder"
+  },
+  {
+   "meeting_id": "c21c4f9dec6d4d3fb694fcb96b87c6bc",
+   "filename": "test.mp4",
+   "utterances": 1,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "a8118fde0c954285acb3cc64b22e3266",
+   "filename": "test.mp4",
+   "utterances": 125,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "e3a42bab6cfc4564acefa06e818fd4de",
+   "filename": "test.mp4",
+   "utterances": 130,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "ef04044c3233490680e77137741cb4f4",
+   "filename": "test.mp4",
+   "utterances": 10,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "06adcf2703ca4ab7bd9578206cff0fad",
+   "filename": "test.mp4",
+   "utterances": 80,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "c3123c7589fc41b8b0f042c9629801e1",
+   "filename": "test.mp4",
+   "utterances": 2,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "d66736b34ede4d06b3e120c1c41ebc79",
+   "filename": "test.mp4",
+   "utterances": 3,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "3d6d7104e9e44afba812f229b20c4286",
+   "filename": "test_audio.mp3",
+   "utterances": 0,
+   "reason": "filename used by test_async_jobs_api upload test; 0 utterances; status queued; no job; no storage folder"
+  },
+  {
+   "meeting_id": "ab6c4208a4774f6dbedb066f04562fa7",
+   "filename": "test.mp4",
+   "utterances": 1,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "e7f2c597500b45689b72953174f9a99b",
+   "filename": "test.mp4",
+   "utterances": 125,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "30c303dec3c047a7b546781bcfb6273c",
+   "filename": "test.mp4",
+   "utterances": 130,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "d6737c67ef6b4f68b167d943dbbfd13b",
+   "filename": "test.mp4",
+   "utterances": 10,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "a7f9cfe090a94799b57c4d78cd77d052",
+   "filename": "test.mp4",
+   "utterances": 80,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "175031b51ba04b72a02d03bd0aca18ae",
+   "filename": "test.mp4",
+   "utterances": 2,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "7ab185e84f1b4b19b913c389db1878b7",
+   "filename": "test.mp4",
+   "utterances": 3,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "298abc7b8d92412a9a2eceeebf427c57",
+   "filename": "test_audio.mp3",
+   "utterances": 0,
+   "reason": "filename used by test_async_jobs_api upload test; 0 utterances; status queued; no job; no storage folder"
+  },
+  {
+   "meeting_id": "24d21278258d4bc18d5ffc2f73af4f9e",
+   "filename": "test.mp4",
+   "utterances": 1,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "850f930a8ebd4a9ba4cc299f1d3dae9f",
+   "filename": "test.mp4",
+   "utterances": 125,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "2b3bc9d9feb043af9c9bbf07808043ce",
+   "filename": "test.mp4",
+   "utterances": 130,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "a7c2eadde4b64028b224986f6c7f9864",
+   "filename": "test.mp4",
+   "utterances": 10,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "7c313d699c324df389c1125b92be5483",
+   "filename": "test.mp4",
+   "utterances": 80,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "7865e0b2202e4c6b947797d165efe410",
+   "filename": "test.mp4",
+   "utterances": 2,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "6a6992df86d34e80b1aa7fdebda9a2bf",
+   "filename": "test.mp4",
+   "utterances": 3,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "69d757762ccf411791a24cfe5128c78c",
+   "filename": "test.mp4",
+   "utterances": 2,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "3b7c4e2daaf3403788649931f214a218",
+   "filename": "test.mp4",
+   "utterances": 3,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "9e3af256569a4731b89e173bb21e369a",
+   "filename": "test_audio.mp3",
+   "utterances": 0,
+   "reason": "filename used by test_async_jobs_api upload test; 0 utterances; status queued; no job; no storage folder"
+  },
+  {
+   "meeting_id": "6af1204997994886885bbfd34f56f0ae",
+   "filename": "test.mp4",
+   "utterances": 1,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "fe74a848f8714bb88d51b6d7de99f346",
+   "filename": "test.mp4",
+   "utterances": 125,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "07527a9765dc4097ac433a33b90e96ce",
+   "filename": "test.mp4",
+   "utterances": 130,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "f01c540107a44877849a56039c55d3ed",
+   "filename": "test.mp4",
+   "utterances": 10,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "140b6aa639ad4284bb2be91eee268b4f",
+   "filename": "test.mp4",
+   "utterances": 80,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "20f3dfff01034a92a2c851ca98e0b89b",
+   "filename": "test.mp4",
+   "utterances": 2,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "c94dbe3488bd4165b6d7f925689ee6d1",
+   "filename": "test.mp4",
+   "utterances": 3,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "c3269d01b2d2412fa50e47fb9cf2a5ee",
+   "filename": "test_audio.mp3",
+   "utterances": 0,
+   "reason": "filename used by test_async_jobs_api upload test; 0 utterances; status queued; no job; no storage folder"
+  },
+  {
+   "meeting_id": "16fc25d1f8244cedbe8e0e4fa8c2aebd",
+   "filename": "test.mp4",
+   "utterances": 1,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "8cdd561cd6bc48809c9b79f9e9a2ec0a",
+   "filename": "test.mp4",
+   "utterances": 125,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "0b3f3cb1b7b943ac96c28823b89062df",
+   "filename": "test.mp4",
+   "utterances": 130,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "9f589985c3fb47bebe91f44e3df25e8b",
+   "filename": "test.mp4",
+   "utterances": 10,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "a327bf32b92840fd835ae5cd2516c97e",
+   "filename": "test.mp4",
+   "utterances": 80,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "be12abcd1a514bad9067d9f24a2b6f87",
+   "filename": "test.mp4",
+   "utterances": 2,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "529970f045ec4276a2a29ec8d8e39b64",
+   "filename": "test.mp4",
+   "utterances": 3,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "8f5887524bc94f01a2188f5fd05953dc",
+   "filename": "test_audio.mp3",
+   "utterances": 0,
+   "reason": "filename used by test_async_jobs_api upload test; 0 utterances; status queued; no job; no storage folder"
+  },
+  {
+   "meeting_id": "6f05d48b9f214ae98fdc6957c0fea7ea",
+   "filename": "test.mp4",
+   "utterances": 1,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "4645e72fc35a48bfba30030130e6811b",
+   "filename": "test.mp4",
+   "utterances": 125,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "248816ee096e4a0c82d2828d8129694b",
+   "filename": "test.mp4",
+   "utterances": 130,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "819bd6b0e33a44dfb786192726169c05",
+   "filename": "test.mp4",
+   "utterances": 10,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "ca813be5ac4b4f0ebda567b292316b6d",
+   "filename": "test.mp4",
+   "utterances": 80,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "939f1f1409bf423ab90452d1b6dfde19",
+   "filename": "test.mp4",
+   "utterances": 2,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "3973bf17481441eba143b1296cfa1d89",
+   "filename": "test.mp4",
+   "utterances": 3,
+   "reason": "every utterance text matches a fixture string in tests/*.py"
+  },
+  {
+   "meeting_id": "7a7c7147f40e45bdbf224bdb67f46f66",
+   "filename": "test_audio.mp3",
+   "utterances": 0,
+   "reason": "filename used by test_async_jobs_api upload test; 0 utterances; status queued; no job; no storage folder"
+  }
+ ],
+ "class_A_orphan_job_ids": [
+  "013dd41349ac434db22995df1810a299",
+  "08fe99b810f54d89a684d340af2b0a06",
+  "0998e703fa0c4133a03d55cf35a53e8e",
+  "0cc2b48b661a417383dca075c2550d58",
+  "0da121d67f414b5fb352aa1ec71e13b1",
+  "1e3acba0c7b74686a787f00a70be16ea",
+  "1ef67cffada14121bc80cb817a0c1f99",
+  "1ff8bcba041c40d998256bab2b561bb1",
+  "23c5ba0393c84190a56ff29d17296810",
+  "2716bcf0bc6c4770846f9d4b2a1524c2",
+  "2adb87ceb6604aa796456482f6073c70",
+  "33d82552696241099bf69490642d2631",
+  "36e9dd06bc9b441699f32910bfea3187",
+  "38f49f06024f4675a5565de8e6a017f8",
+  "3af330eb696a4b50a9dc4e45ff2564f7",
+  "3b09d51b46214fbba7c2542a3ab4cfe7",
+  "3d2c89bae18945888d58e576400b91a2",
+  "3d648960467e42ca9b548ba1b1ee3ac2",
+  "418640c4e1af49d898a303f0799df24c",
+  "4673d7a7de164e8ebc0bb0319c371711",
+  "473d040c017646d2bc654b8590d5df7c",
+  "504ac3379e6744199d346566f7b92e71",
+  "52708add1a88496592fbe4840bf9d69f",
+  "5923a1c00b2240ca83e0511d757292dc",
+  "59b19427affa4706b49d92c73247622f",
+  "62273cd1922c488a92645fa4ce131463",
+  "627467270429476e9c80def28debe518",
+  "65473e00cfbb4da6a50937e2e27044f1",
+  "73f2de9d04cf47aba1626d9d98d33e7b",
+  "7c1240c1d58f4a41874e77085902d3c2",
+  "7f9445f238dd48b0ad468bdf2e439c18",
+  "8884febbd08a45a6b94e1dfc6f8e0892",
+  "8911426dc8564e26aa4824b3e3d36f64",
+  "8b115d1b669148acbc20cde69ff97d43",
+  "8f9b6484e32049b587821c99c4dbc58c",
+  "930ea351ee944e5cb06486ab469dbb24",
+  "99d45091a4f749cbb7278d116e40ad04",
+  "9cf9ad497c4b493e9bd7a21cd9298a85",
+  "9ec8e46951d34747af32b2750614a559",
+  "a41f0ed31b8142bf994f0b8917937255",
+  "b1bca43859d84e73aa367d308a02d13a",
+  "b3327125ea1947c98e741ea68a8a6aa3",
+  "b3b0408ada774dadbbd38d434419abb8",
+  "bc9ae7977ed9498887c8f57ea095bfcb",
+  "bff92be3b26f4f39af253bbf9f0e672f",
+  "c19687bccab54a409c504900cbe1c1f2",
+  "c608bae9c07f402988d676f52adea35f",
+  "c7bc9652eafe4a7ab7bd80ef39a0fcd0",
+  "cb0c03b1dc4248d9800e585d2a2ac944",
+  "ce2337c2525947aa9585ec6a9ba8e8e1",
+  "d50c56232bb44ed58ab9ceb57a1be2bd",
+  "f4cac9a47af24224a4779265be9a6ffe",
+  "fb7423ff73df4b2d9a0b09a3a83618d6",
+  "ff75b671204e48ba94e17ffb27d039b2"
+ ],
+ "class_B_meetings": [
+  {
+   "meeting_id": "20ab06c217cd4e80bfa3c9bfc71848b7",
+   "filename": "test.mp4",
+   "utterances": 75,
+   "reason": "filename test.mp4, SPK_ speaker IDs, sequential 'This is utterance number N in the meeting.' template; template not found in current tests or git history"
+  },
+  {
+   "meeting_id": "58756112f75c42419fb3c24c7b30714e",
+   "filename": "test.mp4",
+   "utterances": 100,
+   "reason": "filename test.mp4, SPK_ speaker IDs, sequential 'This is utterance number N in the meeting.' template; template not found in current tests or git history"
+  },
+  {
+   "meeting_id": "732797dc49cb4a0c88ac480cad6f9f51",
+   "filename": "test.mp4",
+   "utterances": 10,
+   "reason": "filename test.mp4, SPK_ speaker IDs, sequential 'This is utterance number N in the meeting.' template; template not found in current tests or git history"
+  },
+  {
+   "meeting_id": "c31394a1157b4db3a50026a2235f5570",
+   "filename": "test.mp4",
+   "utterances": 50,
+   "reason": "filename test.mp4, SPK_ speaker IDs, sequential 'This is utterance number N in the meeting.' template; template not found in current tests or git history"
+  },
+  {
+   "meeting_id": "real_recording_test_audit",
+   "filename": "test_meeting.mp4",
+   "utterances": 2,
+   "reason": "filename looks real but utterances are the synthetic Alice/Bob sentences from test_meeting_isolation.py"
+  }
+ ],
+ "class_C_keep": [
+  {
+   "meeting_id": "smoke_rules",
+   "filename": "G:\\Meet2MoM\\input\\test_meeting.mp4",
+   "utterances": 39,
+   "status": "transcribed",
+   "storage_folder": false
+  },
+  {
+   "meeting_id": "smoke_llm",
+   "filename": "G:\\Meet2MoM\\input\\test_meeting.mp4",
+   "utterances": 39,
+   "status": "transcribed",
+   "storage_folder": false
+  },
+  {
+   "meeting_id": "c954a4e4afea411d8e370cb55c36f347",
+   "filename": "test_meeting.mp4",
+   "utterances": 0,
+   "status": "processing",
+   "storage_folder": false
+  },
+  {
+   "meeting_id": "5be95ea882434eb98c2f1c3025542276",
+   "filename": "test_meeting.mp4",
+   "utterances": 0,
+   "status": "processing",
+   "storage_folder": false
+  },
+  {
+   "meeting_id": "demo_01",
+   "filename": "demo_01.wav",
+   "utterances": 39,
+   "status": "indexed",
+   "storage_folder": true
+  },
+  {
+   "meeting_id": "48de751dd5d040c59da6bc0e283e52d5",
+   "filename": "test_meeting.mp4",
+   "utterances": 0,
+   "status": "processing",
+   "storage_folder": false
+  },
+  {
+   "meeting_id": "cb5bad1214674dbea3d59e10d083f854",
+   "filename": "test_meeting.mp4",
+   "utterances": 0,
+   "status": "processing",
+   "storage_folder": false
+  },
+  {
+   "meeting_id": "0b85304a365a41909932250f6401457c",
+   "filename": "live-meeting-1789106901485.webm",
+   "utterances": 0,
+   "status": "processing",
+   "storage_folder": true
+  },
+  {
+   "meeting_id": "e3fb83825ae04f53aeee1848900f0b20",
+   "filename": "live-meeting-1789107305719.webm",
+   "utterances": 0,
+   "status": "processing",
+   "storage_folder": true
+  },
+  {
+   "meeting_id": "fa9966aff2a941d4ab4198a738a99caa",
+   "filename": "live-meeting-1789107639074.webm",
+   "utterances": 3,
+   "status": "processing",
+   "storage_folder": true
+  },
+  {
+   "meeting_id": "364ec9617624429388b3d134cac1e8cf",
+   "filename": "live-meeting-1789108324164.webm",
+   "utterances": 5,
+   "status": "processing",
+   "storage_folder": true
+  },
+  {
+   "meeting_id": "fe9728b432cd43b1b185ae9fdfc34795",
+   "filename": "live-meeting-1789108840870.webm",
+   "utterances": 2,
+   "status": "processing",
+   "storage_folder": true
+  },
+  {
+   "meeting_id": "9b92c0ac167348b0b82c2e90c82dfc86",
+   "filename": "live-meeting-1789109227796.webm",
+   "utterances": 3,
+   "status": "processing",
+   "storage_folder": true
+  },
+  {
+   "meeting_id": "9c204a1be6cc4d22911a6da300884f66",
+   "filename": "live-meeting-1789109400394.webm",
+   "utterances": 3,
+   "status": "processing",
+   "storage_folder": true
+  },
+  {
+   "meeting_id": "907b3f233d3b423e830dcec5ae1594bc",
+   "filename": "live-meeting-1789118298469.webm",
+   "utterances": 0,
+   "status": "processing",
+   "storage_folder": true
+  },
+  {
+   "meeting_id": "f35fa3bbf6f3481ca23b858151d2240d",
+   "filename": "live-meeting-1789118345049.webm",
+   "utterances": 0,
+   "status": "processing",
+   "storage_folder": true
+  },
+  {
+   "meeting_id": "64ddfc9a2f5d46e3a1299df967896249",
+   "filename": "live-meeting-1789118903396.webm",
+   "utterances": 0,
+   "status": "processing",
+   "storage_folder": true
+  },
+  {
+   "meeting_id": "2a0448bcb21143ba8af1e2ea4b9f3ce3",
+   "filename": "live-meeting-1791723255129.webm",
+   "utterances": 0,
+   "status": "processing",
+   "storage_folder": true
+  }
+ ]
+}

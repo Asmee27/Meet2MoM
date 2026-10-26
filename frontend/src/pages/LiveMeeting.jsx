@@ -1031,7 +1031,7 @@ export default function LiveMeeting({ defaults = null } = {}) {
 
           {/* Permission Denied Warning */}
           {permissionError && (
-            <div className="lm-banner-alert" style={{ background: "#fffbeb", borderColor: "#fde68a", color: "#92400e" }}>
+            <div className="lm-banner-alert lm-banner-alert--warning">
               <div>
                 <strong>Device Notice:</strong> {permissionError} You can still join in listen-only mode.
               </div>
@@ -1128,10 +1128,10 @@ export default function LiveMeeting({ defaults = null } = {}) {
             {/* Pre-join Media Device Controls */}
             <div className="lm-device-preview-bar">
               <div>
-                <strong style={{ fontSize: "13px", color: "#1e293b", display: "block" }}>
+                <strong className="lm-device-title">
                   Hardware Setup
                 </strong>
-                <span style={{ fontSize: "12px", color: "#64748b" }}>
+                <span className="lm-device-hint">
                   Select initial microphone and camera state before joining
                 </span>
               </div>
@@ -1693,6 +1693,9 @@ export default function LiveMeeting({ defaults = null } = {}) {
           </div>
           {processing.error && (
             <div className="lm-rec-notice error" style={{ marginTop: "10px" }}>{processing.error}</div>
+          )}
+          {processing.worker?.message && (
+            <div className="lm-rec-notice error" role="alert" style={{ marginTop: "10px" }}>{processing.worker.message}</div>
           )}
           <StageTimings timings={processing.stage_timings} />
         </div>

@@ -52,6 +52,8 @@ export function formatVersion(version) {
 // A readable name from the stored file name (extension removed).
 export function meetingTitle(meeting) {
   if (meeting?.schedule?.title) return meeting.schedule.title;
+  // The title the host typed when starting a live meeting, not its room name.
+  if (meeting?.live_title?.trim()) return meeting.live_title.trim();
   const name = meeting?.filename || "";
   const stripped = name.replace(/\.(json|wav|mp3|mp4|webm|ogg|m4a)$/i, "");
   return stripped || `Meeting ${String(meeting?.meeting_id || "").slice(0, 8)}`;

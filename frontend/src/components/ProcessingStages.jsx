@@ -101,6 +101,10 @@ export default function ProcessingStages({ job, title = "Processing", onRetry, r
         )}
       </div>
 
+      {job?.worker?.message && (
+        <p className="stage__detail" role="alert" data-testid="no-worker-notice">{job.worker.message}</p>
+      )}
+
       <ol className="stage-list" aria-live="polite">
         {groups.map((group) => {
           const ui = STATUS_UI[group.status];
